@@ -1,0 +1,744 @@
+
+## Objetivo
+
+Criar um sistema em que eu consiga:
+
+- comunicar rápido
+    
+- documentar bem
+    
+- localizar tudo em segundos
+    
+- transformar mensagens, emails, pedidos e aprendizados em ativos reutilizáveis
+    
+
+## Princípio central
+
+> Eu não escrevo textos soltos.  
+> Eu escrevo **blocos reutilizáveis indexados**.
+
+Essa lógica conversa muito com a ideia de **modularidade, documentação e ativos reutilizáveis** da disciplina de analytics engineering. Em vez de deixar conhecimento disperso, eu estruturo artefatos para reuso e consulta futura.
+
+---
+
+## 1. Naming: padrão-base
+
+O naming precisa cumprir 4 funções ao mesmo tempo:
+
+- identificar rapidamente o artefato
+    
+- sugerir o tipo de conteúdo
+    
+- permitir busca simples
+    
+- facilitar linkagem entre notas
+    
+
+### Estrutura recomendada
+
+```text
+[ID] — [Título curto e específico]
+```
+
+### Exemplos
+
+```text
+PAG-001 — Regra de exclusão de boletos cancelados
+REQ-045 — Divergência de caixa
+ERR-002 — Duplicidade de boletos
+MET-002 — Eficiência ajustada por DU
+COM-003 — Comunicação de ajuste na pagadoria
+```
+
+---
+
+## 2. Prefixos por tipo
+
+Usar prefixos fixos reduz ambiguidade e acelera busca.
+
+|Tipo|Prefixo|Exemplo|
+|Pedido|REQ|REQ-045|
+|Regra de negócio|REG|REG-003|
+|Pagadoria / entrega temática|PAG|PAG-001|
+|Erro|ERR|ERR-002|
+|Métrica|MET|MET-002|
+|Comunicação|COM|COM-003|
+|Apresentação|PPT|PPT-001|
+|Decisão|DEC|DEC-004|
+
+
+### Regra prática
+
+- **REQ** para demandas recebidas
+    
+- **PAG / REG / MET / ERR** para conhecimento técnico
+    
+- **COM** para comunicações formais
+    
+- **PPT** para materiais executivos
+    
+- **DEC** para decisões tomadas
+    
+
+---
+
+## 3. Sistema de tags
+
+As tags são a camada de classificação transversal.  
+O ID organiza por unidade; a tag organiza por eixo.
+
+### Estrutura recomendada
+
+```text
+#dominio/
+#tipo/
+#tema/
+#impacto/
+#status/
+```
+
+### Exemplo real
+
+```text
+#dominio/cobranca
+#tipo/regra_negocio
+#tema/pagadoria
+#impacto/alto
+#status/producao
+```
+
+### Por que isso funciona
+
+Com isso eu consigo buscar por:
+
+- **tema** → tudo de pagadoria
+    
+- **tipo** → só pedidos, só erros, só comunicação
+    
+- **impacto** → só itens relevantes
+    
+- **status** → backlog, em andamento, finalizado, produção
+    
+
+---
+
+## 4. Metadados mínimos por nota
+
+Para o índice automático funcionar bem, toda nota relevante deve ter metadados mínimos.
+
+### Campos recomendados
+
+```text
+solicitante::
+destinatarios::
+status::
+impacto::
+tema::
+tipo::
+data::
+id::
+```
+
+### Exemplo
+
+```text
+solicitante:: Gestora
+status:: finalizado
+impacto:: alto
+tema:: pagadoria
+tipo:: pedido
+data:: 2026-03-29
+id:: REQ-045
+```
+
+---
+
+## 5. Estrutura de pastas
+
+```text
+/emails
+  /enviados
+  /recebidos
+/pedidos
+  /backlog
+  /em_andamento
+  /finalizados
+/conhecimento
+/comunicacoes
+/apresentacoes
+/indices
+```
+
+### Lógica
+
+- **emails/** = registro do evento comunicacional
+    
+- **pedidos/** = gestão da demanda
+    
+- **conhecimento/** = regra, métrica, erro, solução
+    
+- **comunicacoes/** = mensagens formais relevantes
+    
+- **indices/** = navegação e consulta
+    
+
+---
+
+## 6. Template de mensagem curta para Teams
+
+Uso para transmitir conhecimento frequente, de forma leve e rastreável.
+
+```text
+💡 Insight rápido
+
+📌 Tema: Pagadoria / Boletos
+
+Problema:
+Boletos cancelados estavam sendo considerados como pagamento.
+
+Solução:
+Filtro aplicado via tabela X.
+
+Impacto:
+Evita inflar caixa em ~3%.
+
+🔎 Detalhe técnico:
+(ver nota: PAG-001)
+
+#pagadoria #caixa #regra
+```
+
+### Regra de uso
+
+- usar para aprendizados rápidos
+    
+- sempre citar um ID, quando existir
+    
+- manter curto
+    
+- colocar hashtags simples no final para busca no Teams
+    
+
+---
+
+## 7. Template de nota técnica no Obsidian
+
+Essa é a base de conhecimento principal.
+
+````markdown
+# PAG-001 — Regra de exclusão de boletos cancelados
+
+id:: PAG-001
+status:: producao
+impacto:: alto
+tema:: pagadoria
+tipo:: regra_negocio
+data:: 2026-03-29
+
+#dominio/cobranca
+#tipo/regra_negocio
+#tema/pagadoria
+#impacto/alto
+#status/producao
+
+---
+
+## Problema
+Boletos cancelados estavam sendo considerados como pagamento.
+
+## Contexto
+Fonte principal: mis_wk_boletos_pagos_vlr  
+Cancelamentos vindos de: tbjg2_bole_pago_cancelado
+
+## Solução
+Excluir boletos presentes na base de cancelamento.
+
+## Query
+```sql
+SELECT *
+FROM boletos b
+LEFT JOIN cancelados c
+  ON b.id = c.id
+WHERE c.id IS NULL
+````
+
+## Impacto
+
+- Redução de ~3% no caixa reportado
+    
+- Melhora na confiabilidade da métrica
+    
+
+## Armadilhas
+
+- Cancelamento pode chegar com delay
+    
+- Necessário controle por data de referência
+    
+
+## Relacionado
+
+- [[PAG-002 — Pagadoria consolidada]]
+    
+- [[ERR-002 — Duplicidade de boletos]]
+    
+- [[REQ-045 — Divergência de caixa]]
+    
+
+````
+
+---
+
+## 8. Template de email formal com tags embutidas
+
+Uso para mudanças importantes, alinhamentos e correções relevantes.
+
+:::writing{variant="email" id="18274" subject="[PAG-001][pagadoria][cobranca] Ajuste na regra de cálculo de caixa"}
+Pessoal,
+
+📌 Contexto  
+Identificamos que boletos cancelados estavam sendo considerados como pagamento.
+
+🛠️ Solução  
+Aplicamos a exclusão desses registros utilizando a base de cancelamento.
+
+📊 Impacto  
+Redução de aproximadamente 3% no valor reportado de caixa, aumentando a confiabilidade da métrica.
+
+🔎 Detalhe técnico  
+Ver documentação completa: PAG-001
+
+#tags:
+#dominio/cobranca
+#tema/pagadoria
+#tipo/regra_negocio
+#impacto/alto
+#status/producao
+
+#id: PAG-001
+:::
+
+### Por que esse formato funciona
+
+- o assunto já nasce indexado
+- o corpo já vem em blocos claros
+- as tags podem ser copiadas direto para o Obsidian
+- o ID conecta email, nota técnica e pedido
+
+---
+
+## 9. Como documentar emails no Obsidian
+
+A lógica é:
+
+> Email é evento.  
+> Obsidian é memória.
+
+### Fluxo
+
+```text
+Recebo ou envio email
+      ↓
+Crio nota estruturada
+      ↓
+Relaciono com pedido / solução / métrica
+      ↓
+Email deixa de ser só caixa de entrada
+      ↓
+Vira ativo consultável
+````
+
+---
+
+## 10. Template de email enviado
+
+```markdown
+# 📧 COM-003 — Ajuste regra de caixa
+
+id:: COM-003
+destinatarios:: Gestora; Time X
+status:: enviado
+impacto:: alto
+tema:: pagadoria
+tipo:: comunicacao
+data:: 2026-03-29
+
+#dominio/cobranca
+#tema/pagadoria
+#tipo/comunicacao
+#impacto/alto
+#status/enviado
+
+---
+
+## Tipo
+Email enviado
+
+## Resumo
+Correção na regra de caixa excluindo boletos cancelados.
+
+## Impacto
+- Redução de ~3% no caixa
+- Melhora na confiabilidade
+
+## Conteúdo enviado
+(copiar o email aqui)
+
+## Relacionado
+- [[PAG-001 — Regra de exclusão de boletos cancelados]]
+- [[REQ-045 — Divergência de caixa]]
+```
+
+---
+
+## 11. Template de email recebido
+
+```markdown
+# 📥 REQ-045 — Pedido de ajuste na pagadoria
+
+id:: REQ-045
+solicitante:: Fulano (Gestor)
+status:: backlog
+impacto:: medio
+tema:: pagadoria
+tipo:: pedido
+data:: 2026-03-29
+
+#dominio/cobranca
+#tema/pagadoria
+#tipo/pedido
+#impacto/medio
+#status/backlog
+
+---
+
+## Pedido
+"Validar divergência no valor de caixa."
+
+## Interpretação
+Possível problema em:
+- boletos cancelados
+- duplicidade
+- critério de composição de caixa
+
+## Ação tomada
+- análise inicial realizada
+- criação da regra PAG-001
+
+## Status
+Em andamento
+
+## Relacionado
+- [[PAG-001 — Regra de exclusão de boletos cancelados]]
+- [[ERR-002 — Duplicidade de boletos]]
+```
+
+---
+
+## 12. Template de pedido
+
+Uso quando a demanda precisa ser tratada como item de trabalho, e não só como email.
+
+```markdown
+# REQ-046 — Ajuste eficiência DU
+
+id:: REQ-046
+solicitante:: Gestora
+status:: em_andamento
+impacto:: alto
+tema:: eficiencia
+tipo:: pedido
+data:: 2026-03-29
+
+#dominio/cobranca
+#tema/eficiencia
+#tipo/pedido
+#impacto/alto
+#status/em_andamento
+
+---
+
+## Problema
+Eficiência distorcida por dias úteis.
+
+## Objetivo
+Ajustar cálculo considerando DU.
+
+## Plano
+- calcular DU acumulado
+- ajustar denominador
+- validar comportamento em início e fim de mês
+
+## Status
+Em andamento
+
+## Relacionado
+- [[MET-002 — Eficiência ajustada DU]]
+```
+
+---
+
+## 13. Índice de emails
+
+O índice é o que transforma notas em sistema.
+
+### Objetivo do índice
+
+Responder rapidamente:
+
+- o que já foi pedido?
+    
+- o que já foi resolvido?
+    
+- o que teve impacto?
+    
+- quem pediu o quê?
+    
+- que email gerou qual solução?
+    
+
+---
+
+## 14. Estrutura base do índice
+
+```markdown
+# 📧 Índice de Emails
+
+## 📥 Pedidos recebidos
+
+## 📤 Emails enviados
+
+## 🔥 Alta relevância
+
+## 🧠 Ligados a conhecimento
+```
+
+---
+
+## 15. Índice automático com DataView
+
+### Pedidos recebidos
+
+```dataview
+table solicitante, status, impacto, tema
+from "emails/recebidos"
+sort file.ctime desc
+```
+
+### Emails enviados
+
+```dataview
+table destinatarios, impacto, tema
+from "emails/enviados"
+sort file.ctime desc
+```
+
+### Alta relevância
+
+```dataview
+table tipo, tema, impacto
+from "emails"
+where contains(file.tags, "#impacto/alto")
+sort file.ctime desc
+```
+
+### Emails ligados a conhecimento
+
+```dataview
+table tema, file.link
+from "emails"
+where contains(file.name, "PAG-") OR contains(file.name, "MET-") OR contains(file.name, "ERR-")
+```
+
+---
+
+## 16. Índice manual
+
+Bom para reunião, apresentação e consulta rápida.
+
+```markdown
+# 📧 Índice Manual
+
+## Pedidos importantes
+- [[REQ-045 — Divergência de caixa]]
+- [[REQ-046 — Ajuste eficiência DU]]
+
+## Comunicações relevantes
+- [[COM-003 — Ajuste regra de caixa]]
+- [[PAG-001 — Regra de exclusão de boletos cancelados]]
+
+## Críticos
+- [[PAG-001 — Regra de exclusão de boletos cancelados]]
+```
+
+---
+
+## 17. Índice por tema
+
+```markdown
+# 📚 Índice — Pagadoria
+```
+
+### Pedidos
+
+```dataview
+table status, impacto
+from "emails/recebidos"
+where contains(file.tags, "#tema/pagadoria")
+```
+
+### Comunicações
+
+```dataview
+table impacto
+from "emails/enviados"
+where contains(file.tags, "#tema/pagadoria")
+```
+
+### Conhecimento relacionado
+
+```dataview
+table tipo, status
+from "conhecimento"
+where contains(file.tags, "#tema/pagadoria")
+```
+
+---
+
+## 18. Índice por pessoa
+
+Útil para contexto político e organizacional.
+
+```dataview
+table tema, status
+from "emails/recebidos"
+where solicitante = "Gestora"
+```
+
+Isso responde:
+
+> o que essa pessoa já pediu para mim?
+
+---
+
+## 19. Índice tipo kanban
+
+### Backlog
+
+```dataview
+table solicitante, tema
+from "emails/recebidos"
+where status = "backlog"
+```
+
+### Em andamento
+
+```dataview
+table solicitante, tema
+from "pedidos"
+where status = "em_andamento"
+```
+
+### Finalizados
+
+```dataview
+table solicitante, tema
+from "emails/recebidos"
+where status = "finalizado"
+```
+
+---
+
+## 20. Busca rápida
+
+### Por ID
+
+```text
+PAG-001
+REQ-045
+ERR-002
+MET-002
+COM-003
+```
+
+### Por tag
+
+```text
+#tema/pagadoria
+#tipo/pedido
+#impacto/alto
+#status/finalizado
+```
+
+### Por pessoa
+
+```text
+solicitante:: Gestora
+```
+
+### Por domínio
+
+```text
+#dominio/cobranca
+```
+
+---
+
+## 21. Fluxo operacional completo
+
+```text
+Recebe pedido por email ou Teams
+        ↓
+Cria nota REQ-XXX
+        ↓
+Classifica com metadados e tags
+        ↓
+Relaciona com análise / solução / regra
+        ↓
+Cria nota técnica (PAG / REG / ERR / MET)
+        ↓
+Envia comunicação formal (COM / email)
+        ↓
+Documenta o email enviado
+        ↓
+Tudo aparece nos índices
+```
+
+---
+
+## 22. Erros comuns
+
+- criar nota sem padrão
+    
+- não usar ID
+    
+- usar tags inconsistentes
+    
+- não linkar pedido com solução
+    
+- deixar email como fonte única
+    
+- depender só de busca textual
+    
+- não separar emails enviados de recebidos
+    
+- escrever títulos genéricos demais
+    
+
+---
+
+## 23. Regra de ouro
+
+> Sem naming, há arquivos.  
+> Sem tags, há dispersão.  
+> Sem índice, há notas.  
+> Com naming + tags + índice, há sistema.
+
+---
+
+## 24. Insight final
+
+Quem documenta vira referência.  
+Quem documenta bem vira sistema.  
+Quem cria sistema vira indispensável.
+
