@@ -1,0 +1,947 @@
+
+## Contexto
+
+A ideia desta regra é redistribuir share entre escritórios **dentro de cada fila**, respeitando alguns princípios simples:
+
+- o share inicial da fila soma **100**
+    
+- o share final da fila também precisa somar **100**
+    
+- a redistribuição acontece em **pontos inteiros**
+    
+- os escritórios são avaliados dentro da própria fila
+    
+- os piores podem perder share
+    
+- os melhores podem ganhar share
+    
+- é possível simular diferentes cenários, de **0 a 10 pontos movimentados**
+    
+
+---
+
+## Explicação curta da regra
+
+A lógica pode ser explicada como uma **regra de campeonato com redistribuição de pontos**:
+
+1. cada escritório entra com um **share inicial**
+    
+2. ele é avaliado dentro da própria fila
+    
+3. os piores podem perder pontos de share
+    
+4. os melhores podem ganhar pontos de share
+    
+5. a soma final continua **100**
+    
+6. simulamos cenários de **0 a 10** para ver desde uma política mais congelada até uma mais agressiva
+    
+
+---
+
+## Estrutura simples da regra
+
+### 1. Avaliação
+
+Cada escritório é avaliado por dois eixos:
+
+- **meta**: bateu ou não bateu
+    
+- **mediana da fila**: ficou acima ou abaixo dos pares
+    
+
+---
+
+### 2. Classificação
+
+Cada escritório entra em um grupo:
+
+- **A** = bateu meta e ficou acima da mediana
+    
+- **B** = bateu meta, mas ficou abaixo da mediana
+    
+- **C** = não bateu meta, mas ficou acima da mediana
+    
+- **D** = não bateu meta e ficou abaixo da mediana
+    
+
+Leitura simples:
+
+- **A** = melhor situação
+    
+- **B** = ok, mas não foi destaque
+    
+- **C** = mediano / fraco
+    
+- **D** = pior situação
+    
+
+---
+
+### 3. Redistribuição
+
+A regra depois define:
+
+- quem **pode perder**
+    
+- quem **pode ganhar**
+    
+- em que **ordem isso acontece**
+    
+
+Resumo da lógica:
+
+- **piores e maiores** perdem antes
+    
+- **melhores e menores** ganham antes
+    
+
+Ou seja:
+
+> quem vai mal e já é grande tende a perder  
+> quem vai bem e ainda é pequeno tende a ganhar
+
+---
+
+### 4. Simulação
+
+A regra testa cenários de:
+
+- `0 pontos`
+    
+- `1 ponto`
+    
+- `2 pontos`
+    
+- ...
+    
+- `10 pontos`
+    
+
+Assim dá para comparar:
+
+- política congelada
+    
+- política leve
+    
+- política moderada
+    
+- política agressiva
+    
+
+---
+
+# Tradução das CTEs para nomes de negócio
+
+|CTE|Nome de negócio|
+|---|---|
+|`base`|foto inicial da fila|
+|`base_metricas`|métricas de avaliação|
+|`classificacao`|quadrante de desempenho|
+|`regras`|limite de perder/ganhar|
+|`rankings`|fila de prioridade|
+|`parametros_input`|cenários de agressividade|
+|`parametros_fila`|quanto dá para mover de verdade|
+|`slots_perda` / `slots_ganho`|fichas unitárias de share|
+|`perdas_aplicadas` / `ganhos_aplicados`|redistribuição efetiva|
+|`resultado_final`|share final por cenário|
+
+---
+
+# Regra explicada por bloco
+
+## `base`
+
+É a foto inicial do problema.
+
+Temos, para cada escritório da fila:
+
+- share inicial
+    
+- meta
+    
+- realizado
+    
+
+Ou seja: quem é quem e quanto performou.
+
+---
+
+## `base_metricas`
+
+Aqui a regra cria duas medidas básicas:
+
+- **atingimento da meta**
+    
+- **mediana da fila**
+    
+
+Em linguagem simples:
+
+> cada escritório é comparado com a meta e também com os pares da mesma fila
+
+---
+
+## `classificacao`
+
+Aqui cada escritório cai em um grupo A, B, C ou D.
+
+Essa etapa responde:
+
+> quem foi bem e quem foi mal dentro daquela fila?
+
+---
+
+## `regras`
+
+Aqui a classificação vira regra prática.
+
+### `limite_perda`
+
+Define quanto cada escritório pode perder.
+
+Lógica:
+
+- grupo **D** pode perder mais
+    
+- grupo **C** pode perder um pouco
+    
+- os demais não perdem
+    
+
+Além disso:
+
+> quem já tinha muito share pode perder mais
+
+### `limite_ganho`
+
+Define quanto cada escritório pode ganhar.
+
+Lógica:
+
+- grupo **A** pode ganhar
+    
+- o ganho é controlado
+    
+- ninguém ganha sem limite
+    
+
+---
+
+## `rankings`
+
+Define prioridade.
+
+### `ordem_perda`
+
+Quem perde primeiro?
+
+1. grupo D
+    
+2. depois C
+    
+3. depois B
+    
+4. dentro disso, quem já tem mais share perde antes
+    
+5. em empate, quem performou pior perde antes
+    
+
+### `ordem_ganho`
+
+Quem ganha primeiro?
+
+1. grupo A
+    
+2. depois B
+    
+3. dentro disso, quem tem menos share ganha antes
+    
+4. em empate, quem performou melhor ganha antes
+    
+
+---
+
+## `parametros_input`
+
+Cria os cenários de 0 a 10 pontos para cada fila.
+
+---
+
+## `parametros_fila`
+
+Decide quantos pontos **de fato** podem ser movimentados.
+
+Usa o menor entre:
+
+- o que eu quero movimentar
+    
+- o que os perdedores conseguem ceder
+    
+- o que os ganhadores conseguem absorver
+    
+
+Em linguagem simples:
+
+> o sistema nunca tenta mover mais pontos do que a fila suporta
+
+---
+
+## `slots_perda` e `slots_ganho`
+
+Aqui está o coração da lógica.
+
+A regra trabalha com **pontos inteiros unitários**, como se estivesse redistribuindo fichas de 1 em 1.
+
+Exemplo:
+
+- se um escritório pode perder 2, ele gera 2 slots de perda
+    
+- se outro pode ganhar 2, ele gera 2 slots de ganho
+    
+
+Isso garante:
+
+- movimentação inteira
+    
+- soma final fechando em 100
+    
+
+---
+
+## `perdas_aplicadas` e `ganhos_aplicados`
+
+Aplicam de fato os pontos do cenário.
+
+Se o cenário for “4 pontos”, pegamos:
+
+- os 4 primeiros slots de perda
+    
+- os 4 primeiros slots de ganho
+    
+
+---
+
+## `resultado_final`
+
+No fim, saem:
+
+- share inicial
+    
+- pontos perdidos
+    
+- pontos ganhos
+    
+- delta
+    
+- share final
+    
+
+Conta final:
+
+**share_final = share_inicial - pontos_perdidos + pontos_ganhos**
+
+---
+
+# Dados simulados — Filas 1 a 9
+
+Abaixo está uma base de exemplo com **quantidade variável de escritórios por fila**.
+
+## Escritórios usados
+
+- CRC
+    
+- BELLINATI
+    
+- NOVA_QUEST
+    
+- REDE_BRASIL
+    
+- PEREZ_REZENDE
+    
+- JA_REZENDE
+    
+
+---
+
+# SQL completo — Athena
+
+```sql
+WITH base AS (
+    SELECT *
+    FROM (
+        VALUES
+            -- FILA 01 (3 escritórios)
+            ('2026Q1', '01.FILA', 'CRC'           , 45, 100.0, 118.0),
+            ('2026Q1', '01.FILA', 'BELLINATI'     , 35, 100.0,  82.0),
+            ('2026Q1', '01.FILA', 'NOVA_QUEST'    , 20, 100.0,  96.0),
+
+            -- FILA 02 (4 escritórios)
+            ('2026Q1', '02.FILA', 'CRC'           , 30, 100.0, 108.0),
+            ('2026Q1', '02.FILA', 'BELLINATI'     , 28, 100.0,  76.0),
+            ('2026Q1', '02.FILA', 'NOVA_QUEST'    , 22, 100.0, 104.0),
+            ('2026Q1', '02.FILA', 'REDE_BRASIL'   , 20, 100.0,  91.0),
+
+            -- FILA 03 (5 escritórios)
+            ('2026Q1', '03.FILA', 'CRC'           , 24, 100.0,  84.0),
+            ('2026Q1', '03.FILA', 'BELLINATI'     , 22, 100.0,  79.0),
+            ('2026Q1', '03.FILA', 'NOVA_QUEST'    , 20, 100.0, 115.0),
+            ('2026Q1', '03.FILA', 'REDE_BRASIL'   , 18, 100.0, 109.0),
+            ('2026Q1', '03.FILA', 'PEREZ_REZENDE' , 16, 100.0,  97.0),
+
+            -- FILA 04 (6 escritórios)
+            ('2026Q1', '04.FILA', 'CRC'           , 22, 100.0,  92.0),
+            ('2026Q1', '04.FILA', 'BELLINATI'     , 20, 100.0, 111.0),
+            ('2026Q1', '04.FILA', 'NOVA_QUEST'    , 18, 100.0,  87.0),
+            ('2026Q1', '04.FILA', 'REDE_BRASIL'   , 16, 100.0, 122.0),
+            ('2026Q1', '04.FILA', 'PEREZ_REZENDE' , 14, 100.0,  95.0),
+            ('2026Q1', '04.FILA', 'JA_REZENDE'    , 10, 100.0, 128.0),
+
+            -- FILA 05 (4 escritórios)
+            ('2026Q1', '05.FILA', 'CRC'           , 34, 100.0, 101.0),
+            ('2026Q1', '05.FILA', 'BELLINATI'     , 26, 100.0,  88.0),
+            ('2026Q1', '05.FILA', 'REDE_BRASIL'   , 22, 100.0, 107.0),
+            ('2026Q1', '05.FILA', 'JA_REZENDE'    , 18, 100.0,  73.0),
+
+            -- FILA 06 (5 escritórios)
+            ('2026Q1', '06.FILA', 'CRC'           , 27, 100.0,  94.0),
+            ('2026Q1', '06.FILA', 'NOVA_QUEST'    , 23, 100.0, 116.0),
+            ('2026Q1', '06.FILA', 'REDE_BRASIL'   , 20, 100.0,  83.0),
+            ('2026Q1', '06.FILA', 'PEREZ_REZENDE' , 18, 100.0, 105.0),
+            ('2026Q1', '06.FILA', 'JA_REZENDE'    , 12, 100.0, 111.0),
+
+            -- FILA 07 (6 escritórios)
+            ('2026Q1', '07.FILA', 'CRC'           , 21, 100.0, 120.0),
+            ('2026Q1', '07.FILA', 'BELLINATI'     , 19, 100.0,  89.0),
+            ('2026Q1', '07.FILA', 'NOVA_QUEST'    , 18, 100.0,  93.0),
+            ('2026Q1', '07.FILA', 'REDE_BRASIL'   , 16, 100.0, 104.0),
+            ('2026Q1', '07.FILA', 'PEREZ_REZENDE' , 14, 100.0,  77.0),
+            ('2026Q1', '07.FILA', 'JA_REZENDE'    , 12, 100.0, 126.0),
+
+            -- FILA 08 (3 escritórios)
+            ('2026Q1', '08.FILA', 'BELLINATI'     , 44, 100.0,  81.0),
+            ('2026Q1', '08.FILA', 'REDE_BRASIL'   , 33, 100.0, 113.0),
+            ('2026Q1', '08.FILA', 'PEREZ_REZENDE' , 23, 100.0,  99.0),
+
+            -- FILA 09 (6 escritórios)
+            ('2026Q1', '09.FILA', 'CRC'           , 20, 100.0,  86.0),
+            ('2026Q1', '09.FILA', 'BELLINATI'     , 18, 100.0, 102.0),
+            ('2026Q1', '09.FILA', 'NOVA_QUEST'    , 17, 100.0, 119.0),
+            ('2026Q1', '09.FILA', 'REDE_BRASIL'   , 16, 100.0,  91.0),
+            ('2026Q1', '09.FILA', 'PEREZ_REZENDE' , 15, 100.0, 108.0),
+            ('2026Q1', '09.FILA', 'JA_REZENDE'    , 14, 100.0,  74.0)
+    ) AS t(ciclo, fila, escritorio, share_inicial, meta, realizado)
+),
+
+base_metricas AS (
+    SELECT
+        ciclo,
+        fila,
+        escritorio,
+        CAST(share_inicial AS integer) AS share_inicial,
+        CAST(meta AS double) AS meta,
+        CAST(realizado AS double) AS realizado,
+        realizado / NULLIF(meta, 0) AS atingimento_meta,
+        approx_percentile(realizado, 0.5) OVER (PARTITION BY ciclo, fila) AS mediana_fila
+    FROM base
+),
+
+/* 1) Regras de grupo */
+grupo_regras AS (
+    SELECT *
+    FROM (
+        VALUES
+            (1, 1, 'A'),
+            (1, 0, 'B'),
+            (0, 1, 'C'),
+            (0, 0, 'D')
+    ) AS t(fl_bateu_meta, fl_acima_mediana, grupo)
+),
+
+classificacao_flags AS (
+    SELECT
+        b.*,
+        IF(realizado >= meta, 1, 0) AS fl_bateu_meta,
+        IF(realizado >= mediana_fila, 1, 0) AS fl_acima_mediana,
+        realizado / NULLIF(mediana_fila, 0) AS indice_vs_mediana
+    FROM base_metricas b
+),
+
+classificacao AS (
+    SELECT
+        f.*,
+        g.grupo
+    FROM classificacao_flags f
+    LEFT JOIN grupo_regras g
+        ON f.fl_bateu_meta = g.fl_bateu_meta
+       AND f.fl_acima_mediana = g.fl_acima_mediana
+),
+
+/* 2) Regras de limite de perda */
+limite_perda_regras AS (
+    SELECT *
+    FROM (
+        VALUES
+            ('D',  2,  19, 1),
+            ('D', 20, 999, 2),
+            ('C',  2, 999, 1)
+    ) AS t(grupo, share_min, share_max, limite_perda)
+),
+
+/* 3) Regras de limite de ganho */
+limite_ganho_regras AS (
+    SELECT *
+    FROM (
+        VALUES
+            ('A',  0,  5, 3),
+            ('A',  6, 10, 2),
+            ('A', 11, 999, 2)
+    ) AS t(grupo, share_min, share_max, limite_ganho)
+),
+
+regras AS (
+    SELECT
+        c.*,
+        COALESCE(lp.limite_perda, 0) AS limite_perda,
+        COALESCE(lg.limite_ganho, 0) AS limite_ganho
+    FROM classificacao c
+    LEFT JOIN limite_perda_regras lp
+        ON c.grupo = lp.grupo
+       AND c.share_inicial BETWEEN lp.share_min AND lp.share_max
+    LEFT JOIN limite_ganho_regras lg
+        ON c.grupo = lg.grupo
+       AND c.share_inicial BETWEEN lg.share_min AND lg.share_max
+),
+
+/* 4) Regras de prioridade */
+prioridade_perda_regras AS (
+    SELECT *
+    FROM (
+        VALUES
+            ('D', 1),
+            ('C', 2),
+            ('B', 3),
+            ('A', 9)
+    ) AS t(grupo, prioridade_perda)
+),
+
+prioridade_ganho_regras AS (
+    SELECT *
+    FROM (
+        VALUES
+            ('A', 1),
+            ('B', 2),
+            ('C', 9),
+            ('D', 9)
+    ) AS t(grupo, prioridade_ganho)
+),
+
+rankings_base AS (
+    SELECT
+        r.*,
+        pp.prioridade_perda,
+        pg.prioridade_ganho
+    FROM regras r
+    LEFT JOIN prioridade_perda_regras pp
+        ON r.grupo = pp.grupo
+    LEFT JOIN prioridade_ganho_regras pg
+        ON r.grupo = pg.grupo
+),
+
+rankings AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY ciclo, fila
+            ORDER BY
+                prioridade_perda,
+                share_inicial DESC,
+                atingimento_meta ASC,
+                indice_vs_mediana ASC,
+                escritorio
+        ) AS ordem_perda,
+
+        ROW_NUMBER() OVER (
+            PARTITION BY ciclo, fila
+            ORDER BY
+                prioridade_ganho,
+                share_inicial ASC,
+                atingimento_meta DESC,
+                indice_vs_mediana DESC,
+                escritorio
+        ) AS ordem_ganho
+    FROM rankings_base
+),
+
+parametros_input AS (
+    SELECT
+        ciclo,
+        fila,
+        n AS pontos_movimentar_desejado
+    FROM (
+        SELECT DISTINCT ciclo, fila
+        FROM rankings
+    ) f
+    CROSS JOIN UNNEST(sequence(0, 15)) AS t(n)
+),
+
+parametros_fila AS (
+    SELECT
+        r.ciclo,
+        r.fila,
+        p.pontos_movimentar_desejado,
+        LEAST(
+            p.pontos_movimentar_desejado,
+            SUM(r.limite_perda),
+            SUM(r.limite_ganho)
+        ) AS pontos_movimentar
+    FROM rankings r
+    JOIN parametros_input p
+      ON r.ciclo = p.ciclo
+     AND r.fila  = p.fila
+    GROUP BY 1,2,3
+),
+
+numeros AS (
+    SELECT n
+    FROM UNNEST(sequence(1, 100)) AS t(n)
+),
+
+slots_perda AS (
+    SELECT
+        r.ciclo,
+        r.fila,
+        r.escritorio,
+        r.ordem_perda,
+        n.n AS slot_interno
+    FROM rankings r
+    CROSS JOIN numeros n
+    WHERE n.n <= r.limite_perda
+),
+
+slots_perda_ordenados AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY ciclo, fila
+            ORDER BY ordem_perda, slot_interno, escritorio
+        ) AS rodada_perda
+    FROM slots_perda
+),
+
+slots_ganho AS (
+    SELECT
+        r.ciclo,
+        r.fila,
+        r.escritorio,
+        r.ordem_ganho,
+        n.n AS slot_interno
+    FROM rankings r
+    CROSS JOIN numeros n
+    WHERE n.n <= r.limite_ganho
+),
+
+slots_ganho_ordenados AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY ciclo, fila
+            ORDER BY ordem_ganho, slot_interno, escritorio
+        ) AS rodada_ganho
+    FROM slots_ganho
+),
+
+perdas_aplicadas AS (
+    SELECT
+        p.ciclo,
+        p.fila,
+        f.pontos_movimentar_desejado,
+        p.escritorio,
+        1 AS ponto_perdido
+    FROM slots_perda_ordenados p
+    JOIN parametros_fila f
+      ON p.ciclo = f.ciclo
+     AND p.fila  = f.fila
+    WHERE p.rodada_perda <= f.pontos_movimentar
+),
+
+ganhos_aplicados AS (
+    SELECT
+        g.ciclo,
+        g.fila,
+        f.pontos_movimentar_desejado,
+        g.escritorio,
+        1 AS ponto_ganho
+    FROM slots_ganho_ordenados g
+    JOIN parametros_fila f
+      ON g.ciclo = f.ciclo
+     AND g.fila  = f.fila
+    WHERE g.rodada_ganho <= f.pontos_movimentar
+),
+
+consolidado_perdas AS (
+    SELECT
+        ciclo,
+        fila,
+        pontos_movimentar_desejado,
+        escritorio,
+        COUNT(*) AS pontos_perdidos
+    FROM perdas_aplicadas
+    GROUP BY 1,2,3,4
+),
+
+consolidado_ganhos AS (
+    SELECT
+        ciclo,
+        fila,
+        pontos_movimentar_desejado,
+        escritorio,
+        COUNT(*) AS pontos_ganhos
+    FROM ganhos_aplicados
+    GROUP BY 1,2,3,4
+),
+
+resultado_final AS (
+    SELECT
+        r.ciclo,
+        r.fila,
+        f.pontos_movimentar_desejado,
+        r.escritorio,
+        r.share_inicial,
+        r.meta,
+        r.realizado,
+        r.mediana_fila,
+        r.grupo,
+        r.atingimento_meta,
+        r.indice_vs_mediana,
+        COALESCE(p.pontos_perdidos, 0) AS pontos_perdidos,
+        COALESCE(g.pontos_ganhos, 0) AS pontos_ganhos,
+        COALESCE(g.pontos_ganhos, 0) - COALESCE(p.pontos_perdidos, 0) AS delta_share,
+        r.share_inicial - COALESCE(p.pontos_perdidos, 0) + COALESCE(g.pontos_ganhos, 0) AS share_final
+    FROM rankings r
+    JOIN parametros_fila f
+      ON r.ciclo = f.ciclo
+     AND r.fila = f.fila
+    LEFT JOIN consolidado_perdas p
+      ON r.ciclo = p.ciclo
+     AND r.fila = p.fila
+     AND f.pontos_movimentar_desejado = p.pontos_movimentar_desejado
+     AND r.escritorio = p.escritorio
+    LEFT JOIN consolidado_ganhos g
+      ON r.ciclo = g.ciclo
+     AND r.fila = g.fila
+     AND f.pontos_movimentar_desejado = g.pontos_movimentar_desejado
+     AND r.escritorio = g.escritorio
+)
+
+SELECT *
+FROM resultado_final
+ORDER BY ciclo, fila, pontos_movimentar_desejado, share_final DESC, escritorio;
+```
+
+---
+
+# Leitura dos cenários
+
+## Cenário 0
+
+Nada muda.  
+É a política congelada.
+
+## Cenário 2
+
+Mudança leve.  
+Os maiores perdedores começam a ceder um pouco, e os bons performers menores começam a crescer.
+
+## Cenário 4
+
+Mudança moderada.  
+A lógica da regra já fica bem visível.
+
+## Cenário 6+
+
+Mudança mais agressiva.  
+A redistribuição passa a mexer de forma perceptível na estrutura da fila.
+
+---
+
+# Exemplo didático de uma fila
+
+## Fila exemplo
+
+Suponha esta fila:
+
+
+
+
+|Escritório|Share inicial|Meta|Realizado
+|CRC|28|100|78|
+|BELLINATI|22|100|88|
+|NOVA_QUEST|16|100|103|
+|REDE_BRASIL|14|100|112|
+|PEREZ_REZENDE|12|100|97|
+|JA_REZENDE|8|100|125|
+
+### Classificação
+
+- CRC → D
+    
+- BELLINATI → D
+    
+- NOVA_QUEST → A
+    
+- REDE_BRASIL → A
+    
+- PEREZ_REZENDE → D
+    
+- JA_REZENDE → A
+    
+
+### Leitura
+
+Temos:
+
+- **3 ganhadores naturais**
+    
+- **3 perdedores naturais**
+    
+
+---
+
+## Simulação resumida
+
+### Cenário 0
+
+Nada muda.
+
+### Cenário 2
+
+- CRC perde 1
+    
+- BELLINATI perde 1
+    
+- JA_REZENDE ganha 1
+    
+- REDE_BRASIL ganha 1
+    
+
+### Cenário 4
+
+- CRC perde 2
+    
+- BELLINATI perde 1
+    
+- PEREZ_REZENDE perde 1
+    
+- JA_REZENDE ganha 2
+    
+- REDE_BRASIL ganha 1
+    
+- NOVA_QUEST ganha 1
+    
+
+### Cenário 6
+
+- CRC perde 2
+    
+- BELLINATI perde 2
+    
+- PEREZ_REZENDE perde 2
+    
+- JA_REZENDE ganha 2
+    
+- REDE_BRASIL ganha 2
+    
+- NOVA_QUEST ganha 2
+    
+
+---
+
+# Como explicar isso para uma gestora
+
+> A regra avalia cada escritório dentro da própria fila usando dois critérios: se bateu a meta e se ficou acima ou abaixo da mediana dos pares.  
+> A partir disso, cada escritório entra em um grupo de desempenho.  
+> Os piores escritórios, principalmente os que já tinham share alto, ficam mais elegíveis a perder pontos.  
+> Os melhores escritórios, principalmente os que ainda tinham share menor, ficam mais elegíveis a ganhar pontos.  
+> A redistribuição é feita em pontos inteiros, um a um, para garantir que a soma da fila continue exatamente 100.  
+> Por fim, simulamos vários cenários, de 0 a 10 pontos movimentados, para comparar uma política mais congelada com uma mais agressiva.
+
+---
+
+# Resumo em 5 frases
+
+> Primeiro, classificamos os escritórios pelo desempenho dentro de cada fila.  
+> Depois, definimos quem pode perder e quem pode ganhar share.  
+> Em seguida, ordenamos a prioridade: piores e maiores perdem antes; melhores e menores ganham antes.  
+> A redistribuição acontece em pontos inteiros, para manter a regra simples e auditável.  
+> Por fim, testamos cenários de 0 a 10 pontos para calibrar a agressividade da política.
+
+---
+
+# Frases prontas para apresentação
+
+**Frase 1**  
+A regra não redistribui share de forma arbitrária; ela segue desempenho relativo dentro da fila.
+
+**Frase 2**  
+O escritório é avaliado por dois eixos: meta e posição frente à mediana da fila.
+
+**Frase 3**  
+Quem performa pior e já concentra mais share tende a ceder mais espaço.
+
+**Frase 4**  
+Quem performa melhor e ainda tem share menor tende a receber prioridade no ganho.
+
+**Frase 5**  
+A movimentação é feita em pontos inteiros, o que simplifica governança, auditoria e comunicação.
+
+**Frase 6**  
+A soma da fila permanece 100 em todos os cenários.
+
+**Frase 7**  
+Os cenários de 0 a 10 pontos permitem calibrar a agressividade da política antes de colocá-la em produção.
+
+---
+
+# Essência da regra
+
+Se eu tivesse que condensar tudo em uma frase:
+
+> desempenho define a direção da movimentação, e share inicial ajuda a definir a intensidade
+
+Ou, de forma ainda mais simples:
+
+> quem vai mal e já é grande tende a perder; quem vai bem e ainda é pequeno tende a ganhar
+
+---
+
+# Estrutura de slide recomendada
+
+## Bloco 1 — Avaliação
+
+Meta + mediana da fila
+
+## Bloco 2 — Classificação
+
+A, B, C e D
+
+## Bloco 3 — Redistribuição
+
+Piores/grandes perdem antes; melhores/pequenos ganham antes
+
+## Bloco 4 — Simulação
+
+Cenários de 0 a 10 pontos, sempre fechando em 100
+
+---
+
+# Próximos passos
+
+- criar visão de auditoria por rodada
+    
+- medir concentração por cenário
+    
+- comparar top 3 share por cenário
+    
+- levar a simulação para QuickSight com parâmetro de cenário
+    
