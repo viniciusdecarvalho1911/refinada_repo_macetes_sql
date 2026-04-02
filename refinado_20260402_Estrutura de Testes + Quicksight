@@ -1,0 +1,1684 @@
+Perfeito. Vou te explicar isso de um jeito **bem didático, quase como um manual operacional para analista júnior**, sem assumir que a pessoa já domina Step Functions, Athena ou teste de dados.
+
+A ideia é sair daqui com uma visão simples de:
+
+1. **o que é um teste de dados**
+    
+2. **como desenhar uma tabela para guardar resultado dos testes**
+    
+3. **como separar testes por severidade**
+    
+4. **como fazer o Step Functions rodar, ler, decidir e registrar**
+    
+5. **como pensar isso no dia a dia**
+    
+
+O Step Functions serve para orquestrar estados como `Task`, `Choice`, `Parallel`, `Pass`, `Succeed` e `Fail`, e ele integra com Athena para rodar queries e buscar resultados. O Athena executa SQL sobre dados em S3 e usa o Glue Catalog para metadados.
+
+---
+
+# 1. Começando do zero: o que é “teste de dados”?
+
+Pensa assim:
+
+quando você termina de criar uma tabela analítica, você precisa responder:
+
+- ela veio **vazia sem querer**?
+    
+- ela trouxe **linhas duplicadas**?
+    
+- a chave principal veio com **null**?
+    
+- os valores vieram dentro do esperado?
+    
+- o volume veio muito estranho?
+    
+
+Isso é teste de dados.
+
+Não é teste de sistema.  
+Não é teste de código Python.  
+É um teste para ver se o **resultado da tabela** faz sentido.
+
+## Exemplo simples
+
+Imagine uma tabela final:
+
+```text
+fct_pagadoria
+```
+
+com colunas:
+
+- `anomes`
+    
+- `contrato`
+    
+- `produto`
+    
+- `qtd_boletos`
+    
+- `vl_pago_total`
+    
+
+Você pode querer testar:
+
+- existe mais de uma linha para o mesmo `anomes + contrato + produto`?
+    
+- `contrato` pode ser nulo?
+    
+- `vl_pago_total` pode ser negativo?
+    
+- a tabela veio vazia?
+    
+
+Essas perguntas viram queries SQL.
+
+---
+
+# 2. O erro mais importante de entender
+
+Existem **dois tipos de erro**.
+
+## 2.1 Erro técnico
+
+É quando a query nem consegue rodar.
+
+Exemplo:
+
+- SQL errado
+    
+- tabela não existe
+    
+- sem permissão
+    
+- bucket inválido
+    
+- timeout
+    
+
+Nesse caso, o Athena falha como execução técnica.
+
+No Step Functions, isso se trata com:
+
+- `Retry`
+    
+- `Catch`
+    
+
+---
+
+## 2.2 Erro lógico
+
+É quando a query roda normalmente, mas o dado está ruim.
+
+Exemplo:
+
+- encontrou duplicidade
+    
+- encontrou null indevido
+    
+- tabela veio vazia
+    
+- quantidade veio abaixo do esperado
+    
+
+Aqui o Athena **não falha tecnicamente**.  
+Ele simplesmente te devolve um resultado.
+
+Por isso você precisa:
+
+1. rodar a query de teste
+    
+2. ler o resultado
+    
+3. decidir se passou ou falhou
+    
+
+No Step Functions, isso se trata com:
+
+- `GetQueryResults`
+    
+- `Choice`
+    
+
+---
+
+# 3. A forma mais simples de pensar o teste
+
+## Regra de ouro
+
+Todo teste deve devolver **um número único**.
+
+Esse número representa:
+
+```text
+qtd_erros
+```
+
+Então:
+
+- `0` = passou
+    
+- `1` ou mais = falhou
+    
+
+## Exemplo de teste de duplicidade
+
+Errado para iniciantes:
+
+```sql
+SELECT anomes, contrato, produto, count(*) AS qtd
+FROM workspace_db.fct_pagadoria
+GROUP BY 1,2,3
+HAVING count(*) > 1
+```
+
+Esse SQL até funciona, mas devolve várias linhas.  
+Fica mais difícil de tratar no Step Functions.
+
+Melhor:
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT anomes, contrato, produto
+    FROM workspace_db.fct_pagadoria
+    GROUP BY 1,2,3
+    HAVING count(*) > 1
+)
+```
+
+Agora o resultado sempre será uma linha com um número.
+
+Esse é o formato ideal.
+
+---
+
+# 4. Como desenhar a tabela de resultado de teste
+
+Você já trouxe uma estrutura boa.  
+Para iniciante, eu deixaria assim:
+
+```sql
+CREATE TABLE IF NOT EXISTS ctrl.tb_resultado_teste (
+    id_execucao      varchar,
+    nm_teste         varchar,
+    nm_modelo        varchar,
+    severidade       varchar,
+    qtd_erros        bigint,
+    fl_aprovado      boolean,
+    dt_execucao      timestamp
+)
+```
+
+Agora vamos explicar coluna por coluna.
+
+## `id_execucao`
+
+É o identificador da execução do pipeline.
+
+Serve para você saber:
+
+- em qual rodada aquele teste foi feito
+    
+- quais testes pertencem à mesma execução
+    
+
+Exemplo:
+
+```text
+execucao_2026_04_02_01
+```
+
+ou o próprio id da execução do Step Functions.
+
+---
+
+## `nm_teste`
+
+É o nome do teste.
+
+Exemplo:
+
+- `tst_fct_pagadoria_grain`
+    
+- `tst_fct_pagadoria_not_null_contrato`
+    
+- `tst_fct_pagadoria_rowcount_min`
+    
+
+Regra boa para nome:
+
+```text
+tst_<modelo>__<regra>
+```
+
+---
+
+## `nm_modelo`
+
+É o nome do objeto que está sendo testado.
+
+Exemplo:
+
+```text
+fct_pagadoria
+```
+
+---
+
+## `severidade`
+
+Diz o impacto do teste.
+
+Valores recomendados:
+
+- `ERROR`
+    
+- `WARN`
+    
+- `INFO`
+    
+
+---
+
+## `qtd_erros`
+
+É quantos problemas o teste encontrou.
+
+Exemplo:
+
+- `0` → passou
+    
+- `17` → encontrou 17 erros
+    
+- `-1` → opcionalmente você pode usar isso para falha técnica
+    
+
+---
+
+## `fl_aprovado`
+
+É um booleano simples:
+
+- `true` = passou
+    
+- `false` = falhou
+    
+
+---
+
+## `dt_execucao`
+
+Momento em que o teste foi registrado.
+
+---
+
+# 5. Tabela de execução por modelo
+
+Você também trouxe uma tabela muito boa:
+
+```sql
+CREATE TABLE IF NOT EXISTS ctrl.tb_execucao_modelo (
+    id_execucao              varchar,
+    nm_modelo                varchar,
+    camada                   varchar,
+    nm_objeto_destino        varchar,
+    tp_materializacao        varchar,
+    dt_inicio                timestamp,
+    dt_fim                   timestamp,
+    status_modelo            varchar,
+    mensagem_erro            varchar
+)
+```
+
+Essa tabela é diferente da de teste.
+
+## Função dela
+
+Ela não guarda “qualidade de dado”.
+
+Ela guarda o **status operacional da execução do modelo**.
+
+### Exemplo do que ela responde:
+
+- o modelo rodou?
+    
+- começou quando?
+    
+- terminou quando?
+    
+- falhou?
+    
+- em qual camada estava?
+    
+- qual foi a mensagem de erro?
+    
+
+---
+
+# 6. Diferença entre as duas tabelas
+
+## `tb_execucao_modelo`
+
+Guarda o **status da execução do modelo**
+
+Exemplo:
+
+- `stg_boletos` executou com sucesso
+    
+- `fct_pagadoria` falhou por sintaxe
+    
+
+## `tb_resultado_teste`
+
+Guarda o **resultado do teste no dado**
+
+Exemplo:
+
+- `fct_pagadoria` passou no teste de grain
+    
+- `fct_pagadoria` falhou no teste de null
+    
+
+---
+
+# 7. Como pensar severidade dos testes
+
+Isso aqui é muito importante para júnior.
+
+Nem todo teste precisa derrubar o pipeline.
+
+## 7.1 `ERROR`
+
+Se falhar, o pipeline para.
+
+Use quando o dado fica **inutilizável ou perigoso**.
+
+Exemplos:
+
+- grain duplicado
+    
+- chave obrigatória nula
+    
+- tabela vazia quando deveria ter carga
+    
+- integridade crítica quebrada
+    
+
+## 7.2 `WARN`
+
+Se falhar, registra e segue.
+
+Use quando o dado ficou estranho, mas não totalmente inválido.
+
+Exemplos:
+
+- volume abaixo da média
+    
+- porcentagem alta de null em coluna opcional
+    
+- distribuição anômala
+    
+
+## 7.3 `INFO`
+
+Só monitora.
+
+Use quando você quer visibilidade, mas não quer bloquear nada.
+
+Exemplos:
+
+- quantidade de linhas do dia
+    
+- última data de partição
+    
+- número de contratos carregados
+    
+
+---
+
+# 8. Como montar testes distintos
+
+Vou te mostrar os principais.
+
+## 8.1 Teste de grain
+
+Pergunta:
+
+> existe mais de uma linha para a chave esperada?
+
+Exemplo:
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT anomes, contrato, produto
+    FROM workspace_db.fct_pagadoria
+    GROUP BY 1,2,3
+    HAVING count(*) > 1
+)
+```
+
+Se `qtd_erros > 0`, falhou.
+
+Geralmente é `ERROR`.
+
+---
+
+## 8.2 Teste de not null
+
+Pergunta:
+
+> existem valores nulos em colunas obrigatórias?
+
+Exemplo:
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM workspace_db.fct_pagadoria
+WHERE anomes IS NULL
+   OR contrato IS NULL
+   OR produto IS NULL
+```
+
+Geralmente é `ERROR`.
+
+---
+
+## 8.3 Teste de row count mínima
+
+Pergunta:
+
+> a tabela veio vazia ou com volume muito baixo?
+
+Exemplo:
+
+```sql
+SELECT
+    CASE
+        WHEN count(*) < 100 THEN 1
+        ELSE 0
+    END AS qtd_erros
+FROM workspace_db.fct_pagadoria
+```
+
+Ou mais simples:
+
+```sql
+SELECT count(*) AS qtd_linhas
+FROM workspace_db.fct_pagadoria
+```
+
+e depois o Step Functions compara com um limite.
+
+Para iniciante, eu prefiro a query já devolver `qtd_erros`.
+
+---
+
+## 8.4 Teste de accepted values
+
+Pergunta:
+
+> a coluna só tem valores permitidos?
+
+Exemplo:
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM workspace_db.dim_escritorio
+WHERE status_ativo NOT IN ('ATIVO', 'INATIVO')
+```
+
+Pode ser `ERROR` ou `WARN`, depende do caso.
+
+---
+
+## 8.5 Teste de valor negativo indevido
+
+Pergunta:
+
+> existem valores impossíveis?
+
+Exemplo:
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM workspace_db.fct_pagadoria
+WHERE vl_pago_total < 0
+```
+
+Normalmente `WARN` ou `ERROR`, dependendo da regra do negócio.
+
+---
+
+# 9. Como isso conversa com o Step Functions
+
+Agora vem a parte central.
+
+O fluxo completo de um teste é:
+
+```text
+1. Executar query de teste
+2. Ler resultado da query
+3. Avaliar resultado
+4. Registrar em tabela
+5. Decidir se segue ou falha
+```
+
+---
+
+# 10. Passo a passo do Step Functions, bem simples
+
+## 10.1 Estado 1 — ExecutarTeste
+
+Esse estado roda a query no Athena.
+
+Exemplo:
+
+```json
+"ExecutarTesteGrain": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+  "Arguments": {
+    "QueryString": "SELECT count(*) AS qtd_erros FROM (SELECT anomes, contrato, produto FROM workspace_db.fct_pagadoria GROUP BY 1,2,3 HAVING count(*) > 1)",
+    "WorkGroup.$": "$.workgroup",
+    "ResultConfiguration": {
+      "OutputLocation.$": "$.output_location"
+    }
+  },
+  "ResultPath": "$.exec_teste",
+  "Retry": [
+    {
+      "ErrorEquals": ["States.ALL"],
+      "IntervalSeconds": 5,
+      "MaxAttempts": 2,
+      "BackoffRate": 2.0
+    }
+  ],
+  "Catch": [
+    {
+      "ErrorEquals": ["States.ALL"],
+      "ResultPath": "$.erro_tecnico",
+      "Next": "RegistrarFalhaTecnica"
+    }
+  ],
+  "Next": "LerResultadoTesteGrain"
+}
+```
+
+## O que isso quer dizer
+
+### `Type: "Task"`
+
+É um estado que chama um serviço.
+
+### `Resource: arn:aws:states:::athena:startQueryExecution.sync`
+
+Quer dizer:
+
+> rode query no Athena e espere terminar
+
+### `QueryString`
+
+É o SQL do teste.
+
+### `Retry`
+
+Se der erro técnico, tenta de novo 2 vezes.
+
+### `Catch`
+
+Se mesmo assim falhar, vai para `RegistrarFalhaTecnica`.
+
+### `ResultPath`
+
+Guarda o resultado da execução em `$.exec_teste`.
+
+Isso é importante porque o próximo passo vai precisar do `QueryExecutionId`.
+
+---
+
+## 10.2 Estado 2 — LerResultadoTeste
+
+Agora você lê o resultado da query.
+
+```json
+"LerResultadoTesteGrain": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::athena:getQueryResults",
+  "Arguments": {
+    "QueryExecutionId.$": "$.exec_teste.QueryExecution.QueryExecutionId"
+  },
+  "ResultPath": "$.resultado_teste",
+  "Next": "AvaliarTesteGrain"
+}
+```
+
+## O que isso quer dizer
+
+O Athena já executou a query.  
+Agora você está dizendo:
+
+> me devolva a tabela de resultado dessa execução
+
+E salva isso em:
+
+```json
+$.resultado_teste
+```
+
+---
+
+## 10.3 Estado 3 — AvaliarTeste
+
+Agora vem a decisão.
+
+```json
+"AvaliarTesteGrain": {
+  "Type": "Choice",
+  "Choices": [
+    {
+      "Variable": "$.resultado_teste.ResultSet.Rows[1].Data[0].VarCharValue",
+      "StringEquals": "0",
+      "Next": "RegistrarSucessoTesteGrain"
+    }
+  ],
+  "Default": "RegistrarFalhaLogicaTesteGrain"
+}
+```
+
+## O que isso quer dizer
+
+O `Choice` é um “if” do Step Functions.
+
+Ele olha para:
+
+```json
+$.resultado_teste.ResultSet.Rows[1].Data[0].VarCharValue
+```
+
+Isso é a célula onde está o número do teste.
+
+Se for `"0"`:
+
+- passou
+    
+- vai para `RegistrarSucessoTesteGrain`
+    
+
+Se não for:
+
+- falhou
+    
+- vai para `RegistrarFalhaLogicaTesteGrain`
+    
+
+---
+
+# 11. Como gravar com INSERT INTO
+
+Agora o que você pediu explicitamente.
+
+## 11.1 Se passou
+
+```json
+"RegistrarSucessoTesteGrain": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+  "Arguments": {
+    "QueryString.$": "States.Format('INSERT INTO ctrl.tb_resultado_teste VALUES (''{}'',''{}'',''{}'',''{}'',{},true,current_timestamp)', $.id_execucao, 'tst_fct_pagadoria_grain', 'fct_pagadoria', 'ERROR', $.resultado_teste.ResultSet.Rows[1].Data[0].VarCharValue)",
+    "WorkGroup.$": "$.workgroup",
+    "ResultConfiguration": {
+      "OutputLocation.$": "$.output_location"
+    }
+  },
+  "Next": "ProximoPasso"
+}
+```
+
+### O que faz
+
+Insere uma linha dizendo:
+
+- qual execução foi
+    
+- qual teste foi
+    
+- qual modelo foi testado
+    
+- severidade
+    
+- quantidade de erros
+    
+- aprovado = true
+    
+- timestamp
+    
+
+---
+
+## 11.2 Se falhou logicamente
+
+```json
+"RegistrarFalhaLogicaTesteGrain": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+  "Arguments": {
+    "QueryString.$": "States.Format('INSERT INTO ctrl.tb_resultado_teste VALUES (''{}'',''{}'',''{}'',''{}'',{},false,current_timestamp)', $.id_execucao, 'tst_fct_pagadoria_grain', 'fct_pagadoria', 'ERROR', $.resultado_teste.ResultSet.Rows[1].Data[0].VarCharValue)",
+    "WorkGroup.$": "$.workgroup",
+    "ResultConfiguration": {
+      "OutputLocation.$": "$.output_location"
+    }
+  },
+  "Next": "FalhaTesteGrain"
+}
+```
+
+### O que faz
+
+Insere a falha e depois manda o fluxo para um estado de falha.
+
+---
+
+## 11.3 Se falhou tecnicamente
+
+```json
+"RegistrarFalhaTecnica": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+  "Arguments": {
+    "QueryString.$": "States.Format('INSERT INTO ctrl.tb_resultado_teste VALUES (''{}'',''{}'',''{}'',''{}'',-1,false,current_timestamp)', $.id_execucao, 'tst_fct_pagadoria_grain', 'fct_pagadoria', 'ERROR')",
+    "WorkGroup.$": "$.workgroup",
+    "ResultConfiguration": {
+      "OutputLocation.$": "$.output_location"
+    }
+  },
+  "Next": "FalhaTecnica"
+}
+```
+
+### O que faz
+
+Registra que o problema nem foi o dado — foi a execução.
+
+---
+
+# 12. Como usar severidade no fluxo
+
+Agora a parte importante de operação.
+
+## Para `ERROR`
+
+Fluxo:
+
+```text
+Teste falhou
+ ↓
+INSERT INTO auditoria
+ ↓
+Fail
+```
+
+## Para `WARN`
+
+Fluxo:
+
+```text
+Teste falhou
+ ↓
+INSERT INTO auditoria
+ ↓
+segue para o próximo estado
+```
+
+## Para `INFO`
+
+Fluxo:
+
+```text
+Executa o teste
+ ↓
+INSERT INTO auditoria
+ ↓
+segue sempre
+```
+
+---
+
+# 13. Como explicar isso para um júnior no dia a dia
+
+Eu explicaria assim:
+
+## “O teste é só uma query”
+
+Você escreve SQL que devolve um número.
+
+## “O Step Functions só faz 3 coisas”
+
+- roda a query
+    
+- lê o número
+    
+- decide o que fazer
+    
+
+## “A tabela de auditoria é o histórico”
+
+Tudo que passou ou falhou fica gravado lá.
+
+## “Severidade é a regra do jogo”
+
+- `ERROR` para a esteira
+    
+- `WARN` avisa mas deixa passar
+    
+- `INFO` só observa
+    
+
+---
+
+# 14. Exemplo completo mental
+
+Vamos imaginar um teste de grain na `fct_pagadoria`.
+
+## Passo 1
+
+A query roda:
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT anomes, contrato, produto
+    FROM workspace_db.fct_pagadoria
+    GROUP BY 1,2,3
+    HAVING count(*) > 1
+)
+```
+
+Resultado:
+
+```text
+qtd_erros = 3
+```
+
+## Passo 2
+
+O Step Functions lê esse `3`.
+
+## Passo 3
+
+Como não é `0`, ele entende que falhou.
+
+## Passo 4
+
+Ele faz:
+
+```sql
+INSERT INTO ctrl.tb_resultado_teste
+VALUES (
+  'exec_123',
+  'tst_fct_pagadoria_grain',
+  'fct_pagadoria',
+  'ERROR',
+  3,
+  false,
+  current_timestamp
+)
+```
+
+## Passo 5
+
+Como é `ERROR`, ele derruba o pipeline.
+
+---
+
+# 15. Estrutura mínima que eu recomendo para júnior
+
+## Tabela de execução de modelo
+
+Guarda se o modelo rodou ou não.
+
+## Tabela de resultado de teste
+
+Guarda se o teste passou ou não.
+
+## Tipos de teste iniciais
+
+Comece com só 4:
+
+- grain
+    
+- not null
+    
+- row count mínima
+    
+- accepted values
+    
+
+## Severidade inicial
+
+Comece com só 2:
+
+- `ERROR`
+    
+- `WARN`
+    
+
+`INFO` pode entrar depois.
+
+---
+
+# 16. Versão bem resumida “for dummies”
+
+## Regra 1
+
+Todo teste deve devolver **um número**.
+
+## Regra 2
+
+`0` = passou.
+
+## Regra 3
+
+Maior que `0` = falhou.
+
+## Regra 4
+
+Step Functions:
+
+- executa
+    
+- lê
+    
+- decide
+    
+
+## Regra 5
+
+Sempre grave o resultado em tabela.
+
+## Regra 6
+
+`ERROR` para o fluxo.  
+`WARN` registra e segue.
+
+---
+
+# 17. Ordem prática de implementação
+
+Se eu estivesse ensinando um júnior, eu faria assim:
+
+### etapa 1
+
+Criar a tabela `ctrl.tb_resultado_teste`
+
+### etapa 2
+
+Criar um teste simples de grain
+
+### etapa 3
+
+Criar Step Functions com:
+
+- `ExecutarTeste`
+    
+- `LerResultado`
+    
+- `Avaliar`
+    
+- `Registrar`
+    
+- `Fail/Succeed`
+    
+
+### etapa 4
+
+Adicionar mais testes:
+
+- not null
+    
+- row count
+    
+- accepted values
+    
+
+### etapa 5
+
+Separar por severidade
+
+---
+
+Perfeito. Vou **manter a nota base** e **acrescentar uma continuação natural**, explicando como isso pode virar um **painel de controle no QuickSight**.
+
+A ideia é simples:
+
+- o **Athena testa**
+    
+- o **Step Functions decide**
+    
+- as **tabelas de auditoria guardam o histórico**
+    
+- o **QuickSight enxerga essas tabelas e mostra a saúde da pipeline**
+    
+
+Ou seja: o QuickSight não executa teste.  
+Ele entra **depois**, como camada de **monitoramento visual**.
+
+---
+
+# 18. Como ligar isso ao QuickSight e transformar em painel de controle
+
+Pensa assim:
+
+o Step Functions vai registrando tudo nas tabelas de controle, por exemplo:
+
+- `ctrl.tb_execucao_modelo`
+    
+- `ctrl.tb_resultado_teste`
+    
+
+Essas tabelas viram a base do seu painel.
+
+Então o fluxo completo fica assim:
+
+```text
+Athena executa modelos e testes
+↓
+Step Functions registra tudo em tabela
+↓
+QuickSight lê as tabelas de controle
+↓
+Você enxerga o status da pipeline em dashboard
+```
+
+---
+
+# 19. A ideia mais importante sobre o QuickSight
+
+O QuickSight aqui funciona como se fosse um:
+
+- painel de operação
+    
+- painel de qualidade
+    
+- painel de observabilidade
+    
+- painel de saúde da esteira
+    
+
+Ele responde perguntas como:
+
+- a pipeline rodou hoje?
+    
+- quantos modelos falharam?
+    
+- quais testes deram erro?
+    
+- quais testes deram warning?
+    
+- qual modelo mais falha?
+    
+- qual foi a última execução com sucesso?
+    
+- quantos erros por dia estão acontecendo?
+    
+
+---
+
+# 20. Quais tabelas o QuickSight vai ler
+
+## 20.1 `ctrl.tb_execucao_modelo`
+
+Essa tabela responde sobre a **execução dos modelos**.
+
+Exemplo de perguntas:
+
+- quais modelos rodaram hoje?
+    
+- quais falharam?
+    
+- quanto tempo cada um demorou?
+    
+- em qual camada houve erro?
+    
+- quantos modelos estão com status `ERROR`?
+    
+
+---
+
+## 20.2 `ctrl.tb_resultado_teste`
+
+Essa tabela responde sobre a **qualidade dos dados**.
+
+Exemplo de perguntas:
+
+- quantos testes passaram?
+    
+- quantos falharam?
+    
+- quantos warnings houve?
+    
+- qual modelo está acumulando mais erros?
+    
+- qual teste mais falha?
+    
+
+---
+
+# 21. Como pensar essas tabelas como “fonte de dashboard”
+
+Para júnior, a forma mais simples de pensar é:
+
+## `tb_execucao_modelo`
+
+É a tabela de **operação**.
+
+## `tb_resultado_teste`
+
+É a tabela de **qualidade**.
+
+Então o dashboard pode ter 2 áreas:
+
+- **área de execução**
+    
+- **área de testes**
+    
+
+---
+
+# 22. O que eu colocaria no painel de execução
+
+Usando `ctrl.tb_execucao_modelo`, eu montaria:
+
+## cartões principais
+
+- quantidade de modelos executados hoje
+    
+- quantidade de modelos com sucesso
+    
+- quantidade de modelos com erro
+    
+- duração média dos modelos
+    
+- última execução
+    
+
+## gráficos úteis
+
+- barra por `camada` (`stg`, `int`, `mart`)
+    
+- barra por `status_modelo`
+    
+- tabela com:
+    
+    - `nm_modelo`
+        
+    - `camada`
+        
+    - `status_modelo`
+        
+    - `dt_inicio`
+        
+    - `dt_fim`
+        
+    - `mensagem_erro`
+        
+
+## pergunta que esse bloco responde
+
+> “A pipeline rodou bem ou quebrou?”
+
+---
+
+# 23. O que eu colocaria no painel de testes
+
+Usando `ctrl.tb_resultado_teste`, eu montaria:
+
+## cartões principais
+
+- total de testes executados
+    
+- total de testes aprovados
+    
+- total de testes reprovados
+    
+- total de `ERROR`
+    
+- total de `WARN`
+    
+
+## gráficos úteis
+
+- barra por `severidade`
+    
+- barra por `nm_modelo`
+    
+- linha de tendência por `dt_execucao`
+    
+- tabela com:
+    
+    - `nm_teste`
+        
+    - `nm_modelo`
+        
+    - `severidade`
+        
+    - `qtd_erros`
+        
+    - `fl_aprovado`
+        
+    - `dt_execucao`
+        
+
+## pergunta que esse bloco responde
+
+> “Os dados saíram bons ou ruins?”
+
+---
+
+# 24. Como deixar isso amigável para quem opera
+
+Se o público for júnior ou time operacional, eu faria um painel com leitura muito simples.
+
+## área 1 — semáforo da pipeline
+
+Exemplo de status:
+
+- 🟢 verde = tudo OK
+    
+- 🟡 amarelo = houve warning
+    
+- 🔴 vermelho = houve erro crítico
+    
+
+Isso pode ser calculado assim:
+
+- se existe teste `ERROR` reprovado → vermelho
+    
+- senão, se existe `WARN` reprovado → amarelo
+    
+- senão → verde
+    
+
+---
+
+# 25. View pronta para o QuickSight
+
+Em vez de jogar o QuickSight direto em cima das tabelas brutas, eu criaria **views semânticas** no Athena.
+
+Isso deixa o painel mais simples e mais estável.
+
+## 25.1 View de resumo da execução
+
+```sql
+CREATE OR REPLACE VIEW ctrl.vw_monitor_execucao_pipeline AS
+SELECT
+    id_execucao,
+    camada,
+    status_modelo,
+    count(*) as qtd_modelos,
+    min(dt_inicio) as dt_inicio_min,
+    max(dt_fim) as dt_fim_max
+FROM ctrl.tb_execucao_modelo
+GROUP BY 1,2,3
+```
+
+Essa view já resume quantos modelos por camada tiveram sucesso ou erro.
+
+---
+
+## 25.2 View de resumo dos testes
+
+```sql
+CREATE OR REPLACE VIEW ctrl.vw_monitor_resultado_teste AS
+SELECT
+    id_execucao,
+    nm_modelo,
+    severidade,
+    fl_aprovado,
+    count(*) as qtd_testes,
+    sum(qtd_erros) as qtd_erros_total,
+    max(dt_execucao) as dt_execucao
+FROM ctrl.tb_resultado_teste
+GROUP BY 1,2,3,4
+```
+
+Essa view deixa mais fácil fazer visões por modelo, severidade e aprovação.
+
+---
+
+## 25.3 View de semáforo da execução
+
+```sql
+CREATE OR REPLACE VIEW ctrl.vw_monitor_semaforo_pipeline AS
+SELECT
+    id_execucao,
+    CASE
+        WHEN sum(CASE WHEN severidade = 'ERROR' AND fl_aprovado = false THEN 1 ELSE 0 END) > 0 THEN 'VERMELHO'
+        WHEN sum(CASE WHEN severidade = 'WARN'  AND fl_aprovado = false THEN 1 ELSE 0 END) > 0 THEN 'AMARELO'
+        ELSE 'VERDE'
+    END as status_pipeline
+FROM ctrl.tb_resultado_teste
+GROUP BY 1
+```
+
+Essa view é ótima para o dashboard.
+
+---
+
+# 26. Como o QuickSight vai usar isso
+
+No QuickSight, o caminho mental é:
+
+1. conectar no Athena
+    
+2. escolher as views/tabelas de controle
+    
+3. montar visuais
+    
+4. filtrar por:
+    
+    - execução
+        
+    - data
+        
+    - camada
+        
+    - severidade
+        
+    - modelo
+        
+
+---
+
+# 27. Filtros que eu colocaria no painel
+
+Para ficar operacionalmente útil:
+
+- **data de execução**
+    
+- **id_execucao**
+    
+- **camada**
+    
+- **status_modelo**
+    
+- **severidade**
+    
+- **nm_modelo**
+    
+
+Assim você consegue responder:
+
+- “quais testes falharam nessa execução?”
+    
+- “qual mart quebrou hoje?”
+    
+- “qual camada está mais instável?”
+    
+- “quantos warnings tivemos essa semana?”
+    
+
+---
+
+# 28. Layout ideal do dashboard
+
+Eu faria o painel em 4 blocos.
+
+## bloco 1 — resumo geral
+
+Cartões:
+
+- total de modelos
+    
+- total de erros
+    
+- total de warnings
+    
+- total de testes falhos
+    
+- status geral da execução
+    
+
+---
+
+## bloco 2 — execução dos modelos
+
+Visuais:
+
+- barra por camada
+    
+- barra por status
+    
+- tabela detalhada dos modelos
+    
+
+---
+
+## bloco 3 — qualidade dos dados
+
+Visuais:
+
+- barra por severidade
+    
+- barra por modelo
+    
+- linha do total de erros por dia
+    
+
+---
+
+## bloco 4 — detalhe operacional
+
+Tabelas com drill-down:
+
+- testes reprovados
+    
+- modelos com erro
+    
+- mensagens de erro
+    
+
+---
+
+# 29. Como explicar isso para um júnior
+
+Eu explicaria assim:
+
+## “Step Functions é o operador”
+
+Ele manda rodar e decide o que fazer.
+
+## “Athena é o executor”
+
+Ele cria tabelas, views e roda os testes.
+
+## “Tabelas de controle são a memória”
+
+Elas guardam tudo que aconteceu.
+
+## “QuickSight é a tela”
+
+Ele mostra visualmente o que aconteceu.
+
+---
+
+# 30. Como isso ajuda no dia a dia
+
+Sem QuickSight, você fica dependente de:
+
+- abrir o Step Functions toda hora
+    
+- olhar logs
+    
+- consultar Athena manualmente
+    
+- adivinhar onde quebrou
+    
+
+Com QuickSight, você consegue:
+
+- ver histórico
+    
+- comparar dias
+    
+- enxergar padrões
+    
+- identificar instabilidade
+    
+- mostrar para gestor e time
+    
+
+---
+
+# 31. Exemplo prático de leitura do painel
+
+Imagina que o painel mostra:
+
+- **status pipeline** = vermelho
+    
+- `2` modelos com erro
+    
+- `1` teste `ERROR` falho
+    
+- `5` testes `WARN` falhos
+    
+
+Você entra na tabela detalhada e vê:
+
+- `fct_pagadoria` → sucesso
+    
+- `dim_escritorio` → erro
+    
+- `tst_fct_pagadoria_grain` → `ERROR`, `qtd_erros = 3`
+    
+
+Em 10 segundos, a pessoa já entende:
+
+- a esteira rodou parcialmente
+    
+- o erro crítico veio do teste de grain
+    
+- a `fct_pagadoria` saiu com duplicidade
+    
+
+Isso é exatamente o valor do painel.
+
+---
+
+# 32. O mínimo viável para começar
+
+Para não complicar demais no começo, eu faria assim:
+
+## tabelas
+
+- `ctrl.tb_execucao_modelo`
+    
+- `ctrl.tb_resultado_teste`
+    
+
+## views
+
+- `ctrl.vw_monitor_execucao_pipeline`
+    
+- `ctrl.vw_monitor_resultado_teste`
+    
+- `ctrl.vw_monitor_semaforo_pipeline`
+    
+
+## painel QuickSight
+
+- 1 cartão de status
+    
+- 1 gráfico por camada
+    
+- 1 gráfico por severidade
+    
+- 2 tabelas de detalhe
+    
+
+Só isso já entrega muito valor.
+
+---
+
+# 33. Regra prática para não virar bagunça
+
+## não coloque o QuickSight direto em tudo
+
+Prefira views semânticas.
+
+## não tente mostrar tudo
+
+Mostre o que ajuda a operar.
+
+## não use nomes técnicos demais no dashboard
+
+Exemplo melhor:
+
+- “Modelos com erro”
+    
+- “Testes reprovados”
+    
+- “Status da execução”
+    
+
+do que:
+
+- `status_modelo`
+    
+- `fl_aprovado`
+    
+- `qtd_erros`
+    
+
+Esses nomes técnicos podem continuar nas tabelas, mas não precisam aparecer “crus” no painel.
+
+---
+
+# 34. Como isso se conecta com a nota original
+
+A sua nota original diz:
+
+- Athena testa
+    
+- Step Functions decide
+    
+- resultado vai para tabela
+    
+
+Agora completamos com:
+
+- QuickSight mostra
+    
+
+Então o fluxo final fica:
+
+```text
+Athena testa
+↓
+Step Functions decide
+↓
+Athena grava em tabela
+↓
+QuickSight mostra em painel
+```
+
+---
+
+# 35. Fechamento
+
+A forma mais simples de transformar esse framework de testes em algo visual e operacional é usar as tabelas de auditoria como fonte para o QuickSight. O Step Functions continua sendo o cérebro da esteira: ele executa, lê resultado, registra e decide. O Athena continua sendo a engine SQL: ele materializa modelos e grava auditoria via `INSERT INTO`. E o QuickSight entra como a camada de observabilidade, lendo `tb_execucao_modelo` e `tb_resultado_teste` — de preferência por meio de views semânticas — para mostrar status da pipeline, quantidade de erros, warnings, falhas por modelo e histórico das execuções.
+
+Se você quiser, no próximo passo eu posso transformar **essa nota inteira** em uma **nota estilo Obsidian**, bem bonita e organizada, já com:
+
+- seções estáveis
+    
+- exemplos SQL
+    
+- views para QuickSight
+    
+- sugestão de layout do dashboard
+    
+- blocos prontos para colar no seu vault.
