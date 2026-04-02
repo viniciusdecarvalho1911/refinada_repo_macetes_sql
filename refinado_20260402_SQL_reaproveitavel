@@ -1,0 +1,1059 @@
+## Objetivo
+
+Criar um padrão em que SQL deixe de ser “consulta solta” e passe a ser:
+
+- reutilizável
+    
+- auditável
+    
+- fácil de entender
+    
+- fácil de manter
+    
+- fácil de documentar
+    
+- fácil de transformar em view, tabela ou pipeline
+    
+
+---
+
+## Ideia central
+
+> Você não escreve query só para responder uma pergunta.  
+> Você escreve **ativos de dados** que podem ser reutilizados depois.
+
+No jeito dbt de pensar, um projeto de dados é organizado em:
+
+- **sources**
+    
+- **models**
+    
+- **tests**
+    
+- **docs**
+    
+- **DAG de dependências**
+    
+
+No Athena sem dbt, o equivalente prático fica assim:
+
+- **sources** → tabelas raw / bronze / views base
+    
+- **models** → views e tabelas nomeadas corretamente
+    
+- **tests** → queries de teste + tabela de auditoria
+    
+- **docs** → notas no Obsidian
+    
+- **DAG** → Step Functions + dependências documentadas
+    
+
+---
+
+## 1. Princípios do framework
+
+### 1.1 Regra-mãe
+
+> Se a lógica apareceu mais de uma vez, ela é candidata a virar ativo reutilizável.
+
+### 1.2 Regras imutáveis
+
+1. Cada query longa deve ser modular.
+    
+2. Cada CTE deve ter uma responsabilidade principal.
+    
+3. Toda regra de negócio importante deve ser explícita.
+    
+4. Toda lógica recorrente deve sair da query final.
+    
+5. Toda saída importante deve ter teste.
+    
+6. Nenhuma métrica crítica deve viver só no BI.
+    
+7. Se uma query virou “um sistema”, ela não deveria continuar sendo só uma query.
+    
+
+---
+
+## 2. O que é SQL reaproveitável
+
+SQL reaproveitável é SQL escrito de forma que você consiga:
+
+- reutilizar blocos
+    
+- substituir partes sem quebrar tudo
+    
+- entender o fluxo lendo de cima para baixo
+    
+- promover lógica para view ou tabela quando necessário
+    
+- transformar regra repetida em ativo oficial
+    
+
+### Mentalidade correta
+
+Errado:
+
+- “vou escrever uma query para resolver isso”
+    
+
+Certo:
+
+- “vou construir uma peça reutilizável dentro de um sistema de dados”
+    
+
+---
+
+## 3. Diferença entre CTE, view e tabela
+
+### CTE
+
+Use quando:
+
+- a lógica serve só para aquela query
+    
+- você quer organizar o raciocínio
+    
+- você quer deixar a query legível
+    
+- você quer facilitar debug
+    
+
+### View
+
+Use quando:
+
+- a lógica aparece em várias queries
+    
+- você quer centralizar joins e regras estáveis
+    
+- você quer esconder complexidade
+    
+- o custo de recalcular ainda é aceitável
+    
+
+### Tabela materializada
+
+Use quando:
+
+- a lógica é cara
+    
+- roda com frequência
+    
+- serve muita gente
+    
+- é base de dashboard
+    
+- precisa congelar um estado
+    
+- virou base oficial
+    
+
+### Regra de bolso
+
+- **CTE = organização local**
+    
+- **VIEW = reutilização lógica**
+    
+- **TABELA = performance e persistência**
+    
+
+---
+
+## 4. Camadas oficiais do modelo
+
+Usando o sistema de naming oficial, a arquitetura combina:
+
+- Medallion
+    
+- função lógica
+    
+- tipo de materialização
+    
+
+### Fluxo esperado
+
+```text
+bronze_fonte → silver_padronizado → silver_integrado → gold
+```
+
+### Interpretação prática
+
+#### Bronze
+
+Dado bruto, mais próximo da origem.
+
+Exemplo:
+
+```text
+tabela_bronze_fonte_sap_boletos
+```
+
+#### Silver padronizado
+
+Camada técnica de staging/padronização.
+
+Use para:
+
+- ajuste de tipos
+    
+- renomeação
+    
+- limpeza
+    
+- colunas técnicas comuns
+    
+- exposição da partição física
+    
+- harmonização mínima
+    
+
+Exemplo:
+
+```text
+view_silver_padronizado_cobranca_boletos
+```
+
+#### Silver integrado
+
+Camada de integração e enriquecimento.
+
+Use para:
+
+- junções
+    
+- deduplicação
+    
+- enriquecimento
+    
+- consolidação entre fontes
+    
+- entidades preparatórias
+    
+
+Exemplo:
+
+```text
+view_silver_integrado_cobranca_pagamentos_conciliados
+```
+
+#### Gold
+
+Camada analítica e semântica.
+
+Pode conter:
+
+- dimensão
+    
+- fato
+    
+- agregado
+    
+- mart
+    
+
+Exemplos:
+
+```text
+iceberg_gold_dimensao_escritorio
+iceberg_gold_fato_pagadoria
+tabela_gold_agregado_pagadoria_mensal
+view_gold_mart_cobranca_pagadoria_quicksight
+```
+
+---
+
+## 5. Regra oficial de naming
+
+### Estrutura geral
+
+```text
+<materializacao>_<camada>_<tipo_logico>_<dominio>_<entidade>[_<contexto>]
+```
+
+### Exemplos válidos
+
+```text
+tabela_bronze_fonte_sap_boletos
+view_silver_padronizado_cobranca_boletos
+view_silver_integrado_cobranca_pagamentos_conciliados
+iceberg_gold_fato_pagadoria
+view_gold_mart_cobranca_pagadoria_quicksight
+```
+
+### Como interpretar o nome
+
+#### materialização
+
+- `view`
+    
+- `tabela`
+    
+- `iceberg`
+    
+
+#### camada
+
+- `bronze`
+    
+- `silver`
+    
+- `gold`
+    
+
+#### tipo lógico
+
+- `fonte`
+    
+- `padronizado`
+    
+- `integrado`
+    
+- `dimensao`
+    
+- `fato`
+    
+- `agregado`
+    
+- `mart`
+    
+
+#### domínio
+
+- `cobranca`
+    
+- `juridico`
+    
+- `financeiro`
+    
+
+#### entidade
+
+- `boletos`
+    
+- `pagamentos_conciliados`
+    
+- `pagadoria`
+    
+
+#### contexto opcional
+
+- `mensal`
+    
+- `quicksight`
+    
+- `executivo`
+    
+
+---
+
+## 6. Estrutura padrão de uma query reutilizável
+
+Toda query relevante deve seguir um esqueleto estável.
+
+```sql
+WITH parametros AS (...),
+
+base_principal AS (...),
+
+satelite_1 AS (...),
+satelite_2 AS (...),
+
+enriquecimento AS (...),
+
+regras_negocio AS (...),
+
+agregacao AS (...)
+
+SELECT *
+FROM agregacao
+```
+
+### Interpretação para júnior
+
+#### `parametros`
+
+Centraliza tudo que muda com frequência.  
+Exemplo:
+
+- mês
+    
+- data inicial
+    
+- data final
+    
+- partição alvo
+    
+
+#### `base_principal`
+
+Define a base principal da análise.  
+É onde o grão começa a ficar claro.
+
+#### `satelite_*`
+
+Trazem fontes auxiliares.  
+Exemplo:
+
+- proposta
+    
+- meta
+    
+- gate
+    
+- flags
+    
+
+#### `enriquecimento`
+
+É onde você junta as peças.
+
+#### `regras_negocio`
+
+Aplica regras explícitas de negócio.
+
+#### `agregacao`
+
+Só aqui você resume, se precisar.
+
+---
+
+## 7. Regra de ouro para CTEs
+
+### Um CTE = uma responsabilidade
+
+Bom:
+
+- `boletos_validos`
+    
+- `pagamentos_deduplicados`
+    
+- `carteira_filtrada`
+    
+- `resumo_escritorio_mes`
+    
+
+Ruim:
+
+- CTE que limpa, deduplica, junta, classifica e agrega ao mesmo tempo
+    
+
+### Regra de narrabilidade
+
+Você deveria conseguir ler sua query e dizer:
+
+1. pego a base
+    
+2. deduplico
+    
+3. junto com carteira
+    
+4. aplico regra
+    
+5. agrego
+    
+
+Se não consegue narrar, a query está confusa.
+
+---
+
+## 8. O que vai para bloco, view e tabela
+
+### Bloco SQL
+
+É uma função mental reutilizável.
+
+Exemplos:
+
+- regra de desconto
+    
+- join de pagamentos
+    
+- filtro de elegibilidade
+    
+- cálculo de regul
+    
+
+### View base
+
+Use para:
+
+- padronização
+    
+- tipagem
+    
+- exposição de chaves
+    
+- preservação de partição
+    
+- interface estável da origem
+    
+
+### View semântica / integrada
+
+Use para:
+
+- joins recorrentes
+    
+- regra intermediária
+    
+- entidades de negócio reutilizáveis
+    
+
+### Tabela gold
+
+Use para:
+
+- lógica oficial
+    
+- performance
+    
+- consumo amplo
+    
+- QuickSight
+    
+- fechamento
+    
+- base confiável do domínio
+    
+
+---
+
+## 9. Boas práticas específicas de Athena
+
+### 9.1 Views não materializam
+
+Views no Athena são camada lógica.  
+Elas recalculam sempre.  
+Então:
+
+- boas para lógica
+    
+- ruins para cargas pesadas frequentes
+    
+
+### 9.2 Use CTAS e INSERT INTO para ETL
+
+Athena suporta **CTAS** e **INSERT INTO** como padrão prático de ETL/materialização
+
+### 9.3 Preserve partições na camada base
+
+Toda `view_silver_padronizado_*` importante deve expor:
+
+- coluna física de partição
+    
+- chaves de join
+    
+- colunas de negócio cruas
+    
+
+### 9.4 Não esconda a partição
+
+Em tabela Hive particionada, a view deve quase sempre expor a partição original.  
+Se você esconder essa coluna, perde a forma mais segura de garantir pruning
+
+### 9.5 Não aplique função na partição no WHERE
+
+Anti-patterns clássicos:
+
+```sql
+WHERE cast(anomes as varchar) = '202602'
+WHERE substr(dt_foto, 1, 6) = '202602'
+WHERE date_trunc('month', dt_pagamento) = DATE '2026-02-01'
+```
+
+Melhor:
+
+```sql
+WHERE p_anomes = 202602
+WHERE p_dt_foto BETWEEN 20260201 AND 20260229
+```
+
+### 9.6 Não agregue cedo demais
+
+Se você agrega antes, pode perder a partição e o grão.
+
+Errado:
+
+```sql
+CREATE VIEW vw_fluxo_mensal AS
+SELECT escritorio, SUM(vl_pago) AS vl_pago
+FROM pagamentos
+GROUP BY 1
+```
+
+Depois você não consegue mais filtrar `anomes`.
+
+Melhor:
+
+- preserve o detalhe na base
+    
+- filtre primeiro
+    
+- agregue no consumo
+    
+
+### 9.7 Valide com EXPLAIN
+
+Toda view crítica deveria ter teste de pruning com `EXPLAIN`
+
+---
+
+## 10. Padrão temporal recomendado
+
+Quando há partições em formatos diferentes, use dois níveis:
+
+### 1. Coluna física de pruning
+
+Exemplos:
+
+- `p_anomes`
+    
+- `p_dt_ref`
+    
+- `p_dt_foto`
+    
+- `p_event_date`
+    
+
+### 2. Coluna canônica de negócio
+
+Exemplos:
+
+- `mes_ref_yyyymm`
+    
+- `dt_ref_yyyymmdd`
+    
+- `dt_ref_date`
+    
+- `ts_ref`
+    
+
+### Regra
+
+- use a coluna física para performance
+    
+- use a canônica para joins e regra de negócio
+    
+
+Isso evita bagunça e preserva pruning.
+
+---
+
+## 11. Estrutura de projeto “dbt-like” no Athena
+
+### Equivalência mental
+
+#### dbt
+
+- `source()`
+    
+- `ref()`
+    
+- models
+    
+- tests
+    
+- docs
+    
+- DAG
+    
+
+#### Athena sem dbt
+
+- `view_silver_padronizado_*`
+    
+- dependência documentada + Step Functions
+    
+- `view_*` / `tabela_*` / `iceberg_*`
+    
+- queries de teste + tabela de auditoria
+    
+- Obsidian
+    
+- pipeline orquestrado
+    
+
+### Estrutura sugerida de pastas no Obsidian
+
+```text
+SQL/
+├── 00_index/
+│   └── biblioteca_sql.md
+├── 01_base/
+├── 02_join/
+├── 03_regra_negocio/
+├── 04_metrica/
+├── 05_modelo/
+├── 06_pipeline/
+├── 07_template/
+```
+
+---
+
+## 12. Framework de testes
+
+Todo ativo importante precisa de teste.
+
+### Testes mais comuns
+
+- not null
+    
+- unicidade
+    
+- accepted values
+    
+- relationships
+    
+- duplicidade funcional
+    
+- range
+    
+- reconciliação
+    
+
+### Tabela mínima de auditoria
+
+```sql
+CREATE TABLE ctrl.tb_resultado_teste (
+    id_execucao      varchar,
+    nm_teste         varchar,
+    nm_modelo        varchar,
+    severidade       varchar,
+    qtd_erros        bigint,
+    fl_aprovado      boolean,
+    dt_execucao      timestamp
+)
+```
+
+### Severidade
+
+- `FATAL` → quebra pipeline
+    
+- `ERROR` → alerta forte / possível bloqueio
+    
+- `WARN` → registra e segue
+    
+- `INFO` → monitoramento
+    
+
+### Regra operacional
+
+Todo teste deve devolver um número:
+
+- `0` = passou
+    
+- `> 0` = falhou
+    
+
+---
+
+## 13. Orquestração com Step Functions
+
+No seu cenário, Step Functions deve:
+
+1. rodar base
+    
+2. rodar semântica
+    
+3. rodar gold
+    
+4. rodar testes
+    
+5. avaliar severidade
+    
+6. publicar consumo
+    
+
+### Papel do Step Functions
+
+Ele não deve “pensar a regra”.  
+Ele deve orquestrar.
+
+A regra ideal fica no SQL; o Step Functions lê o resultado e decide o fluxo.
+
+---
+
+## 14. Regras de materialização
+
+### Promova para tabela quando:
+
+- a query é cara demais
+    
+- roda com frequência
+    
+- serve muita gente
+    
+- precisa congelar um estado
+    
+- é insumo de dashboard
+    
+- é base oficial
+    
+
+### Regra-mãe
+
+> materializar = transformar lógica recorrente em tabela Iceberg controlada por SQL e orquestrada por Step Functions
+
+---
+
+## 15. Checklist de qualidade de query
+
+Use antes de considerar uma query “boa”.
+
+```text
+[ ] O grão final está claro?
+[ ] Cada CTE tem função clara?
+[ ] Há risco de multiplicação em joins?
+[ ] Há regra repetida que deveria virar view ou tabela?
+[ ] Há CASE WHEN grande demais?
+[ ] A query está longa demais para revisar bem?
+[ ] Essa lógica será reutilizada?
+[ ] Vale materializar?
+[ ] A partição está preservada?
+[ ] O WHERE evita funções na partição?
+[ ] Existe teste associado?
+[ ] O nome segue o padrão oficial?
+```
+
+---
+
+## 16. Template de nota Obsidian para modelo
+
+````markdown
+---
+tipo: modelo
+camada: semantica
+materializacao: view
+dominio: cobranca
+status: ativo
+---
+
+# view_silver_integrado_cobranca_pagamentos_conciliados
+
+## 🎯 Objetivo
+Consolidar eventos de pagamento de múltiplas origens em uma entidade reutilizável.
+
+## 📊 Grão
+contrato + produto + dt_pagamento + vl_pago
+
+## 🧠 O que esta camada faz
+- une boleto, débito e backoffice
+- deduplica por prioridade de origem
+- preserva partição e chaves
+
+## 🔗 Dependências
+- [[view_silver_padronizado_cobranca_boletos]]
+- [[view_silver_padronizado_cobranca_debito_conta]]
+- [[view_silver_padronizado_cobranca_fluxo_apartado]]
+- [[regra_deduplicacao_pagamentos]]
+
+## 🧪 Testes
+- not null origem_pagamento
+- accepted values origem_pagamento
+- duplicidade funcional da chave do pagamento
+
+## ⚠️ Cuidados
+- não esconder coluna física de partição
+- não usar função na partição no WHERE externo
+- revisar chave funcional de deduplicação
+
+## 💻 SQL
+```sql
+-- colocar aqui o SQL oficial
+````
+
+## 📊 Consumo
+
+- [[iceberg_gold_fato_pagadoria]]
+    
+- [[view_gold_mart_cobranca_pagadoria_quicksight]]
+    
+
+````
+
+---
+
+## 17. Template de nota Obsidian para bloco SQL
+
+```markdown
+---
+tipo: sql_bloco
+categoria: regra_negocio
+dominio: cobranca
+reutilizavel: true
+status: ativo
+---
+
+# regra_calculo_regul
+
+## 🎯 O que faz
+Calcula regul a partir do tipo de acordo, saldo gerencial e desconto final.
+
+## 📥 Inputs
+- tp_acordo
+- vl_saldo_gerencial
+- perc_desconto_final
+
+## 📤 Outputs
+- vl_regul
+
+## 🧠 Regra
+Se o acordo for à vista, regul = 0.
+Caso contrário, regul = saldo gerencial - (saldo gerencial * desconto).
+
+## 💻 SQL
+```sql
+CASE
+    WHEN upper(coalesce(tp_acordo, '')) IN ('AVISTA', 'A VISTA', 'A_VISTA')
+        THEN 0
+    ELSE vl_saldo_gerencial - (vl_saldo_gerencial * perc_desconto_final)
+END AS vl_regul
+````
+
+## 🔗 Usado em
+
+- [[view_silver_integrado_cobranca_pagamentos_conciliados]]
+    
+- [[iceberg_gold_fato_pagadoria]]
+    
+
+````
+
+---
+
+## 18. Template de nota Obsidian para pipeline
+
+```markdown
+---
+tipo: pipeline
+dominio: cobranca
+status: ativo
+---
+
+# pipeline_cobranca_pagadoria
+
+## 🎯 Objetivo
+Construir a base oficial de pagadoria a partir das fontes de pagamento e carteira.
+
+## 🔄 Fluxo
+1. bronze fonte
+2. silver padronizado
+3. silver integrado
+4. gold fato
+5. gold mart
+6. testes
+7. publicação
+
+## 🧠 Regras principais
+- excluir colchão
+- excluir vijud inicial
+- deduplicar pagamentos
+- priorizar desconto do boleto
+- aplicar caixa vs regul
+
+## 🧪 Testes obrigatórios
+- grain
+- not null
+- accepted values
+- range
+- reconciliação
+
+## ⚙️ Orquestração
+Step Functions + Athena
+
+## 📊 Saídas
+- [[iceberg_gold_fato_pagadoria]]
+- [[view_gold_mart_cobranca_pagadoria_quicksight]]
+````
+
+---
+
+## 19. Exemplo simples de fluxo completo
+
+```text
+tabela_bronze_fonte_sap_boletos
+    ↓
+view_silver_padronizado_cobranca_boletos
+    ↓
+view_silver_integrado_cobranca_pagamentos_conciliados
+    ↓
+iceberg_gold_fato_pagadoria
+    ↓
+view_gold_mart_cobranca_pagadoria_quicksight
+```
+
+Esse fluxo está totalmente alinhado com o padrão de naming e arquitetura definido no arquivo oficial.
+
+---
+
+## 20. Frases para fixar
+
+### Frase 1
+
+> Query longa boa é query narrável.
+
+### Frase 2
+
+> Se a lógica apareceu duas vezes, ela é candidata a virar ativo.
+
+### Frase 3
+
+> View boa no Athena é view semântica, não view que mascara a física.
+
+### Frase 4
+
+> Se virou crítica, vira tabela.  
+> Se virou tabela, precisa de teste.
+
+### Frase 5
+
+> Você não escreve queries.  
+> Você constrói um sistema de dados.
+
+---
+
+## 21. Resumo final para júnior
+
+Se você estiver começando, pensa assim:
+
+1. descubra o grão da análise
+    
+2. separe a query em blocos
+    
+3. preserve a partição na base
+    
+4. promova joins repetidos para views
+    
+5. promova lógica cara e recorrente para tabela
+    
+6. teste tudo que for importante
+    
+7. documente o modelo no Obsidian
+    
+8. siga o naming oficial desde o começo
+    
+
+---
+
+## 22. Nome sugerido para esta nota
+
+```text
+DEC-001 — Framework de SQL Reaproveitável no Athena (dbt-like)
+```
+
+ou, se quiser seguir mais o naming técnico:
+
+```text
+framework_sql_reaproveitavel_athena_dbt_like
+```
+
+Se você quiser, eu posso transformar isso em uma **versão ainda mais “pronta para colar” no Obsidian**, com:
+
+- frontmatter completo
+    
+- callouts
+    
+- blocos de templates separados
+    
+- e uma seção final com **exemplos reais de nomes** já no padrão do seu domínio de cobrança.
