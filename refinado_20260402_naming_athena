@@ -1,0 +1,437 @@
+
+
+> [!info]
+> Este documento define o **padrão oficial de naming e organização de dados** baseado em:
+> - [[Medallion Architecture]]
+> - [[Analytics Engineering]]
+> - [[Amazon Athena]]
+> - [[AWS Glue]]
+> - [[AWS Step Functions]]
+
+---
+
+# 🎯 Objetivo
+
+Criar um **contrato organizacional para dados analíticos**.
+
+Isso resolve:
+
+- SQL espalhado
+- duplicação de regra
+- falta de padrão
+- baixa confiança
+- dificuldade de lineage
+- dependência de pessoas
+
+---
+
+# 🧠 Princípio estrutural
+
+A arquitetura combina 3 dimensões:
+
+## 1. Medallion (maturidade do dado)
+
+- `bronze` → dado bruto
+- `silver` → dado tratado
+- `gold` → dado analítico
+
+---
+
+## 2. Analytics Engineering (função lógica)
+
+- `fonte`
+- `padronizado`
+- `integrado`
+- `dimensao`
+- `fato`
+- `agregado`
+- `mart`
+
+---
+
+## 3. Materialização (tipo físico)
+
+- `iceberg`
+- `tabela`
+- `view`
+
+---
+
+# 🧩 Regra geral de naming
+
+```text
+<materializacao>_<camada>_<tipo_logico>_<dominio>_<entidade>[_<contexto>]
+````
+
+## Exemplos
+
+```text
+tabela_bronze_fonte_sap_boletos
+view_silver_padronizado_cobranca_boletos
+view_silver_integrado_cobranca_pagamentos_conciliados
+iceberg_gold_fato_pagadoria
+view_gold_mart_cobranca_pagadoria_executivo
+```
+
+---
+
+# 🔄 Fluxo arquitetural
+
+> [!important]  
+> Este é o fluxo oficial e esperado
+
+```text
+bronze_fonte → silver_padronizado → silver_integrado → gold
+```
+
+## Exemplo real
+
+```text
+tabela_bronze_fonte_sap_boletos
+    ↓
+view_silver_padronizado_cobranca_boletos
+    ↓
+view_silver_integrado_cobranca_pagamentos_conciliados
+    ↓
+iceberg_gold_fato_pagadoria
+```
+
+---
+
+# 🧱 Definição das camadas
+
+## 🟤 Bronze - Fonte 
+
+Bronze representa dado mais próximo da origem.
+
+### **Tipo lógico recomendado**
+
+Usar:
+- `fonte`
+- ou `origem`
+
+### Padrão principal
+
+```text
+ <materializacao>_bronze_fonte_<sistema>_<entidade>
+```
+
+### Exemplos
+```text
+tabela_bronze_fonte_sap_boletos  
+tabela_bronze_fonte_salesforce_contratos  
+tabela_bronze_fonte_legado_clientes  
+tabela_bronze_fonte_excel_pagadoria_recebido
+```
+
+### Uso esperado
+
+Camada de entrada, com pouca ou nenhuma transformação.
+
+Aqui o nome deve comunicar:
+
+- de onde veio
+- o que é
+- sem prometer modelagem analítica
+
+---
+
+## 🔵 Silver — Padronizado (≈ stg)
+
+> [!tip]  
+> Aqui você cria o **contrato técnico do dado**
+
+
+### **Usado para:**
+
+- ajuste de tipos
+- renomeação de colunas
+- limpeza
+- padronização estrutural
+- colunas técnicas comuns
+- harmonização mínima entre fontes
+    
+### **Padrão**:
+
+```text
+<materializacao>_silver_padronizado_<dominio>_<entidade>
+```
+
+### **Exemplos**
+
+
+```text
+view_silver_padronizado_cobranca_boletos  
+view_silver_padronizado_cobranca_contratos  
+view_silver_padronizado_juridico_processos
+```
+---
+
+## 🟢 Silver — Integrado (≈ int)
+
+Usado para:
+
+- junções
+- enriquecimento
+- deduplicação
+- regra intermediária
+- consolidação entre fontes
+- entidades preparatórias para a camada analítica
+
+### Padrão
+
+```text
+<materializacao>_silver_integrado_<dominio>_<regra_ou_entidade>
+```
+
+#### Exemplos
+
+```text
+view_silver_integrado_cobranca_pagamentos_conciliados  
+view_silver_integrado_cobranca_boletos_enriquecidos  
+view_silver_integrado_cobranca_contrato_escritorio_atual
+```
+> [!tip]  
+> Aqui você transforma dado em **informação reutilizável**
+
+
+### 🔗 **Regra crítica de dependência**
+
+> [!danger]  
+> **Silver integrado deve SEMPRE depender de silver padronizado**
+
+---
+
+## 🟡 Gold — Analítico
+
+Gold representa a camada analítica e semântica.
+
+Aqui os tipos lógicos mais importantes são:
+
+- `dimensao`
+- `fato`
+- `agregado`
+- `mart`
+
+---
+
+### **Gold dimensão**
+
+Usado para contexto descritivo.
+
+#### Padrão
+```text
+<materializacao>_gold_dimensao_<entidade>
+```
+
+#### Exemplos
+```text
+iceberg_gold_dimensao_cliente  
+iceberg_gold_dimensao_escritorio  
+iceberg_gold_dimensao_data
+```
+---
+
+### **Gold fato**
+
+Usado para processos de negócio e medidas.
+
+#### Padrão
+```text
+<materializacao>_gold_fato_<processo>
+```
+#### Exemplos
+```text
+iceberg_gold_fato_pagadoria  
+iceberg_gold_fato_recebimento  
+iceberg_gold_fato_acordo
+```
+---
+
+### **Gold agregado**
+
+Usado para sumarizações com granularidade explícita.
+
+#### Padrão
+```text
+<materializacao>_gold_agregado_<processo>_<granularidade>
+```
+#### Exemplos
+```text
+tabela_gold_agregado_pagadoria_mensal  
+tabela_gold_agregado_recebimento_por_escritorio  
+tabela_gold_agregado_eficiencia_diaria
+```
+---
+
+### **Gold mart**
+
+Usado para consumo final, normalmente por BI, painéis ou públicos específicos.
+
+#### Padrão
+```text
+<materializacao>_gold_mart_<dominio>_<uso>
+```
+
+#### Exemplos
+```text
+view_gold_mart_cobranca_pagadoria_executivo  
+view_gold_mart_cobranca_pagadoria_quicksight  
+view_gold_mart_financeiro_fechamento_gerencial
+```
+---
+
+# 💥 Por que isso é crítico
+
+## 1. Evita duplicação
+
+Sem padronizado:
+
+- cada modelo limpa dados sozinho
+    
+- inconsistência inevitável
+    
+
+---
+
+## 2. Garante consistência
+
+```text
+view_silver_padronizado_cobranca_boletos
+```
+
+→ única fonte confiável
+
+---
+
+## 3. Facilita manutenção
+
+Mudou a origem?
+
+→ corrige só no padronizado
+
+---
+
+## 4. Cria lineage claro
+
+```text
+bronze → padronizado → integrado → gold
+```
+
+
+
+---
+
+# 🧪 Exemplo completo
+
+## Padronizado
+
+```sql
+-- view_silver_padronizado_cobranca_boletos
+SELECT
+  id_contrato,
+  CAST(valor AS DECIMAL(18,2)) AS valor,
+  data_pagamento
+FROM tabela_bronze_fonte_sap_boletos
+```
+
+---
+
+## Integrado
+
+```sql
+-- view_silver_integrado_cobranca_pagamentos_conciliados
+SELECT
+  b.id_contrato,
+  SUM(b.valor) AS total_pago
+FROM view_silver_padronizado_cobranca_boletos b
+GROUP BY 1
+```
+
+---
+
+# ⚙️ Materialização
+
+## Quando usar
+
+- `iceberg` → tabelas principais (fato/dimensão)
+    
+- `tabela` → agregados/intermediários
+    
+- `view` → transformação leve / consumo
+    
+
+---
+
+# 🔁 Pipelines
+
+```text
+pipeline_<dominio>_<processo>
+```
+
+## Execução
+
+```text
+execucao_<pipeline>_<data>
+```
+
+---
+
+# 🧪 Testes
+
+```text
+teste_<modelo>_<regra>
+```
+
+---
+
+# 📊 Métricas
+
+```text
+metrica_<assunto>_<granularidade>
+```
+
+---
+
+# 🔍 Auditoria
+
+```text
+auditoria_<assunto>
+```
+
+---
+
+# 🚨 Anti-patterns
+
+- usar bronze diretamente no integrado
+    
+- misturar limpeza com regra
+    
+- duplicar regra em múltiplos lugares
+    
+- nomes genéricos (`final`, `v2`, `ajustado`)
+    
+
+---
+
+# 🧠 Visão sênior
+
+> [!quote]  
+> O objetivo não é organizar tabelas.
+> 
+> É transformar SQL em um sistema confiável, modular e escalável.
+
+---
+
+# 🚀 Próximos passos
+
+- [[Tabela mestre de naming]]
+    
+- [[Padrão de SQL por camada]]
+    
+- [[Checklist de code review]]
+    
+- [[Framework de testes]]
+    
+- [[Orquestração com Step Functions]]
+    
