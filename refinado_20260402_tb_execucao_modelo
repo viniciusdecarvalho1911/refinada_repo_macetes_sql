@@ -1,0 +1,506 @@
+A `ctrl.tb_execucao_modelo` é alimentada pelo **próprio Step Functions**.
+
+Em termos simples:
+
+- o Step Functions começa a executar um modelo
+    
+- ele grava uma linha de “início”
+    
+- roda a query do modelo no Athena
+    
+- se der certo, grava “sucesso”
+    
+- se der erro, grava “erro”
+    
+
+Ou seja, essa tabela não nasce “automaticamente” do Athena nem do QuickSight.  
+Ela é uma **tabela de auditoria operacional** que você popula com `INSERT INTO` e, se quiser, com `UPDATE` ou com um padrão de “duas linhas por evento”.
+
+# Visão mental simples
+
+Pense assim:
+
+## `tb_execucao_modelo`
+
+responde:
+
+- qual modelo tentou rodar?
+    
+- quando começou?
+    
+- quando terminou?
+    
+- deu certo ou deu erro?
+    
+- qual foi a mensagem de erro?
+    
+
+Então quem sabe isso em tempo real é o **Step Functions**, porque ele está orquestrando o fluxo.
+
+# Quem alimenta cada tabela
+
+## `ctrl.tb_execucao_modelo`
+
+alimentada pelo **Step Functions durante a execução do modelo**
+
+## `ctrl.tb_resultado_teste`
+
+alimentada pelo **Step Functions durante a execução dos testes**
+
+---
+
+# Como o fluxo funciona na prática
+
+Vamos imaginar o modelo:
+
+```text
+fct_pagadoria
+```
+
+O Step Functions faria algo assim:
+
+```text
+1. Registrar início do modelo
+2. Executar query Athena do modelo
+3. Se sucesso, registrar sucesso
+4. Se erro técnico, registrar erro
+```
+
+# Forma 1 — mais simples para iniciante: um `INSERT` no início e um `INSERT` no fim
+
+Esse é o jeito mais fácil de entender e implementar.
+
+## Vantagem
+
+Muito simples.
+
+## Desvantagem
+
+Você terá mais de uma linha por modelo por execução.
+
+Exemplo:
+
+### no início
+
+```sql
+INSERT INTO ctrl.tb_execucao_modelo
+VALUES (
+  'exec_123',
+  'fct_pagadoria',
+  'mart',
+  'workspace_db.fct_pagadoria',
+  'table_ctas',
+  current_timestamp,
+  null,
+  'RUNNING',
+  null
+)
+```
+
+### no fim com sucesso
+
+```sql
+INSERT INTO ctrl.tb_execucao_modelo
+VALUES (
+  'exec_123',
+  'fct_pagadoria',
+  'mart',
+  'workspace_db.fct_pagadoria',
+  'table_ctas',
+  null,
+  current_timestamp,
+  'SUCCESS',
+  null
+)
+```
+
+### no fim com erro
+
+```sql
+INSERT INTO ctrl.tb_execucao_modelo
+VALUES (
+  'exec_123',
+  'fct_pagadoria',
+  'mart',
+  'workspace_db.fct_pagadoria',
+  'table_ctas',
+  null,
+  current_timestamp,
+  'ERROR',
+  'Falha ao executar CTAS'
+)
+```
+
+Esse modelo é fácil, mas fica pior para consultar.
+
+---
+
+# Forma 2 — melhor para operar: uma linha por modelo por execução
+
+Essa costuma ser a melhor.
+
+Fluxo:
+
+## 1. no início: `INSERT`
+
+Cria a linha com `RUNNING`
+
+## 2. no fim: `UPDATE`
+
+Atualiza a mesma linha para `SUCCESS` ou `ERROR`
+
+---
+
+# Exemplo prático do fluxo ideal
+
+## Etapa 1 — registrar início
+
+Quando o Step Functions vai começar a rodar um modelo, ele chama um estado Athena com algo como:
+
+```sql
+INSERT INTO ctrl.tb_execucao_modelo
+VALUES (
+  'exec_123',
+  'fct_pagadoria',
+  'mart',
+  'workspace_db.fct_pagadoria',
+  'table_ctas',
+  current_timestamp,
+  null,
+  'RUNNING',
+  null
+)
+```
+
+Isso quer dizer:
+
+- essa execução começou
+    
+- esse modelo está em andamento
+    
+
+---
+
+## Etapa 2 — rodar o modelo
+
+Depois ele roda a query real do modelo:
+
+```sql
+CREATE TABLE workspace_db.fct_pagadoria AS
+SELECT ...
+```
+
+ou
+
+```sql
+CREATE OR REPLACE VIEW ...
+```
+
+ou
+
+```sql
+INSERT INTO iceberg_table ...
+```
+
+---
+
+## Etapa 3A — se deu certo
+
+O Step Functions executa:
+
+```sql
+UPDATE ctrl.tb_execucao_modelo
+SET
+    dt_fim = current_timestamp,
+    status_modelo = 'SUCCESS',
+    mensagem_erro = null
+WHERE id_execucao = 'exec_123'
+  AND nm_modelo = 'fct_pagadoria'
+```
+
+---
+
+## Etapa 3B — se deu erro
+
+Se a query falhar tecnicamente, o `Catch` do Step Functions manda para um estado que executa:
+
+```sql
+UPDATE ctrl.tb_execucao_modelo
+SET
+    dt_fim = current_timestamp,
+    status_modelo = 'ERROR',
+    mensagem_erro = 'Falha tecnica ao executar modelo'
+WHERE id_execucao = 'exec_123'
+  AND nm_modelo = 'fct_pagadoria'
+```
+
+---
+
+# Então, resumindo bem direto
+
+A `ctrl.tb_execucao_modelo` é alimentada por **estados auxiliares do Step Functions**, normalmente em 3 momentos:
+
+## antes de executar o modelo
+
+grava `RUNNING`
+
+## depois da execução bem-sucedida
+
+grava ou atualiza para `SUCCESS`
+
+## se a execução falhar
+
+grava ou atualiza para `ERROR`
+
+---
+
+# Como isso fica dentro do Step Functions
+
+Mentalmente:
+
+```text
+RegistrarInicioModelo
+   ↓
+ExecutarModeloAthena
+   ├─ sucesso → RegistrarSucessoModelo
+   └─ erro    → RegistrarErroModelo
+```
+
+---
+
+# Exemplo didático em ASL
+
+## 1. registrar início
+
+```json
+"RegistrarInicioFctPagadoria": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+  "Arguments": {
+    "QueryString.$": "States.Format('INSERT INTO ctrl.tb_execucao_modelo VALUES (''{}'',''{}'',''{}'',''{}'',''{}'',current_timestamp,null,''RUNNING'',null)', $.id_execucao, 'fct_pagadoria', 'mart', 'workspace_db.fct_pagadoria', 'table_ctas')",
+    "WorkGroup.$": "$.workgroup",
+    "ResultConfiguration": {
+      "OutputLocation.$": "$.output_location"
+    }
+  },
+  "Next": "ExecutarFctPagadoria"
+}
+```
+
+---
+
+## 2. executar o modelo
+
+```json
+"ExecutarFctPagadoria": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+  "Arguments": {
+    "QueryString": "CREATE TABLE workspace_db.fct_pagadoria AS SELECT ...",
+    "WorkGroup.$": "$.workgroup",
+    "ResultConfiguration": {
+      "OutputLocation.$": "$.output_location"
+    }
+  },
+  "Catch": [
+    {
+      "ErrorEquals": ["States.ALL"],
+      "ResultPath": "$.erro_modelo",
+      "Next": "RegistrarErroFctPagadoria"
+    }
+  ],
+  "Next": "RegistrarSucessoFctPagadoria"
+}
+```
+
+---
+
+## 3. registrar sucesso
+
+```json
+"RegistrarSucessoFctPagadoria": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+  "Arguments": {
+    "QueryString.$": "States.Format('UPDATE ctrl.tb_execucao_modelo SET dt_fim = current_timestamp, status_modelo = ''SUCCESS'', mensagem_erro = null WHERE id_execucao = ''{}'' AND nm_modelo = ''{}''', $.id_execucao, 'fct_pagadoria')",
+    "WorkGroup.$": "$.workgroup",
+    "ResultConfiguration": {
+      "OutputLocation.$": "$.output_location"
+    }
+  },
+  "Next": "ProximoEstado"
+}
+```
+
+---
+
+## 4. registrar erro
+
+```json
+"RegistrarErroFctPagadoria": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+  "Arguments": {
+    "QueryString.$": "States.Format('UPDATE ctrl.tb_execucao_modelo SET dt_fim = current_timestamp, status_modelo = ''ERROR'', mensagem_erro = ''Falha tecnica ao executar modelo'' WHERE id_execucao = ''{}'' AND nm_modelo = ''{}''', $.id_execucao, 'fct_pagadoria')",
+    "WorkGroup.$": "$.workgroup",
+    "ResultConfiguration": {
+      "OutputLocation.$": "$.output_location"
+    }
+  },
+  "Next": "FalhaPipeline"
+}
+```
+
+---
+
+# Mas atenção: Athena suporta UPDATE em qualquer tabela?
+
+Aqui está um detalhe importante.
+
+Se essa tabela de controle for uma tabela “simples” externa tradicional, `UPDATE` pode não ser o melhor caminho.
+
+Para esse padrão funcionar bem com `UPDATE`, a tabela de controle idealmente deve ser:
+
+- **Iceberg**, ou
+    
+- algum formato/tipo que suporte DML desse tipo no seu setup Athena
+    
+
+Se você quiser um caminho mais simples e universal, use o padrão de **append-only**:
+
+- uma linha para `START`
+    
+- uma linha para `END_SUCCESS`
+    
+- uma linha para `END_ERROR`
+    
+
+Depois você faz uma **view semântica** por cima para reconstruir o estado final.
+
+---
+
+# Caminho mais simples para júnior: append-only
+
+Se você quiser evitar complexidade com `UPDATE`, faça assim:
+
+## tabela
+
+```sql
+CREATE TABLE IF NOT EXISTS ctrl.tb_execucao_modelo (
+    id_execucao              varchar,
+    nm_modelo                varchar,
+    camada                   varchar,
+    nm_objeto_destino        varchar,
+    tp_materializacao        varchar,
+    dt_evento                timestamp,
+    tp_evento                varchar,
+    status_modelo            varchar,
+    mensagem_erro            varchar
+)
+```
+
+## eventos possíveis
+
+- `START`
+    
+- `END_SUCCESS`
+    
+- `END_ERROR`
+    
+
+## exemplo
+
+### início
+
+```sql
+INSERT INTO ctrl.tb_execucao_modelo
+VALUES (
+  'exec_123',
+  'fct_pagadoria',
+  'mart',
+  'workspace_db.fct_pagadoria',
+  'table_ctas',
+  current_timestamp,
+  'START',
+  'RUNNING',
+  null
+)
+```
+
+### sucesso
+
+```sql
+INSERT INTO ctrl.tb_execucao_modelo
+VALUES (
+  'exec_123',
+  'fct_pagadoria',
+  'mart',
+  'workspace_db.fct_pagadoria',
+  'table_ctas',
+  current_timestamp,
+  'END_SUCCESS',
+  'SUCCESS',
+  null
+)
+```
+
+### erro
+
+```sql
+INSERT INTO ctrl.tb_execucao_modelo
+VALUES (
+  'exec_123',
+  'fct_pagadoria',
+  'mart',
+  'workspace_db.fct_pagadoria',
+  'table_ctas',
+  current_timestamp,
+  'END_ERROR',
+  'ERROR',
+  'Falha tecnica'
+)
+```
+
+Esse modelo é mais fácil de manter em Athena puro.
+
+---
+
+# O que eu recomendo no seu caso
+
+## se você quer simplicidade máxima
+
+Use **append-only com INSERT INTO**
+
+## se você quer visão mais “limpa” com uma linha final por modelo
+
+Use tabela Iceberg e `UPDATE`
+
+---
+
+# Como isso vira painel depois
+
+A `ctrl.tb_execucao_modelo` alimenta o painel de execução no QuickSight.
+
+Ela vira fonte para mostrar:
+
+- quantos modelos começaram
+    
+- quantos terminaram com sucesso
+    
+- quantos falharam
+    
+- em qual camada ocorreu mais erro
+    
+- quais mensagens de erro apareceram
+    
+- duração por modelo, se você tiver início e fim
+    
+
+---
+
+# Resposta curta
+
+A `ctrl.tb_execucao_modelo` é alimentada pelo **Step Functions**, por meio de estados extras antes e depois da execução de cada modelo. Em outras palavras, não é o Athena “sozinho” que preenche essa tabela: o Step Functions usa queries `INSERT INTO` — e eventualmente `UPDATE`, se o tipo da tabela permitir — para registrar início, sucesso e erro de cada modelo executado.
+
+Se você quiser, eu posso te montar agora **duas versões prontas** dessa tabela e do fluxo:  
+uma **append-only com INSERT** e outra **Iceberg com UPDATE**, e mostrar qual é mais indicada para Athena puro.
