@@ -1,0 +1,399 @@
+
+> Este documento define o padrão único de escrita do meu playbook  
+> Tudo deve seguir essa estrutura para garantir consistência, busca e evolução
+
+---
+
+## 🎯 Objetivo
+
+Criar um sistema de notas que funcione como:
+
+- sistema operacional de pensamento
+    
+- base reutilizável de análise
+    
+- framework técnico e de negócio
+    
+
+---
+
+## 🧠 Princípio central
+
+> Não escrever solto  
+> Escrever em blocos reutilizáveis e conectados
+
+---
+
+# 🧱 Template Base (Universal)
+
+```text
+[CÓDIGO] — [NOME CURTO]
+
+🎯 Problema
+Descrição clara e objetiva
+
+🧠 Padrão de análise
+Como pensar sobre isso (modelo mental)
+
+🔍 Checklist
+[ ] Pergunta 1
+[ ] Pergunta 2
+[ ] Pergunta 3
+
+💻 SQL base
+SELECT ...
+
+📊 Interpretação
+Se X → então Y
+Se A → então B
+
+⚠️ Armadilhas
+- erro comum 1
+- erro comum 2
+
+🔗 Ver também
+→ [[COD-XX]]
+→ [[COD-YY]]
+
+📝 Notas / evolução
+- 
+```
+
+---
+
+# 🧠 📂 Templates por Tipo
+
+---
+
+## 🐞 Debug — `DBG-XX`
+
+```text
+DBG-XX — [Nome]
+
+🎯 Problema
+O que está errado?
+
+🧠 Hipóteses comuns
+- causa 1
+- causa 2
+
+🔍 Checklist
+[ ] dado errado?
+[ ] lógica errada?
+[ ] duplicidade?
+
+💻 SQL base
+
+📊 Interpretação
+
+⚠️ Armadilhas
+
+🔗 Ver também
+→ [[SQL-XX]]
+→ [[BUS-XX]]
+```
+
+---
+
+## 🧱 SQL — `SQL-XX`
+
+```text
+SQL-XX — [Nome]
+
+🎯 Problema
+Erro técnico que isso resolve
+
+🧠 Regra
+Princípio central
+
+💻 Padrão SQL
+
+📊 Quando usar
+Situações típicas
+
+⚠️ Armadilhas
+
+🔗 Ver também
+→ [[MOD-XX]]
+```
+
+---
+
+## 💼 Business — `BUS-XX`
+
+```text
+BUS-XX — [Nome]
+
+🎯 Definição
+Regra de negócio
+
+🧠 Variações
+- tipo 1
+- tipo 2
+
+📊 Impacto
+Onde isso afeta
+
+⚠️ Armadilhas
+
+🔗 Ver também
+→ [[DBG-XX]]
+```
+
+---
+
+## 🧬 Modelagem — `MOD-XX`
+
+```text
+MOD-XX — [Nome]
+
+🎯 Objetivo
+Por que existe
+
+🧠 Grain
+Granularidade
+
+💻 Estrutura
+
+📊 Quando usar
+
+⚠️ Armadilhas
+
+🔗 Ver também
+→ [[SQL-XX]]
+```
+
+---
+
+## ⚖️ Decisão — `DEC-XX`
+
+```text
+DEC-XX — [Nome]
+
+🎯 Problema
+Decisão a tomar
+
+🧠 Opções
+- opção A
+- opção B
+
+📊 Critério
+
+⚠️ Trade-offs
+
+🔗 Ver também
+→ [[MOD-XX]]
+```
+
+---
+
+# 🚀 Starter Pack de Notas
+
+---
+
+## 🐞 Debug
+
+- [[DBG-01 — Queda de eficiência]]
+    
+- [[DBG-02 — Caixa vs regul]]
+    
+- [[DBG-03 — Volume inesperado]]
+    
+- [[DBG-04 — Explosão de linhas]]
+    
+- [[DBG-05 — Métrica zerada]]
+    
+
+---
+
+## 🧱 SQL
+
+- [[SQL-01 — Anti-duplicidade]]
+    
+- [[SQL-02 — Join seguro]]
+    
+- [[SQL-03 — Deduplicação]]
+    
+- [[SQL-04 — Agregação correta]]
+    
+- [[SQL-05 — Partição eficiente Athena]]
+    
+
+---
+
+## 💼 Business
+
+- [[BUS-01 — Eficiência]]
+    
+- [[BUS-02 — Carteira elegível]]
+    
+- [[BUS-03 — Pagamento válido]]
+    
+- [[BUS-04 — Atingimento de meta]]
+    
+- [[BUS-05 — Ticket médio]]
+    
+
+---
+
+## 🧬 Modelagem
+
+- [[MOD-01 — Snapshot]]
+    
+- [[MOD-02 — SCD2]]
+    
+- [[MOD-03 — Fato transacional]]
+    
+- [[MOD-04 — Fato snapshot]]
+    
+- [[MOD-05 — Dimensão]]
+    
+
+---
+
+## ⚖️ Decisão
+
+- [[DEC-01 — Iceberg vs View]]
+    
+- [[DEC-02 — CTAS vs INSERT]]
+    
+- [[DEC-03 — Reprocessar vs incremental]]
+    
+- [[DEC-04 — Granularidade]]
+    
+- [[DEC-05 — Persistir vs calcular]]
+    
+
+---
+
+# 🧠 🧩 Exemplo de Nota
+
+```text
+DBG-02 — Caixa vs Regul
+
+🎯 Problema
+Valores divergentes
+
+🧠 Hipóteses
+- atraso
+- regra diferente
+- duplicidade
+
+🔍 Checklist
+[ ] mesmo período?
+[ ] mesmo filtro?
+[ ] mesma granularidade?
+
+💻 SQL base
+SELECT ...
+
+📊 Interpretação
+Se diferença constante → regra
+Se diferença irregular → dado
+
+⚠️ Armadilhas
+- filtro implícito
+- join errado
+
+🔗 Ver também
+→ [[SQL-01]]
+→ [[BUS-01]]
+```
+
+---
+
+# 🧠 💡 Regras do Sistema
+
+---
+
+## 🔒 1. Imutabilidade
+
+Nunca apagar → sempre evoluir
+
+```text
+DBG-02.v2 → nova página
+```
+
+---
+
+## 🔗 2. Tudo deve ter link
+
+Nenhuma nota isolada
+
+---
+
+## 🧱 3. Um conceito = uma nota
+
+Evita confusão
+
+---
+
+## 🔁 4. Reuso obrigatório
+
+Se repetiu 2x → vira código
+
+---
+
+# 📝 Espaço físico (apostila)
+
+Sempre deixar no final:
+
+```text
+📝 Observações
+📝 Casos reais
+📝 Versões
+```
+
+---
+
+# 🚀 Evolução
+
+Exemplo:
+
+```text
+DBG-02 → p12
+DBG-02.v2 → p48
+```
+
+---
+
+# 🧠 Frase central
+
+> Você não está escrevendo notas  
+> Você está criando uma linguagem própria de análise
+
+---
+
+# 🔗 Relacionado
+
+- [[Sistema de Naming]]
+    
+- [[Playbook Staff]]
+    
+- [[Método de Estudo — Feynman]]
+    
+- [[Lakehouse Architecture]]
+    
+
+---
+
+# 🚀 Próximo passo
+
+Criar as primeiras 5 notas:
+
+- DBG-01
+    
+- SQL-01
+    
+- BUS-01
+    
+- MOD-01
+    
+- DEC-01
+    
+
+---
+
+Se quiser, próximo nível eu monto:
+
+👉 todas essas notas já preenchidas com seu contexto real (cobrança + Athena)
