@@ -1,0 +1,471 @@
+
+## 🎯 Objetivo
+
+Definir **onde cada tipo de regra deve viver** dentro da arquitetura:
+
+```text
+bronze → silver_padronizado → silver_integrado → gold → mart
+```
+
+Evitar:
+
+- lógica espalhada
+    
+- métricas inconsistentes
+    
+- duplicação de regra
+    
+- dependência de dashboard
+    
+
+---
+
+# 🧩 Regra-mãe (resumo executivo)
+
+```text
+Regra de estrutura → Silver padronizado
+Regra de integração → Silver integrado
+Regra de interpretação → Gold
+Regra negociável → Tabela de regra
+Regra repetida → Ativo reutilizável
+Regra que muda grão → Nova entidade
+```
+
+---
+
+# 1️⃣ Silver — Padronizado
+
+## Quando usar
+
+Quando a regra responde:
+
+```text
+"como ler a fonte sem quebrar?"
+```
+
+## Exemplos
+
+- cast de tipo (`try_cast`)
+    
+- parsing de data
+    
+- normalização de null
+    
+- padronização de nomes
+    
+- criação de `p_*`
+    
+- hash de chave
+    
+
+## Exemplo
+
+```sql
+try_cast(vl_pago as decimal(18,2)) as vl_pago
+```
+
+## ❌ O que NÃO deve ter
+
+- regra de negócio
+    
+- classificação
+    
+- cálculo de métrica
+    
+- lógica de elegibilidade
+    
+
+---
+
+# 2️⃣ Silver — Integrado
+
+## Quando usar
+
+Quando a regra responde:
+
+```text
+"como unir dados?"
+"qual fonte ganha?"
+"como resolver conflito?"
+```
+
+## Exemplos
+
+- deduplicação
+    
+- fallback entre fontes
+    
+- prioridade (boleto > débito > backoffice)
+    
+- enriquecimento
+    
+- joins entre entidades
+    
+- elegibilidade técnica
+    
+
+## Exemplo
+
+```sql
+row_number() over (
+    partition by contrato, produto, dt_ref_yyyymmdd, vl_pago
+    order by prioridade_origem
+)
+```
+
+## ⚠️ Atenção
+
+Elegibilidade pode estar aqui **ou em gold**, dependendo do contexto.
+
+---
+
+# 3️⃣ Gold — Fato / Agregado
+
+## Quando usar
+
+Quando a regra responde:
+
+```text
+"o que é verdade para o negócio?"
+"qual número será defendido?"
+```
+
+## Exemplos
+
+- `vl_caixa`
+    
+- `vl_regul`
+    
+- `% atingimento`
+    
+- `comissão`
+    
+- classificação oficial
+    
+- status gerencial
+    
+
+## Exemplo
+
+```sql
+CASE
+    WHEN tp_acordo = 'A_VISTA' THEN vl_pago
+    ELSE 0
+END AS vl_caixa
+```
+
+## 💡 Regra forte
+
+Se aparece em dashboard executivo → deveria estar em gold
+
+---
+
+# 4️⃣ Tabela de Regra (externalização)
+
+## Quando usar
+
+Quando a regra:
+
+```text
+muda com frequência
+tem faixa ou parâmetro
+é discutida pelo negócio
+precisa de auditoria
+```
+
+## Exemplos
+
+- gate de comissão
+    
+- faixas de atraso
+    
+- score
+    
+- elegibilidade parametrizada
+    
+- de/para
+    
+
+## ❌ Evitar
+
+```sql
+CASE
+  WHEN perc < 0.8 THEN ...
+```
+
+## ✅ Preferir
+
+```sql
+JOIN tabela_regra_gate
+```
+
+---
+
+# 5️⃣ Regras com Vigência Temporal
+
+## Quando usar
+
+Quando a regra muda ao longo do tempo
+
+## Estrutura recomendada
+
+```text
+regra
+valor
+dt_inicio
+dt_fim
+fl_ativo
+```
+
+## Exemplos
+
+- comissão por período
+    
+- metas mensais
+    
+- políticas de elegibilidade
+    
+
+---
+
+# 6️⃣ Regras de Execução (não são de modelagem)
+
+## Quando usar
+
+Quando depende de:
+
+```text
+data de execução
+janela
+modo incremental/full
+parâmetros
+```
+
+## Onde ficam
+
+- Step Functions
+    
+- Glue job params
+    
+- CTE `parametros`
+    
+- tabela de controle
+    
+
+## ❌ Não confundir
+
+Isso NÃO é regra de negócio
+
+---
+
+# 7️⃣ Regras Exploradas / Temporárias
+
+## Quando usar
+
+- análise ad hoc
+    
+- hipótese
+    
+- simulação
+    
+
+## Regra
+
+```text
+não sobe para gold
+```
+
+Primeiro valida → depois promove
+
+---
+
+# 8️⃣ Regras Reutilizáveis
+
+## Quando usar
+
+Quando aparece em múltiplos fluxos
+
+## Exemplos
+
+- cliente ativo
+    
+- carteira elegível
+    
+- produto padronizado
+    
+- calendário
+    
+
+## Ação
+
+```text
+promover para ativo compartilhado
+```
+
+(semântica comum — estilo Kimball)
+
+---
+
+# 9️⃣ Regras que mudam o grão
+
+## 🚨 Crítico
+
+Se a regra:
+
+- agrega
+    
+- muda granularidade
+    
+- consolida linhas
+    
+
+Então:
+
+```text
+NÃO é regra → é nova entidade
+```
+
+## Exemplo
+
+|Antes|Depois|
+|---|---|
+|contrato-dia|escritório-mês|
+
+---
+
+# 🔟 Regras de Correção da Fonte
+
+## Quando usar
+
+- bug da origem
+    
+- dado faltante
+    
+- inconsistência conhecida
+    
+
+## Onde fica
+
+```text
+silver (com comentário explícito)
+```
+
+## ⚠️ Importante
+
+Isso é workaround, não regra de negócio
+
+---
+
+# 1️⃣1️⃣ Regra reversível vs irreversível
+
+## Reversível → Silver
+
+- cast
+    
+- rename
+    
+- normalização
+    
+- fallback técnico
+    
+
+## Irreversível → Gold
+
+- classificação
+    
+- métrica
+    
+- elegibilidade oficial
+    
+- cálculo consolidado
+    
+
+---
+
+# 📐 Régua final (pronta pra colar)
+
+```text
+Se responde "como ler a fonte?" → Silver padronizado
+
+Se responde "como unir dados?" → Silver integrado
+
+Se responde "qual fonte ganha?" → Silver integrado
+
+Se responde "quem entra tecnicamente?" → Silver integrado
+
+Se responde "o que é verdade no negócio?" → Gold
+
+Se responde "qual número será defendido?" → Gold
+
+Se muda com frequência → Tabela de regra
+
+Se tem faixa ou parâmetro → Tabela de regra
+
+Se precisa de vigência → Tabela de regra temporal
+
+Se já apareceu em várias queries → NÃO usar CASE espalhado
+
+Se muda o grão → Nova entidade
+
+Se é correção da fonte → Silver (documentado)
+
+Se é exploratório → Não sobe para modelo oficial
+```
+
+---
+
+# ⚠️ Anti-patterns clássicos
+
+## ❌ 1. Regra de negócio no BI
+
+- campo calculado no QuickSight
+    
+- medida no Power BI
+    
+
+## ❌ 2. CASE hardcoded com faixa
+
+- impossível de auditar
+    
+- difícil de evoluir
+    
+
+## ❌ 3. Misturar granularidade
+
+- fato + agregado juntos
+    
+
+## ❌ 4. Gold com regra técnica
+
+- vira camada confusa
+    
+
+## ❌ 5. Silver com regra de negócio
+
+- quebra reuso
+    
+
+---
+
+# 🚀 Próximo nível (se quiser evoluir isso)
+
+Você pode transformar isso em:
+
+- 📦 **framework dbt-like completo**
+    
+- 🧪 **camada de testes automatizados**
+    
+- 📊 **camada semântica governada**
+    
+- 🧾 **catálogo de regras versionadas**
+    
+- 🔄 **pipeline com governança de execução**
+    
+
+---
+
+Se quiser, o próximo passo que mais destrava maturidade é:
+
+👉 **“como versionar regras de negócio (SCD de regra + versionamento de métricas)”**
+
+Isso é exatamente o que separa pipeline funcional de plataforma de dados madura.
