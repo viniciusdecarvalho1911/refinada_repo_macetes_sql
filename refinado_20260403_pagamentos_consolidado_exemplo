@@ -1,0 +1,972 @@
+
+
+## 📌 Visão geral do fluxo
+
+```text
+tabela_bronze_fonte_sap_boletos
+tabela_bronze_fonte_legado_debito_conta
+tabela_bronze_fonte_backoffice_fluxo_apartado
+tabela_bronze_fonte_cobranca_carteira_vigor
+tabela_bronze_fonte_cobranca_colchao
+tabela_bronze_fonte_juridico_vijud_inicio_mes
+tabela_bronze_fonte_cobranca_proposta_negocio
+tabela_bronze_fonte_cobranca_meta_escritorio
+tabela_bronze_fonte_cobranca_gate_comissionamento
+    ↓
+view_silver_padronizado_*
+    ↓
+view_silver_integrado_cobranca_pagamentos_consolidados
+    ↓
+iceberg_gold_fato_pagadoria
+    ↓
+tabela_gold_agregado_pagadoria_mensal
+    ↓
+view_gold_mart_cobranca_pagadoria_quicksight
+```
+
+---
+
+# 1️⃣ Silver — Padronizado
+
+## 🎯 Objetivo
+
+Criar o **contrato técnico inicial do dado**:
+
+- Padronizar nomes
+    
+- Expor partição física (`p_*`)
+    
+- Criar colunas temporais canônicas
+    
+- Manter chaves de negócio
+    
+- Preparar dado para reuso
+    
+
+📎 Referência do template:
+
+---
+
+## 1.1 Boletos pagos
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_boletos AS
+SELECT
+    dt_ref AS p_dt_ref,
+
+    cast(substr(cast(dt_ref as varchar), 1, 6) as integer) AS mes_ref_yyyymm,
+    dt_ref AS dt_ref_yyyymmdd,
+    cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as date) AS dt_ref_date,
+    cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as timestamp) AS ts_ref,
+
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+
+    boleto,
+    vl_pago,
+    vl_desconto_boleto,
+    coalesce(flag_cancelado, 0) AS flag_cancelado,
+
+    'BOLETO' AS origem_pagamento,
+    cast(null as varchar) AS tp_acordo,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao,
+
+    md5(
+        concat(
+            coalesce(cast(contrato as varchar), ''),
+            '|', coalesce(cast(produto as varchar), ''),
+            '|', coalesce(cast(dt_ref as varchar), '')
+        )
+    ) AS hash_chave_negocio,
+
+    md5(
+        concat(
+            coalesce(cast(boleto as varchar), ''),
+            '|', coalesce(cast(vl_pago as varchar), ''),
+            '|', coalesce(cast(vl_desconto_boleto as varchar), ''),
+            '|', coalesce(cast(flag_cancelado as varchar), '')
+        )
+    ) AS hash_atributos
+FROM workspace_db.tabela_bronze_fonte_sap_boletos;
+```
+
+---
+
+## 1.2 Débito em conta
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_debito_conta AS
+SELECT
+    dt_ref AS p_dt_ref,
+    cast(substr(cast(dt_ref as varchar), 1, 6) as integer) AS mes_ref_yyyymm,
+    dt_ref AS dt_ref_yyyymmdd,
+    cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as date) AS dt_ref_date,
+    cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as timestamp) AS ts_ref,
+
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+
+    cast(null as varchar) AS boleto,
+    vl_pago,
+    cast(null as decimal(18,2)) AS vl_desconto_boleto,
+
+    'DEBITO_CONTA' AS origem_pagamento,
+    cast(null as varchar) AS tp_acordo,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao,
+
+    md5(...) AS hash_chave_negocio,
+    md5(...) AS hash_atributos
+FROM workspace_db.tabela_bronze_fonte_legado_debito_conta;
+```
+
+---
+
+## 1.3 Fluxo apartado / backoffice
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_fluxo_apartado AS
+SELECT
+    dt_ref AS p_dt_ref,
+    ...
+    'BACKOFFICE' AS origem_pagamento,
+    ...
+FROM workspace_db.tabela_bronze_fonte_backoffice_fluxo_apartado;
+```
+
+---
+
+## 1.4 Carteira vigor
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_carteira_vigor AS
+SELECT
+    anomes AS p_anomes,
+    ...
+FROM workspace_db.tabela_bronze_fonte_cobranca_carteira_vigor;
+```
+
+---
+
+## 1.5 Colchão
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_colchao AS
+SELECT
+    anomes AS p_anomes,
+    ...
+FROM workspace_db.tabela_bronze_fonte_cobranca_colchao;
+```
+
+---
+
+## 1.6 Vijud início do mês
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_juridico_vijud_inicio_mes AS
+SELECT
+    dt_foto AS p_dt_foto,
+    ...
+FROM workspace_db.tabela_bronze_fonte_juridico_vijud_inicio_mes;
+```
+
+---
+
+## 1.7 Proposta de negócio
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_proposta_negocio AS
+SELECT
+    dt_referencia AS p_dt_referencia,
+    ...
+FROM workspace_db.tabela_bronze_fonte_cobranca_proposta_negocio;
+```
+
+---
+
+# 2️⃣ Silver — Integrado
+
+## 🎯 Objetivo
+
+Transformar dados em **informação reutilizável**:
+
+- Consolidação de fontes
+    
+- Deduplicação
+    
+- Regras intermediárias
+    
+- Enriquecimento
+    
+- Elegibilidade
+    
+
+## Naming
+
+```text
+view_silver_integrado_cobranca_pagamentos_consolidados
+```
+
+---
+
+## 🧠 Responsabilidades dessa camada
+
+- Prioridade entre fontes
+    
+- Fallback de desconto
+    
+- Deduplicação
+    
+- Filtragem de elegibilidade
+    
+- Consolidação técnica
+    
+
+---
+
+## SQL (estrutura)
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados AS
+WITH parametros AS (...),
+
+carteira_vigor AS (...),
+colchao_mes AS (...),
+vijud_inicio_mes AS (...),
+
+carteira_elegivel AS (...),
+
+boletos_validos AS (...),
+debito_conta AS (...),
+fluxo_apartado AS (...),
+
+pagamentos_brutos AS (
+    SELECT * FROM boletos_validos
+    UNION ALL
+    SELECT * FROM debito_conta
+    UNION ALL
+    SELECT * FROM fluxo_apartado
+),
+
+pagamentos_deduplicados AS (...),
+proposta_recente AS (...),
+
+pagamentos_enriquecidos AS (...),
+
+regras_negocio AS (
+    SELECT *,
+        CASE WHEN ... THEN ... END AS vl_caixa,
+        CASE WHEN ... THEN ... END AS vl_regul
+    FROM pagamentos_enriquecidos
+)
+
+SELECT * FROM regras_negocio;
+```
+
+---
+
+# 3️⃣ Gold — Fato Pagadoria
+
+## 🎯 Objetivo
+
+Persistir a **verdade operacional do processo**
+
+## Naming
+
+```text
+iceberg_gold_fato_pagadoria
+```
+
+---
+
+## 📏 Grão
+
+```text
+1 linha por contrato + produto + data + origem_pagamento
+```
+
+---
+
+## DDL
+
+```sql
+CREATE TABLE workspace_db.iceberg_gold_fato_pagadoria (...)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    partitioning = ARRAY['p_anomes'],
+    location = 's3://SEU-BUCKET/gold/fato/pagadoria/'
+);
+```
+
+---
+
+## MERGE incremental
+
+```sql
+MERGE INTO workspace_db.iceberg_gold_fato_pagadoria t
+USING (...) s
+ON (...)
+WHEN MATCHED THEN UPDATE SET ...
+WHEN NOT MATCHED THEN INSERT ...
+```
+
+---
+
+# 4️⃣ Gold — Agregado Mensal
+
+## 🎯 Objetivo
+
+Camada de consumo para negócio
+
+## Naming
+
+```text
+tabela_gold_agregado_pagadoria_mensal
+```
+
+---
+
+## 📏 Grão
+
+```text
+1 linha por competência + escritório
+```
+
+---
+
+## SQL
+
+```sql
+CREATE TABLE workspace_db.tabela_gold_agregado_pagadoria_mensal AS
+WITH resultado_escritorio AS (...),
+meta_escritorio AS (...),
+resultado_meta AS (...),
+gate AS (...)
+
+SELECT
+    ...
+    r.vl_regul * g.perc_comissao AS vl_comissao
+FROM resultado_meta r
+LEFT JOIN gate g ...
+```
+
+---
+
+# 5️⃣ Gold — Mart (QuickSight)
+
+## Naming
+
+```text
+view_gold_mart_cobranca_pagadoria_quicksight
+```
+
+---
+
+## SQL
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_mart_cobranca_pagadoria_quicksight AS
+SELECT
+    p_anomes,
+    escritorio,
+    qt_contratos_pagantes,
+    vl_caixa,
+    vl_regul,
+    vl_meta_regul,
+    perc_atingimento,
+    gate,
+    perc_comissao,
+    vl_comissao
+FROM workspace_db.tabela_gold_agregado_pagadoria_mensal;
+```
+
+---
+
+# 🧠 Regras de Negócio — Onde Devem Ficar
+
+## 📌 Resumo executivo
+
+|Tipo de regra|Onde fica|
+|---|---|
+|Técnica|Silver|
+|Integração|Silver integrado|
+|Negócio oficial|Gold|
+|Mutável / parametrizável|Tabela de regra|
+
+---
+
+## 1. Regra simples (CASE aceitável)
+
+```sql
+CASE WHEN tp_acordo = 'A_VISTA' THEN vl_pago END
+```
+
+✔ Pode ficar em `silver_integrado`  
+✔ Mas isolada e documentada
+
+---
+
+## 2. Regra crítica → virar tabela
+
+❌ Evitar:
+
+```sql
+CASE WHEN perc_atingimento < 0.8 THEN ...
+```
+
+✅ Preferir:
+
+```sql
+JOIN tabela_regra_gate
+```
+
+✔ Auditável  
+✔ Versionável  
+✔ Reutilizável
+
+---
+
+## 3. Regra oficial do negócio
+
+Deve viver em:
+
+- `silver_integrado_*` (intermediária)
+    
+- `gold_fato_*` ou `gold_agregado_*` (oficial)
+    
+
+---
+
+# 📐 Heurística de decisão
+## 1. Se a regra responde **“como ler a fonte sem quebrar?”** → `silver_padronizado`
+
+Exemplos:
+
+- `TRY_CAST`
+    
+- normalização de tipo
+    
+- ajuste de nome de coluna
+    
+- parsing de data
+    
+- padronização de `null`
+    
+- exposição de `p_*`
+    
+
+Essa regra ainda não está “interpretando o negócio”.  
+Ela está só criando um **contrato técnico confiável**.
+
+### Exemplo
+
+```sql
+try_cast(vl_pago as decimal(18,2)) as vl_pago
+```
+
+Isso é `silver_padronizado`, não gold.
+
+---
+
+## 2. Se a regra responde **“qual fonte ganha quando há conflito?”** → `silver_integrado`
+
+Exemplos:
+
+- priorizar boleto sobre débito
+    
+- escolher registro mais recente
+    
+- fallback entre colunas/fontes
+    
+- deduplicação multiorigem
+    
+
+Isso ainda é integração e precedência, não “número oficial” do negócio.
+
+### Exemplo
+
+```sql
+case origem_pagamento
+    when 'BOLETO' then 1
+    when 'DEBITO_CONTA' then 2
+    when 'BACKOFFICE' then 3
+end
+```
+
+Isso é muito mais cara de `silver_integrado`.
+
+---
+
+## 3. Se a regra responde **“quem entra e quem fica fora da entidade?”** → normalmente `silver_integrado`, às vezes `gold`
+
+Essa é uma das mais traiçoeiras.
+
+### Fica em `silver_integrado` quando:
+
+a elegibilidade é uma regra **técnico-operacional de montagem da entidade**
+
+Exemplo:
+
+- excluir cancelados
+    
+- remover duplicados
+    
+- ignorar registros sem chave mínima
+    
+- montar carteira intermediária
+    
+
+### Fica em `gold` quando:
+
+a elegibilidade define o **número oficial defendido pelo negócio**
+
+Exemplo:
+
+- “carteira elegível oficial”
+    
+- “pagamento válido para comissionamento”
+    
+- “contrato que conta na meta”
+    
+
+---
+
+## 4. Se a regra responde **“como classificar para consumo analítico?”** → `gold`
+
+Exemplos:
+
+- faixa de atraso
+    
+- gate
+    
+- status gerencial
+    
+- cluster analítico
+    
+- régua de performance
+    
+- score/faixa de comissão
+    
+
+Porque aqui você já está produzindo uma **interpretação semântica** do dado.
+
+---
+
+## 5. Se a regra responde **“qual métrica o time vai defender em reunião?”** → `gold`
+
+Essa heurística é muito boa politicamente.
+
+Se alguém vai abrir um painel, apresentar para gestão e dizer  
+“o número correto é esse”  
+então isso não deveria estar espalhado em query ad hoc nem escondido em dashboard.
+
+Deve estar em:
+
+- `iceberg_gold_fato_*`
+    
+- `tabela_gold_agregado_*`
+    
+- `view_gold_mart_*`
+    
+
+### Exemplos
+
+- `vl_regul`
+    
+- `vl_caixa`
+    
+- `% atingimento`
+    
+- `vl_comissao`
+    
+- `carteira ativa oficial`
+    
+
+---
+
+## 6. Se a regra existe para **melhorar performance**, não semântica → camada física/técnica, não camada conceitual
+
+Essa heurística evita confusão.
+
+Exemplos:
+
+- particionar por `p_anomes`
+    
+- pré-agregar para BI
+    
+- materializar em Iceberg
+    
+- criar tabela intermediária para evitar recomputo
+    
+
+Isso não define significado de negócio.  
+Define **estratégia de execução**.
+
+Então a pergunta não é “silver ou gold?”, e sim:
+
+- view ou tabela?
+    
+- tabela ou iceberg?
+    
+- agregado persistido ou não?
+    
+
+---
+
+## 7. Se a regra precisa ser **auditável por área de negócio** → tabela de regra ou gold explícito
+
+Exemplos:
+
+- gate de comissão
+    
+- faixas de atraso
+    
+- mapeamento de escritório
+    
+- de/para de produto
+    
+- regras de elegibilidade formalizadas
+    
+
+Se a área pode perguntar:
+
+> “onde está essa regra?”  
+> “quem mudou?”  
+> “qual faixa estava valendo naquele mês?”
+
+Então CASE solto já virou dívida.
+
+---
+
+## 8. Se a regra precisa de **vigência temporal** → tabela de regra com validade
+
+Essa é uma heurística muito forte e pouca gente explicita.
+
+Se a regra muda ao longo do tempo, não basta externalizar; precisa modelar vigência.
+
+### Exemplo
+
+```text
+tp_regra
+valor_regra
+dt_inicio_vigencia
+dt_fim_vigencia
+fl_ativo
+```
+
+Isso vale para:
+
+- comissão
+    
+- elegibilidade
+    
+- classificação
+    
+- de/para
+    
+- metas por período
+    
+
+---
+
+## 9. Se a regra depende de **faixas, parâmetros ou limites negociáveis** → tabela de regra
+
+Exemplos:
+
+- `0.8`, `1.0`, `1.2`
+    
+- faixa de atraso
+    
+- faixa de saldo
+    
+- bucket de eficiência
+    
+- score mínimo
+    
+
+Sempre que houver corte arbitrário ou negociável, desconfie de CASE.
+
+Porque esses valores tendem a virar discussão de negócio, não detalhe técnico.
+
+---
+
+## 10. Se a regra depende de **contexto de execução** → orquestração/parametrização, não SQL hardcoded
+
+Exemplos:
+
+- mês de referência
+    
+- data de corte
+    
+- execução full vs incremental
+    
+- janela de reprocessamento
+    
+- versão da carga
+    
+
+Essas regras muitas vezes não pertencem ao modelo como lógica fixa.  
+Pertencem ao pipeline.
+
+### Então costumam ficar em:
+
+- parâmetros do Step Functions
+    
+- tabela de controle
+    
+- CTE `parametros`
+    
+- variáveis de execução
+    
+
+---
+
+## 11. Se a regra é **descartável ou exploratória** → query analítica, não modelo oficial
+
+Nem toda regra merece virar ativo.
+
+Exemplos:
+
+- corte temporário para análise
+    
+- classificação provisória
+    
+- simulação pontual
+    
+- hipótese de diagnóstico
+    
+
+Heurística:
+
+> se ainda está sendo testada, talvez não deva subir para gold
+
+Primeiro valida. Depois oficializa.
+
+---
+
+## 12. Se a regra aparece em **mais de um processo**, mas com o mesmo significado → promover para ativo semântico compartilhado
+
+Exemplos:
+
+- `cliente ativo`
+    
+- `escritorio_atual`
+    
+- `carteira_elegivel`
+    
+- `produto_padronizado`
+    
+- `data_util`
+    
+
+Nesse caso, a pergunta deixa de ser só “silver ou gold”.
+
+Passa a ser:
+
+> essa regra deveria virar uma dimensão, view semântica ou tabela de referência compartilhada?
+
+Isso conversa bastante com a lógica de **conformed dimensions** do Kimball.
+
+---
+
+## 13. Se a regra altera o **grão** do dado → cuidado máximo; normalmente nova entidade
+
+Essa é crítica.
+
+Se a regra:
+
+- agrega
+    
+- explode
+    
+- colapsa linhas
+    
+- muda de evento para mês
+    
+- muda de contrato-dia para escritório-mês
+    
+
+então ela não é “só uma regra”.  
+Ela está criando **outra entidade analítica**.
+
+### Exemplo
+
+- pagamento individual → fato transacional
+    
+- pagamento por escritório/mês → agregado
+    
+
+Misturar isso no mesmo objeto costuma dar problema.
+
+---
+
+## 14. Se a regra existe para **corrigir deficiência temporária da fonte** → silver, mas com sinalização explícita
+
+Exemplos:
+
+- preencher `escritorio` faltante com fallback
+    
+- inferir chave por join auxiliar
+    
+- contornar bug da origem
+    
+- tratar valor inválido conhecido
+    
+
+Essas regras podem até ficar em silver, mas precisam ser:
+
+- nomeadas
+    
+- comentadas
+    
+- rastreáveis
+    
+- preferencialmente temporárias
+    
+
+Porque não são regra de negócio “bonita”; são remendo operacional controlado.
+
+---
+
+## 15. Se a regra é **reversível sem impacto semântico** → mais perto de silver
+
+## Se é **irreversível e muda a interpretação** → mais perto de gold
+
+Exemplo reversível:
+
+- renomear coluna
+    
+- cast
+    
+- normalizar string
+    
+- escolher fonte preferencial
+    
+
+Exemplo irreversível:
+
+- classificar como elegível/não elegível
+    
+- transformar pagamento em comissão
+    
+- consolidar em métrica oficial
+    
+- enquadrar cliente em faixa gerencial
+    
+
+Quanto mais irreversível semanticamente, mais perto de gold.
+
+---
+
+# 📐 Uma régua maior, mais prática
+
+Você pode expandir sua heurística para algo assim:
+
+```text
+Se responde "como ler a fonte?" → Silver padronizado
+
+Se responde "como unir, priorizar ou deduplicar dados?" → Silver integrado
+
+Se responde "quem entra ou sai tecnicamente da entidade?" → Silver integrado
+
+Se responde "o que o negócio considera verdade?" → Gold
+
+Se responde "qual número será defendido oficialmente?" → Gold
+
+Se muda com frequência → Tabela de regra
+
+Se tem faixa, corte ou parâmetro negociável → Tabela de regra
+
+Se precisa de vigência temporal → Tabela de regra com histórico
+
+Se já apareceu em 2 ou 3 queries → NÃO deve ficar em CASE espalhado
+
+Se muda o grão do dado → provavelmente é outra entidade, não só uma regra
+
+Se é remendo operacional da fonte → Silver, mas explicitamente documentado
+
+Se é exploratória ou provisória → Query analítica, não modelo oficial
+```
+
+---
+
+# 🧱 Uma forma ainda mais sênior de pensar
+
+Tem uma heurística-mãe que resume quase tudo:
+
+```text
+Regra de estrutura → Silver padronizado
+Regra de integração → Silver integrado
+Regra de interpretação → Gold
+Regra negociável → Tabela de regra
+Regra repetida → Ativo reutilizável
+Regra que muda grão → Nova entidade
+```
+
+Além disso:
+```text
+- Nunca misturar granularidades na mesma fato
+- Separar fato vs agregado (Kimball puro)
+- Priorizar tabelas de regra ao invés de lógica hardcoded
+- Usar hash para controle de mudança
+- Garantir pruning via partição física (`p_*`)
+- Versionar regras (`versao_regra`)
+```    
+---
+
+# ⚠️ Erros comuns ao aplicar essas heurísticas
+
+## 1. Colocar verdade de negócio em dashboard
+
+Acontece muito no QuickSight/Power BI com campo calculado.
+
+## 2. Colocar regra mutável em CASE hardcoded
+
+Funciona por 2 semanas e vira caos.
+
+## 3. Colocar correção de fonte em gold
+
+Aí o gold vira mistura de limpeza com semântica.
+
+## 4. Misturar entidade transacional com agregado
+
+Clássico erro dimensional.
+
+## 5. Achar que toda regra precisa virar tabela
+
+Não precisa. Regra pequena, estável e local pode continuar em SQL.
+
+---
+
+# 💡 Uma versão “pergunta de revisão” para usar no dia a dia
+
+Antes de escrever uma regra, pergunta:
+
+1. Isso é leitura técnica da fonte?
+    
+2. Isso é integração entre fontes?
+    
+3. Isso define número oficial?
+    
+4. Isso muda com frequência?
+    
+5. Isso pode ser discutido pelo negócio?
+    
+6. Isso já foi repetido?
+    
+7. Isso muda o grão?
+    
+8. Isso precisa de histórico de vigência?
+    
+
+
+
+---
