@@ -1,0 +1,438 @@
+
+
+# Template oficial — `view_silver_padronizado`
+
+Abaixo vai um template genérico, pronto para adaptar.
+
+```sql
+CREATE OR REPLACE VIEW <database>.view_silver_padronizado_<dominio>_<entidade> AS
+SELECT
+    -- =========================================================
+    -- 1) PARTIÇÕES FÍSICAS (sempre expostas com prefixo p_)
+    -- =========================================================
+    <particao_fisica_1> AS p_<particao_fisica_1>,
+    <particao_fisica_2> AS p_<particao_fisica_2>,
+
+    -- =========================================================
+    -- 2) COLUNAS TEMPORAIS CANÔNICAS
+    --    use para joins, regras e leitura humana
+    -- =========================================================
+    <expressao_mes_ref>       AS mes_ref_yyyymm,
+    <expressao_dia_ref>       AS dt_ref_yyyymmdd,
+    <expressao_data_ref>      AS dt_ref_date,
+    <expressao_timestamp_ref> AS ts_ref,
+
+    -- =========================================================
+    -- 3) CHAVES NATURAIS / CHAVES DE NEGÓCIO
+    -- =========================================================
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+
+    -- =========================================================
+    -- 4) COLUNAS DE NEGÓCIO CRUDAS / PADRONIZADAS
+    -- =========================================================
+    boleto,
+    vl_pago,
+    origem_pagamento,
+    tp_acordo,
+
+    -- =========================================================
+    -- 5) COLUNAS TÉCNICAS
+    -- =========================================================
+    current_timestamp                  AS dt_ingestao_modelo,
+    '<id_execucao_ou_placeholder>'     AS id_execucao,
+
+    -- =========================================================
+    -- 6) HASHES ÚTEIS
+    -- =========================================================
+    md5(
+        concat(
+            coalesce(cast(contrato as varchar), ''),
+            '|', coalesce(cast(produto as varchar), ''),
+            '|', coalesce(cast(<expressao_dia_ref> as varchar), '')
+        )
+    ) AS hash_chave_negocio,
+
+    md5(
+        concat(
+            coalesce(cast(contrato as varchar), ''),
+            '|', coalesce(cast(produto as varchar), ''),
+            '|', coalesce(cast(boleto as varchar), ''),
+            '|', coalesce(cast(vl_pago as varchar), ''),
+            '|', coalesce(cast(tp_acordo as varchar), '')
+        )
+    ) AS hash_atributos
+FROM <database_origem>.<tabela_origem>;
+```
+
+---
+
+# Como preencher esse template
+
+## Caso 1 — partição em `string` formato `YYYY-MM-DD`
+
+Exemplo muito comum:
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_pagamentos AS
+SELECT
+    dt_pagamento_ref AS p_dt_pagamento_ref,
+
+    cast(replace(substr(dt_pagamento_ref, 1, 7), '-', '') as integer) AS mes_ref_yyyymm,
+    cast(replace(dt_pagamento_ref, '-', '') as integer) AS dt_ref_yyyymmdd,
+    cast(dt_pagamento_ref as date) AS dt_ref_date,
+    cast(dt_pagamento_ref as timestamp) AS ts_ref,
+
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+    boleto,
+    vl_pago,
+    origem_pagamento,
+    tp_acordo,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'manual_local' AS id_execucao,
+
+    md5(
+        concat(
+            coalesce(cast(contrato as varchar), ''),
+            '|', coalesce(cast(produto as varchar), ''),
+            '|', coalesce(cast(replace(dt_pagamento_ref, '-', '') as varchar), '')
+        )
+    ) AS hash_chave_negocio,
+
+    md5(
+        concat(
+            coalesce(cast(contrato as varchar), ''),
+            '|', coalesce(cast(produto as varchar), ''),
+            '|', coalesce(cast(boleto as varchar), ''),
+            '|', coalesce(cast(vl_pago as varchar), ''),
+            '|', coalesce(cast(tp_acordo as varchar), '')
+        )
+    ) AS hash_atributos
+FROM workspace_db.pagadoria_raw;
+```
+
+Esse padrão já apareceu no seu material, inclusive com `p_dt_ref`, `dt_ref_yyyymmdd` e `dt_ref_date` sendo expostos ao mesmo tempo.
+
+---
+
+## Caso 2 — partição em `int` formato `YYYYMMDD`
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_opc_baixas AS
+SELECT
+    dt_foto AS p_dt_foto,
+
+    cast(substr(cast(dt_foto as varchar), 1, 6) as integer) AS mes_ref_yyyymm,
+    dt_foto AS dt_ref_yyyymmdd,
+    cast(
+        date_parse(cast(dt_foto as varchar), '%Y%m%d') as date
+    ) AS dt_ref_date,
+    cast(
+        date_parse(cast(dt_foto as varchar), '%Y%m%d') as timestamp
+    ) AS ts_ref,
+
+    contrato,
+    produto,
+    cast(null as varchar) AS cnpj_raiz,
+    cast(null as varchar) AS escritorio,
+    cast(null as varchar) AS boleto,
+    cast(null as decimal(18,2)) AS vl_pago,
+    'OPC' AS origem_pagamento,
+    cast(null as varchar) AS tp_acordo,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'manual_local' AS id_execucao,
+
+    md5(
+        concat(
+            coalesce(cast(contrato as varchar), ''),
+            '|', coalesce(cast(produto as varchar), ''),
+            '|', coalesce(cast(dt_foto as varchar), '')
+        )
+    ) AS hash_chave_negocio,
+
+    md5(
+        concat(
+            coalesce(cast(contrato as varchar), ''),
+            '|', coalesce(cast(produto as varchar), ''),
+            '|', coalesce(cast(dt_foto as varchar), '')
+        )
+    ) AS hash_atributos
+FROM workspace_db.opc;
+```
+
+Esse padrão também está alinhado ao exemplo do seu material para `vw_opc_base`, onde:
+
+- `dt_foto AS p_dt_foto`
+    
+- `mes_ref_yyyymm`
+    
+- `dt_ref_yyyymmdd`  
+    aparecem juntos.
+    
+
+---
+
+# Como usar isso sem quebrar pruning
+
+## Regra operacional
+
+### Sempre filtre pela coluna física
+
+Exemplo:
+
+```sql
+SELECT *
+FROM workspace_db.view_silver_padronizado_cobranca_pagamentos
+WHERE p_dt_pagamento_ref BETWEEN '2026-02-01' AND '2026-02-28';
+```
+
+ou
+
+```sql
+SELECT *
+FROM workspace_db.view_silver_padronizado_cobranca_opc_baixas
+WHERE p_dt_foto BETWEEN 20260201 AND 20260229;
+```
+
+### Use as colunas derivadas para:
+
+- joins
+    
+- agrupamentos
+    
+- leitura humana
+    
+- regras semânticas
+    
+
+Exemplo:
+
+```sql
+SELECT
+    mes_ref_yyyymm,
+    escritorio,
+    sum(vl_pago) as vl_pago
+FROM workspace_db.view_silver_padronizado_cobranca_pagamentos
+WHERE p_dt_pagamento_ref BETWEEN '2026-02-01' AND '2026-02-28'
+GROUP BY 1,2;
+```
+
+---
+
+# Anti-patterns proibidos
+
+O seu material já cravou esses como proibidos:
+
+## 1. Transformar a partição no `WHERE`
+
+Errado:
+
+```sql
+WHERE substr(cast(p_dt_foto as varchar), 1, 6) = '202602'
+```
+
+Certo:
+
+```sql
+WHERE p_dt_foto BETWEEN 20260201 AND 20260229
+```
+
+## 2. Filtrar a coluna canônica em vez da física
+
+Errado:
+
+```sql
+WHERE mes_ref_yyyymm = 202602
+```
+
+Certo:
+
+```sql
+WHERE p_anomes = 202602
+```
+
+ou:
+
+```sql
+WHERE p_dt_ref BETWEEN '2026-02-01' AND '2026-02-28'
+```
+
+## 3. Fazer view “bonita” que apaga a física
+
+Errado:
+
+```sql
+CREATE VIEW vw_x AS
+SELECT
+    cast(p_dt_ref as date) as dt_ref_date,
+    date_trunc('month', cast(p_dt_ref as date)) as mes_ref
+FROM tabela;
+```
+
+Certo:
+
+```sql
+CREATE VIEW vw_x AS
+SELECT
+    p_dt_ref,
+    cast(p_dt_ref as date) as dt_ref_date,
+    cast(replace(substr(p_dt_ref,1,7),'-','') as integer) as mes_ref_yyyymm
+FROM tabela;
+```
+
+---
+
+# Como isso ajuda em SCD2
+
+Esse template já prepara bem o terreno para SCD2 porque separa:
+
+## 1. hash da chave de negócio
+
+Serve para identificar o registro de negócio.
+
+Exemplo:
+
+- contrato + produto + data de referência
+    
+
+## 2. hash de atributos
+
+Serve para detectar mudança de conteúdo.
+
+Exemplo:
+
+- boleto
+    
+- valor
+    
+- tipo de acordo
+    
+- status
+    
+- escritório
+    
+
+### Uso mental
+
+- `hash_chave_negocio` → “quem é esse registro?”
+    
+- `hash_atributos` → “ele mudou?”
+    
+
+Isso é especialmente útil quando você for promover essa base padronizada para:
+
+- `view_silver_integrado_*`
+    
+- `iceberg_gold_dimensao_*`
+    
+- `iceberg_gold_fato_*`
+    
+
+---
+
+# Como eu recomendaria como padrão institucional
+
+## Colunas obrigatórias em toda `view_silver_padronizado_*`
+
+### Físicas
+
+- `p_*`
+    
+
+### Canônicas
+
+- `mes_ref_yyyymm`
+    
+- `dt_ref_yyyymmdd`
+    
+- `dt_ref_date`
+    
+- `ts_ref`
+    
+
+### Chaves
+
+- `contrato`
+    
+- `produto`
+    
+- `cnpj_raiz` quando existir
+    
+- `escritorio` quando existir
+    
+
+### Técnicas
+
+- `dt_ingestao_modelo`
+    
+- `id_execucao`
+    
+
+### Hashes
+
+- `hash_chave_negocio`
+    
+- `hash_atributos`
+    
+
+Isso fica completamente coerente com a sua própria regra consolidada:
+
+> Use a coluna física para pruning.  
+> Use a coluna canônica para modelagem.
+
+---
+
+# Resumo brutal
+
+## Pode renomear partição para `p_*`?
+
+Sim.
+
+## Pode criar derivadas na mesma view?
+
+Sim.
+
+## Qual a regra?
+
+- `p_*` = engine / pruning
+    
+- `mes_ref_*`, `dt_ref_*`, `ts_ref` = negócio / join / leitura
+    
+- nunca usar função em cima da `p_*` no filtro
+    
+
+## O que esse template te dá?
+
+- padronização
+    
+- performance
+    
+- legibilidade
+    
+- base para SCD2
+    
+- menos erro silencioso
+    
+
+---
+
+# Frase-mãe
+
+> **A view padronizada boa expõe a física sem sacrificar a semântica.**
+
+Se você quiser, no próximo passo eu posso te devolver um **pacote de 4 templates prontos**:
+
+- `view_silver_padronizado`
+    
+- `view_silver_integrado`
+    
+- `iceberg_gold_dimensao_scd2`
+    
+- `iceberg_gold_fato_incremental`
