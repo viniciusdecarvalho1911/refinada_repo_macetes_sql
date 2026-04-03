@@ -1,0 +1,687 @@
+
+
+
+## Objetivo
+
+Ter 4 templates oficiais para o seu framework:
+
+1. `view_silver_padronizado`
+    
+2. `view_silver_integrado`
+    
+3. `iceberg_gold_dimensao_scd2`
+    
+4. `iceberg_gold_fato_incremental`
+    
+
+Esses 4 templates cobrem bem o fluxo mais comum:
+
+```text
+bronze_fonte → silver_padronizado → silver_integrado → gold
+```
+
+---
+
+# 1. Template — `view_silver_padronizado`
+
+## Quando usar
+
+Use quando a origem ainda está “crua demais” e você precisa criar o **contrato técnico inicial do dado**.
+
+Essa camada serve para:
+
+- renomear colunas
+    
+- ajustar tipos
+    
+- expor partições físicas com `p_*`
+    
+- criar colunas temporais canônicas
+    
+- padronizar chaves
+    
+- incluir colunas técnicas
+    
+- preparar terreno para integração e SCD2
+    
+
+## Naming esperado
+
+```text
+view_silver_padronizado_<dominio>_<entidade>
+```
+
+## Template
+
+```sql
+CREATE OR REPLACE VIEW <database>.view_silver_padronizado_<dominio>_<entidade> AS
+SELECT
+    -- =========================================================
+    -- 1) PARTIÇÃO FÍSICA
+    -- =========================================================
+    <particao_origem> AS p_<particao_origem>,
+
+    -- =========================================================
+    -- 2) COLUNAS TEMPORAIS CANÔNICAS
+    -- =========================================================
+    <expr_mes_ref>       AS mes_ref_yyyymm,
+    <expr_dt_ref_int>    AS dt_ref_yyyymmdd,
+    <expr_dt_ref_date>   AS dt_ref_date,
+    <expr_ts_ref>        AS ts_ref,
+
+    -- =========================================================
+    -- 3) CHAVES DE NEGÓCIO
+    -- =========================================================
+    <coluna_chave_1>,
+    <coluna_chave_2>,
+    <coluna_chave_3>,
+
+    -- =========================================================
+    -- 4) ATRIBUTOS DE NEGÓCIO
+    -- =========================================================
+    <atributo_1>,
+    <atributo_2>,
+    <atributo_3>,
+
+    -- =========================================================
+    -- 5) COLUNAS TÉCNICAS
+    -- =========================================================
+    current_timestamp AS dt_ingestao_modelo,
+    '<id_execucao>'   AS id_execucao,
+
+    -- =========================================================
+    -- 6) HASHES
+    -- =========================================================
+    md5(
+        concat(
+            coalesce(cast(<coluna_chave_1> as varchar), ''),
+            '|', coalesce(cast(<coluna_chave_2> as varchar), ''),
+            '|', coalesce(cast(<expr_dt_ref_int> as varchar), '')
+        )
+    ) AS hash_chave_negocio,
+
+    md5(
+        concat(
+            coalesce(cast(<atributo_1> as varchar), ''),
+            '|', coalesce(cast(<atributo_2> as varchar), ''),
+            '|', coalesce(cast(<atributo_3> as varchar), '')
+        )
+    ) AS hash_atributos
+
+FROM <database_origem>.<tabela_origem>;
+```
+
+## Exemplo com partição `int YYYYMMDD`
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_boletos AS
+SELECT
+    dt_ref AS p_dt_ref,
+
+    cast(substr(cast(dt_ref as varchar), 1, 6) as integer) AS mes_ref_yyyymm,
+    dt_ref AS dt_ref_yyyymmdd,
+    cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as date) AS dt_ref_date,
+    cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as timestamp) AS ts_ref,
+
+    contrato,
+    produto,
+    boleto,
+
+    vl_pago,
+    vl_desconto_boleto,
+    flag_cancelado,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'manual_local' AS id_execucao,
+
+    md5(
+        concat(
+            coalesce(cast(contrato as varchar), ''),
+            '|', coalesce(cast(produto as varchar), ''),
+            '|', coalesce(cast(dt_ref as varchar), '')
+        )
+    ) AS hash_chave_negocio,
+
+    md5(
+        concat(
+            coalesce(cast(boleto as varchar), ''),
+            '|', coalesce(cast(vl_pago as varchar), ''),
+            '|', coalesce(cast(vl_desconto_boleto as varchar), '')
+        )
+    ) AS hash_atributos
+
+FROM workspace_db.tabela_bronze_fonte_sap_boletos;
+```
+
+## Regra operacional
+
+Sempre filtre a **partição física**:
+
+```sql
+WHERE p_dt_ref BETWEEN 20260201 AND 20260229
+```
+
+Nunca filtre a derivada como substituta do pruning. Isso está totalmente alinhado ao padrão que você consolidou.
+
+---
+
+# 2. Template — `view_silver_integrado`
+
+## Quando usar
+
+Use quando você já tem fontes padronizadas e quer construir **informação reutilizável**, com:
+
+- joins
+    
+- deduplicação
+    
+- enriquecimento
+    
+- regra intermediária
+    
+- consolidação entre fontes
+    
+
+## Naming esperado
+
+```text
+view_silver_integrado_<dominio>_<entidade_ou_regra>
+```
+
+## Regra crítica
+
+> `silver_integrado` deve depender sempre de `silver_padronizado`.
+
+## Template
+
+```sql
+CREATE OR REPLACE VIEW <database>.view_silver_integrado_<dominio>_<entidade> AS
+WITH base_principal AS (
+    SELECT
+        p_<particao>,
+        mes_ref_yyyymm,
+        dt_ref_yyyymmdd,
+        dt_ref_date,
+        ts_ref,
+        <chaves>,
+        <atributos>
+    FROM <database>.view_silver_padronizado_<dominio>_<base_1>
+),
+
+base_auxiliar_1 AS (
+    SELECT
+        <chaves_join>,
+        <atributos_auxiliares>
+    FROM <database>.view_silver_padronizado_<dominio>_<base_2>
+),
+
+base_auxiliar_2 AS (
+    SELECT
+        <chaves_join>,
+        <atributos_auxiliares>
+    FROM <database>.view_silver_padronizado_<dominio>_<base_3>
+),
+
+joined AS (
+    SELECT
+        b.*,
+        a1.<atributo_aux_1>,
+        a2.<atributo_aux_2>
+    FROM base_principal b
+    LEFT JOIN base_auxiliar_1 a1
+      ON <condicao_join_1>
+    LEFT JOIN base_auxiliar_2 a2
+      ON <condicao_join_2>
+),
+
+regras AS (
+    SELECT
+        *,
+        <regra_1> AS <saida_regra_1>,
+        <regra_2> AS <saida_regra_2>
+    FROM joined
+)
+
+SELECT *
+FROM regras;
+```
+
+## Exemplo realista — pagamentos conciliados
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_cobranca_pagamentos_conciliados AS
+WITH boletos AS (
+    SELECT
+        p_dt_ref,
+        mes_ref_yyyymm,
+        dt_ref_yyyymmdd,
+        dt_ref_date,
+        contrato,
+        produto,
+        boleto,
+        vl_pago,
+        vl_desconto_boleto,
+        'BOLETO' AS origem_pagamento
+    FROM workspace_db.view_silver_padronizado_cobranca_boletos
+    WHERE flag_cancelado = 0
+),
+
+debito AS (
+    SELECT
+        p_dt_ref,
+        mes_ref_yyyymm,
+        dt_ref_yyyymmdd,
+        dt_ref_date,
+        contrato,
+        produto,
+        cast(null as varchar) AS boleto,
+        vl_pago,
+        cast(null as decimal(18,2)) AS vl_desconto_boleto,
+        'DEBITO_CONTA' AS origem_pagamento
+    FROM workspace_db.view_silver_padronizado_cobranca_debito_conta
+),
+
+unionado AS (
+    SELECT * FROM boletos
+    UNION ALL
+    SELECT * FROM debito
+),
+
+dedup AS (
+    SELECT *
+    FROM (
+        SELECT
+            u.*,
+            row_number() over (
+                partition by contrato, produto, dt_ref_yyyymmdd, vl_pago
+                order by
+                    case origem_pagamento
+                        when 'BOLETO' then 1
+                        when 'DEBITO_CONTA' then 2
+                        else 99
+                    end
+            ) as rn
+        FROM unionado u
+    ) x
+    WHERE rn = 1
+)
+
+SELECT *
+FROM dedup;
+```
+
+---
+
+# 3. Template — `iceberg_gold_dimensao_scd2`
+
+## Quando usar
+
+Use quando a entidade:
+
+- é descritiva
+    
+- muda ao longo do tempo
+    
+- precisa manter histórico
+    
+- será reutilizada por vários fatos
+    
+
+Kimball trata SCD Type 2 como a resposta clássica para manter histórico de mudança de dimensão.
+
+## Naming esperado
+
+```text
+iceberg_gold_dimensao_<entidade>
+```
+
+## Estrutura conceitual
+
+Toda dimensão SCD2 deve ter, no mínimo:
+
+- chave substituta
+    
+- chave natural
+    
+- atributos de negócio
+    
+- `dt_inicio_vigencia`
+    
+- `dt_fim_vigencia`
+    
+- `fl_ativo`
+    
+- hash de atributos
+    
+
+## DDL base
+
+```sql
+CREATE TABLE IF NOT EXISTS <database>.iceberg_gold_dimensao_<entidade> (
+    sk_<entidade>            bigint,
+    nk_<entidade>            varchar,
+
+    <atributo_1>             varchar,
+    <atributo_2>             varchar,
+    <atributo_3>             varchar,
+
+    hash_atributos           varchar,
+
+    dt_inicio_vigencia       date,
+    dt_fim_vigencia          date,
+    fl_ativo                 boolean,
+
+    dt_carga                 timestamp,
+    id_execucao              varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    location = 's3://<bucket>/gold/dimensao/<entidade>/'
+);
+```
+
+## Base de staging para comparação
+
+```sql
+WITH origem AS (
+    SELECT
+        nk_<entidade>,
+        <atributo_1>,
+        <atributo_2>,
+        <atributo_3>,
+        md5(
+            concat(
+                coalesce(cast(<atributo_1> as varchar), ''),
+                '|', coalesce(cast(<atributo_2> as varchar), ''),
+                '|', coalesce(cast(<atributo_3> as varchar), '')
+            )
+        ) AS hash_atributos
+    FROM <database>.view_silver_integrado_<dominio>_<entidade>
+),
+
+ativos AS (
+    SELECT *
+    FROM <database>.iceberg_gold_dimensao_<entidade>
+    WHERE fl_ativo = true
+),
+
+mudancas AS (
+    SELECT
+        o.*
+    FROM origem o
+    LEFT JOIN ativos a
+      ON o.nk_<entidade> = a.nk_<entidade>
+    WHERE a.nk_<entidade> IS NULL
+       OR o.hash_atributos <> a.hash_atributos
+)
+SELECT *
+FROM mudancas;
+```
+
+## Lógica operacional
+
+### Passo 1
+
+Fechar registros ativos que mudaram
+
+```sql
+MERGE INTO <database>.iceberg_gold_dimensao_<entidade> t
+USING (
+    SELECT
+        o.nk_<entidade>
+    FROM origem o
+    JOIN <database>.iceberg_gold_dimensao_<entidade> a
+      ON o.nk_<entidade> = a.nk_<entidade>
+     AND a.fl_ativo = true
+    WHERE o.hash_atributos <> a.hash_atributos
+) s
+ON t.nk_<entidade> = s.nk_<entidade>
+AND t.fl_ativo = true
+WHEN MATCHED THEN
+UPDATE SET
+    dt_fim_vigencia = current_date - interval '1' day,
+    fl_ativo = false;
+```
+
+### Passo 2
+
+Inserir nova versão
+
+```sql
+INSERT INTO <database>.iceberg_gold_dimensao_<entidade>
+SELECT
+    xxhash64(nk_<entidade>) AS sk_<entidade>,
+    nk_<entidade>,
+    <atributo_1>,
+    <atributo_2>,
+    <atributo_3>,
+    hash_atributos,
+    current_date AS dt_inicio_vigencia,
+    DATE '9999-12-31' AS dt_fim_vigencia,
+    true AS fl_ativo,
+    current_timestamp AS dt_carga,
+    '<id_execucao>' AS id_execucao
+FROM mudancas;
+```
+
+---
+
+# 4. Template — `iceberg_gold_fato_incremental`
+
+## Quando usar
+
+Use quando você quer uma fato oficial que:
+
+- recebe carga incremental
+    
+- pode ter dado atrasado
+    
+- precisa de MERGE
+    
+- será base analítica confiável
+    
+
+Kimball distingue claramente fatos de processos, snapshots e grão; e o seu caso de pagamentos consolidados encaixa muito bem como fato de processo/transaction fact.
+
+## Naming esperado
+
+```text
+iceberg_gold_fato_<processo>
+```
+
+## DDL base
+
+```sql
+CREATE TABLE IF NOT EXISTS <database>.iceberg_gold_fato_<processo> (
+    p_anomes                 integer,
+    p_dt_ref                 integer,
+
+    <chave_1>                varchar,
+    <chave_2>                varchar,
+    <chave_3>                varchar,
+
+    <medida_1>               decimal(18,2),
+    <medida_2>               decimal(18,2),
+    <medida_3>               decimal(18,2),
+
+    versao_regra             varchar,
+    dt_carga                 timestamp,
+    id_execucao              varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    partitioning = ARRAY['p_anomes'],
+    location = 's3://<bucket>/gold/fato/<processo>/'
+);
+```
+
+## Base incremental
+
+```sql
+WITH parametros AS (
+    SELECT
+        202602 AS p_anomes
+),
+
+janela AS (
+    SELECT
+        coalesce(max(p_dt_ref), 20260101) - 7 AS dt_ref_min
+    FROM <database>.iceberg_gold_fato_<processo>
+),
+
+origem AS (
+    SELECT
+        p_anomes,
+        p_dt_ref,
+        <chave_1>,
+        <chave_2>,
+        <chave_3>,
+        <medida_1>,
+        <medida_2>,
+        <medida_3>,
+        'v1' AS versao_regra,
+        current_timestamp AS dt_carga,
+        '<id_execucao>' AS id_execucao
+    FROM <database>.view_silver_integrado_<dominio>_<entidade>
+    WHERE p_dt_ref >= (SELECT dt_ref_min FROM janela)
+)
+SELECT *
+FROM origem;
+```
+
+## MERGE incremental
+
+```sql
+MERGE INTO <database>.iceberg_gold_fato_<processo> t
+USING origem s
+ON t.<chave_1> = s.<chave_1>
+AND t.<chave_2> = s.<chave_2>
+AND t.<chave_3> = s.<chave_3>
+WHEN MATCHED THEN
+UPDATE SET
+    p_anomes      = s.p_anomes,
+    p_dt_ref      = s.p_dt_ref,
+    <medida_1>    = s.<medida_1>,
+    <medida_2>    = s.<medida_2>,
+    <medida_3>    = s.<medida_3>,
+    versao_regra  = s.versao_regra,
+    dt_carga      = s.dt_carga,
+    id_execucao   = s.id_execucao
+WHEN NOT MATCHED THEN
+INSERT (
+    p_anomes,
+    p_dt_ref,
+    <chave_1>,
+    <chave_2>,
+    <chave_3>,
+    <medida_1>,
+    <medida_2>,
+    <medida_3>,
+    versao_regra,
+    dt_carga,
+    id_execucao
+)
+VALUES (
+    s.p_anomes,
+    s.p_dt_ref,
+    s.<chave_1>,
+    s.<chave_2>,
+    s.<chave_3>,
+    s.<medida_1>,
+    s.<medida_2>,
+    s.<medida_3>,
+    s.versao_regra,
+    s.dt_carga,
+    s.id_execucao
+);
+```
+
+Esse padrão conversa diretamente com o uso de Iceberg no Athena, com CTAS/INSERT INTO/queries SQL e carga incremental por janela de segurança.
+
+---
+
+# 5. Como esses 4 templates se conectam
+
+## Fluxo padrão
+
+```text
+tabela_bronze_fonte_<sistema>_<entidade>
+    ↓
+view_silver_padronizado_<dominio>_<entidade>
+    ↓
+view_silver_integrado_<dominio>_<entidade_ou_regra>
+    ↓
+iceberg_gold_dimensao_<entidade>
+ou
+iceberg_gold_fato_<processo>
+```
+
+Isso bate 100% com o contrato do seu naming oficial.
+
+---
+
+# 6. Heurística prática
+
+## Use `view_silver_padronizado` quando:
+
+- o problema ainda é técnico
+    
+- você quer normalizar a origem
+    
+- precisa expor partição física + colunas canônicas
+    
+
+## Use `view_silver_integrado` quando:
+
+- você quer unir fontes
+    
+- aplicar regra intermediária
+    
+- preparar entidades reutilizáveis
+    
+
+## Use `iceberg_gold_dimensao_scd2` quando:
+
+- o dado é descritivo
+    
+- precisa manter histórico
+    
+- será usado por vários fatos
+    
+
+## Use `iceberg_gold_fato_incremental` quando:
+
+- o processo tem medidas
+    
+- precisa de carga incremental
+    
+- vai servir BI, métricas e agregações
+    
+
+---
+
+# 7. Regras finais que não mudam
+
+1. `silver_integrado` depende de `silver_padronizado`.
+    
+2. `p_*` é para o engine; colunas derivadas são para regra de negócio.
+    
+3. filtro de partição deve usar a coluna física, não a derivada.
+    
+4. gold crítico precisa de teste.
+    
+5. se a lógica é recorrente e cara, promova para tabela.
+    
+
+---
+
+# 8. Frase-mãe
+
+> **Padronizado organiza a fonte.  
+> Integrado organiza a informação.  
+> Dimensão organiza o contexto.  
+> Fato organiza o processo.**
+
+Se você quiser, no próximo passo eu transformo esse pacote em uma **nota Obsidian completa com callouts**, ou já **preencho os 4 templates com o seu caso de pagamentos consolidados**.
