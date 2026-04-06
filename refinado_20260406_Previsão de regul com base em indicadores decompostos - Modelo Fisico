@@ -1,0 +1,1469 @@
+Perfeito. Vou te entregar um **modelo físico completo no Athena**, já no padrão do seu stack:
+
+- **Iceberg como materialização oficial**
+- **safra de emissão separada de conversão/pagamento**
+- **curva histórica de delay**
+- **projeção por safra com guardrails anti-estouro**
+- **consolidação final da regul projetada por escritório/mês**
+
+O desenho abaixo segue 4 princípios que batem com as fontes:
+
+1. **grão declarado antes de tudo**
+2. **fatos com timings diferentes em tabelas diferentes**
+3. **bronze → silver_padronizado → silver_integrado → gold/mart**
+4. **Athena + Iceberg para materializar; CTAS/INSERT para ETL e MERGE só quando houver necessidade real de upsert**
+
+---
+
+# Contexto
+
+No seu caso, **emissão** e **conversão/pagamento** não acontecem no mesmo momento.  
+Então o desenho correto não é uma tabela única “misturadona”.
+
+O desenho correto é:
+
+fato 1 = safra de emissão  
+fato 2 = conversão observada por delay da safra  
+mart 1 = curva histórica de delay  
+mart 2 = projeção diária por safra  
+mart 3 = consolidação final por escritório/mês
+
+Isso está totalmente alinhado com a lógica dimensional de separar fatos com timings diferentes, e também com o seu próprio framework de projeção, que recomenda decompor `REGUL = EMISSÃO × CONVERSÃO × TICKET` em vez de projetar regul direto.
+
+---
+
+# Premissas do modelo
+
+Vou assumir estas origens lógicas, adaptáveis aos seus nomes reais:
+
+silver_db.view_silver_integrado_cobranca_boletos_emitidos  
+silver_db.view_silver_integrado_cobranca_boletos_pagos  
+ctrl_db.dim_calendario
+
+## Colunas mínimas esperadas na emissão
+
+dt_emissao  
+anomes  
+escritorio  
+boleto_id  
+contrato  
+produto  
+tp_negociacao  
+perc_desconto  
+vl_boleto_emitido  
+canal  
+faixa_atraso
+
+## Colunas mínimas esperadas no pagamento
+
+dt_pagamento  
+boleto_id  
+vl_pago
+
+## Observação importante
+
+Vou modelar o delay em **dias corridos** para manter o SQL simples e implementável.  
+Se você quiser, depois adaptamos para **dias úteis**, usando a `dim_calendario`.
+
+---
+
+# Naming adotado
+
+Seguindo seu padrão:
+
+iceberg_gold_fato_cobranca_safra_emissao  
+iceberg_gold_fato_cobranca_safra_conversao_delay  
+iceberg_gold_mart_cobranca_curva_delay_historica  
+iceberg_gold_mart_cobranca_projecao_safra_diaria  
+iceberg_gold_mart_cobranca_regul_projetada_escritorio_mes
+
+Isso está alinhado com o contrato oficial de naming e com a separação entre fato e mart no seu material.
+
+---
+
+# 1) DDL das tabelas de safra
+
+## 1.1 Fato de safra de emissão
+
+**Grão**
+
+1 linha = 1 dt_emissao + 1 escritório + 1 bucket_modelagem
+
+CREATE TABLE IF NOT EXISTS gold_db.iceberg_gold_fato_cobranca_safra_emissao (  
+    dt_emissao                  date,  
+    anomes                      integer,  
+    escritorio                  varchar,  
+    bucket_modelagem            varchar,  
+  
+    tp_negociacao               varchar,  
+    faixa_desconto              varchar,  
+    faixa_ticket                varchar,  
+    canal                       varchar,  
+    faixa_atraso                varchar,  
+  
+    qtd_emitidos                bigint,  
+    vl_emitido_total            decimal(18,2),  
+    ticket_emitido_medio        decimal(18,2),  
+  
+    dt_ingestao_modelo          timestamp,  
+    id_execucao                 varchar  
+)  
+WITH (  
+    table_type='ICEBERG',  
+    format='PARQUET',  
+    write_compression='SNAPPY',  
+    partitioning = ARRAY['month(dt_emissao)', 'escritorio'],  
+    location='s3://lakehouse/gold/iceberg_gold_fato_cobranca_safra_emissao/'  
+);
+
+## 1.2 Fato de conversão observada por delay
+
+**Grão**
+
+1 linha = 1 dt_emissao + 1 escritório + 1 bucket_modelagem + 1 delay_dias
+
+CREATE TABLE IF NOT EXISTS gold_db.iceberg_gold_fato_cobranca_safra_conversao_delay (  
+    dt_emissao                  date,  
+    anomes                      integer,  
+    escritorio                  varchar,  
+    bucket_modelagem            varchar,  
+    delay_dias                  integer,  
+  
+    tp_negociacao               varchar,  
+    faixa_desconto              varchar,  
+    faixa_ticket                varchar,  
+    canal                       varchar,  
+    faixa_atraso                varchar,  
+  
+    qtd_emitidos_safra          bigint,  
+    qtd_convertidos_delay       bigint,  
+    vl_convertido_delay         decimal(18,2),  
+    ticket_pago_medio_delay     decimal(18,2),  
+  
+    dt_ingestao_modelo          timestamp,  
+    id_execucao                 varchar  
+)  
+WITH (  
+    table_type='ICEBERG',  
+    format='PARQUET',  
+    write_compression='SNAPPY',  
+    partitioning = ARRAY['month(dt_emissao)', 'escritorio'],  
+    location='s3://lakehouse/gold/iceberg_gold_fato_cobranca_safra_conversao_delay/'  
+);
+
+## 1.3 Mart da curva histórica de delay
+
+CREATE TABLE IF NOT EXISTS gold_db.iceberg_gold_mart_cobranca_curva_delay_historica (  
+    anomes_referencia           integer,  
+    escritorio                  varchar,  
+    bucket_modelagem            varchar,  
+    delay_dias                  integer,  
+  
+    qtd_safras                  bigint,  
+  
+    pct_conv_no_delay_p25       double,  
+    pct_conv_no_delay_p50       double,  
+    pct_conv_no_delay_p75       double,  
+  
+    pct_conv_acum_delay_p25     double,  
+    pct_conv_acum_delay_p50     double,  
+    pct_conv_acum_delay_p75     double,  
+  
+    conv_final_hist_p25         double,  
+    conv_final_hist_p50         double,  
+    conv_final_hist_p75         double,  
+  
+    ticket_pago_hist_p25        double,  
+    ticket_pago_hist_p50        double,  
+    ticket_pago_hist_p75        double,  
+  
+    dt_ingestao_modelo          timestamp,  
+    id_execucao                 varchar  
+)  
+WITH (  
+    table_type='ICEBERG',  
+    format='PARQUET',  
+    write_compression='SNAPPY',  
+    partitioning = ARRAY['anomes_referencia', 'escritorio'],  
+    location='s3://lakehouse/gold/iceberg_gold_mart_cobranca_curva_delay_historica/'  
+);
+
+## 1.4 Mart da projeção diária por safra
+
+CREATE TABLE IF NOT EXISTS gold_db.iceberg_gold_mart_cobranca_projecao_safra_diaria (  
+    dt_base                     date,  
+    anomes                      integer,  
+    escritorio                  varchar,  
+    dt_emissao                  date,  
+    bucket_modelagem            varchar,  
+    idade_safra_dias            integer,  
+  
+    qtd_emitidos_safra          bigint,  
+    qtd_convertidos_ate_hoje    bigint,  
+    vl_convertido_ate_hoje      decimal(18,2),  
+  
+    conv_obs_acum               double,  
+    pct_hist_acum_ate_idade     double,  
+    conv_final_implicita        double,  
+    conv_final_hist             double,  
+    conv_final_proj             double,  
+  
+    ticket_pago_hist            double,  
+    ticket_pago_obs_ate_hoje    double,  
+    ticket_pago_proj            double,  
+  
+    qtd_convertida_final_proj   double,  
+    qtd_ainda_converter_proj    double,  
+  
+    regul_final_proj_safra      decimal(18,2),  
+    regul_ja_observado_safra    decimal(18,2),  
+    regul_ainda_esperado_safra  decimal(18,2),  
+  
+    fl_clip_superior            integer,  
+    fl_clip_inferior            integer,  
+    peso_hist                   double,  
+    peso_obs                    double,  
+    fator_teto                  double,  
+    fator_piso                  double,  
+  
+    dt_ingestao_modelo          timestamp,  
+    id_execucao                 varchar  
+)  
+WITH (  
+    table_type='ICEBERG',  
+    format='PARQUET',  
+    write_compression='SNAPPY',  
+    partitioning = ARRAY['month(dt_base)', 'escritorio'],  
+    location='s3://lakehouse/gold/iceberg_gold_mart_cobranca_projecao_safra_diaria/'  
+);
+
+## 1.5 Mart final consolidada por escritório/mês
+
+CREATE TABLE IF NOT EXISTS gold_db.iceberg_gold_mart_cobranca_regul_projetada_escritorio_mes (  
+    dt_base                              date,  
+    anomes                               integer,  
+    escritorio                           varchar,  
+  
+    regul_ja_realizado_mes               decimal(18,2),  
+    regul_proj_safras_emitidas_mes       decimal(18,2),  
+    regul_proj_emissoes_futuras_mes      decimal(18,2),  
+    regul_proj_total_mes                 decimal(18,2),  
+  
+    eficiencia_proj_total_mes            double,  
+  
+    qtd_emitidos_ate_hoje                bigint,  
+    qtd_emitidos_proj_mes                double,  
+  
+    conv_media_proj_mes                  double,  
+    ticket_medio_proj_mes                double,  
+  
+    nivel_confianca                      varchar,  
+    txt_projecao                         varchar,  
+  
+    dt_ingestao_modelo                   timestamp,  
+    id_execucao                          varchar  
+)  
+WITH (  
+    table_type='ICEBERG',  
+    format='PARQUET',  
+    write_compression='SNAPPY',  
+    partitioning = ARRAY['anomes', 'escritorio'],  
+    location='s3://lakehouse/gold/iceberg_gold_mart_cobranca_regul_projetada_escritorio_mes/'  
+);
+
+Athena suporta criação e manutenção de tabelas Iceberg, inclusive `INSERT`, `UPDATE`, `DELETE` e `MERGE INTO`; para ETL, a própria documentação recomenda CTAS para bootstrap e `INSERT INTO` para cargas subsequentes, enquanto `MERGE INTO` é transacional apenas em Engine v3.
+
+---
+
+# 2) SQL de carga da safra de emissão
+
+Aqui eu parto da sua view integrada de boletos emitidos.
+
+DELETE FROM gold_db.iceberg_gold_fato_cobranca_safra_emissao  
+WHERE anomes = 202603;  
+  
+INSERT INTO gold_db.iceberg_gold_fato_cobranca_safra_emissao  
+WITH base AS (  
+    SELECT  
+        cast(dt_emissao as date)                                AS dt_emissao,  
+        cast(date_format(cast(dt_emissao as date), '%Y%m') as integer) AS anomes,  
+        cast(escritorio as varchar)                             AS escritorio,  
+  
+        cast(tp_negociacao as varchar)                          AS tp_negociacao,  
+  
+        CASE  
+            WHEN coalesce(perc_desconto, 0) = 0 THEN '00_0'  
+            WHEN perc_desconto <= 0.10 THEN '01_ATE_10'  
+            WHEN perc_desconto <= 0.20 THEN '02_ATE_20'  
+            WHEN perc_desconto <= 0.30 THEN '03_ATE_30'  
+            ELSE '04_ACIMA_30'  
+        END AS faixa_desconto,  
+  
+        CASE  
+            WHEN vl_boleto_emitido < 200 THEN '01_ATE_199'  
+            WHEN vl_boleto_emitido < 400 THEN '02_200_399'  
+            WHEN vl_boleto_emitido < 800 THEN '03_400_799'  
+            ELSE '04_800_MAIS'  
+        END AS faixa_ticket,  
+  
+        cast(canal as varchar)                                  AS canal,  
+        cast(faixa_atraso as varchar)                           AS faixa_atraso,  
+  
+        cast(boleto_id as varchar)                              AS boleto_id,  
+        cast(vl_boleto_emitido as decimal(18,2))                AS vl_boleto_emitido  
+    FROM silver_db.view_silver_integrado_cobranca_boletos_emitidos  
+    WHERE cast(date_format(cast(dt_emissao as date), '%Y%m') as integer) = 202603  
+),  
+bucketizado AS (  
+    SELECT  
+        dt_emissao,  
+        anomes,  
+        escritorio,  
+        concat(  
+            coalesce(tp_negociacao, 'NA'), '|',  
+            coalesce(faixa_desconto, 'NA'), '|',  
+            coalesce(faixa_ticket, 'NA'), '|',  
+            coalesce(canal, 'NA'), '|',  
+            coalesce(faixa_atraso, 'NA')  
+        ) AS bucket_modelagem,  
+  
+        tp_negociacao,  
+        faixa_desconto,  
+        faixa_ticket,  
+        canal,  
+        faixa_atraso,  
+  
+        count(*)                                               AS qtd_emitidos,  
+        cast(sum(vl_boleto_emitido) as decimal(18,2))          AS vl_emitido_total,  
+        cast(avg(vl_boleto_emitido) as decimal(18,2))          AS ticket_emitido_medio  
+    FROM base  
+    GROUP BY 1,2,3,4,5,6,7,8,9  
+)  
+SELECT  
+    dt_emissao,  
+    anomes,  
+    escritorio,  
+    bucket_modelagem,  
+    tp_negociacao,  
+    faixa_desconto,  
+    faixa_ticket,  
+    canal,  
+    faixa_atraso,  
+    qtd_emitidos,  
+    vl_emitido_total,  
+    ticket_emitido_medio,  
+    current_timestamp,  
+    'exec_202603_safra_emissao'  
+FROM bucketizado;
+
+---
+
+# 3) SQL de carga da safra de conversão por delay
+
+Aqui a ideia é ligar pagamento à safra de emissão e abrir por `delay_dias`.
+
+DELETE FROM gold_db.iceberg_gold_fato_cobranca_safra_conversao_delay  
+WHERE anomes = 202603;  
+  
+INSERT INTO gold_db.iceberg_gold_fato_cobranca_safra_conversao_delay  
+WITH emissao_detalhe AS (  
+    SELECT  
+        cast(e.dt_emissao as date)                             AS dt_emissao,  
+        cast(date_format(cast(e.dt_emissao as date), '%Y%m') as integer) AS anomes,  
+        cast(e.escritorio as varchar)                          AS escritorio,  
+        cast(e.boleto_id as varchar)                           AS boleto_id,  
+  
+        cast(e.tp_negociacao as varchar)                       AS tp_negociacao,  
+  
+        CASE  
+            WHEN coalesce(e.perc_desconto, 0) = 0 THEN '00_0'  
+            WHEN e.perc_desconto <= 0.10 THEN '01_ATE_10'  
+            WHEN e.perc_desconto <= 0.20 THEN '02_ATE_20'  
+            WHEN e.perc_desconto <= 0.30 THEN '03_ATE_30'  
+            ELSE '04_ACIMA_30'  
+        END AS faixa_desconto,  
+  
+        CASE  
+            WHEN e.vl_boleto_emitido < 200 THEN '01_ATE_199'  
+            WHEN e.vl_boleto_emitido < 400 THEN '02_200_399'  
+            WHEN e.vl_boleto_emitido < 800 THEN '03_400_799'  
+            ELSE '04_800_MAIS'  
+        END AS faixa_ticket,  
+  
+        cast(e.canal as varchar)                               AS canal,  
+        cast(e.faixa_atraso as varchar)                        AS faixa_atraso  
+    FROM silver_db.view_silver_integrado_cobranca_boletos_emitidos e  
+    WHERE cast(date_format(cast(e.dt_emissao as date), '%Y%m') as integer) = 202603  
+),  
+pagto AS (  
+    SELECT  
+        cast(boleto_id as varchar)                             AS boleto_id,  
+        cast(dt_pagamento as date)                             AS dt_pagamento,  
+        cast(vl_pago as decimal(18,2))                         AS vl_pago  
+    FROM silver_db.view_silver_integrado_cobranca_boletos_pagos  
+    WHERE cast(date_format(cast(dt_pagamento as date), '%Y%m') as integer) >= 202603  
+),  
+joined AS (  
+    SELECT  
+        e.dt_emissao,  
+        e.anomes,  
+        e.escritorio,  
+        concat(  
+            coalesce(e.tp_negociacao, 'NA'), '|',  
+            coalesce(e.faixa_desconto, 'NA'), '|',  
+            coalesce(e.faixa_ticket, 'NA'), '|',  
+            coalesce(e.canal, 'NA'), '|',  
+            coalesce(e.faixa_atraso, 'NA')  
+        ) AS bucket_modelagem,  
+        e.tp_negociacao,  
+        e.faixa_desconto,  
+        e.faixa_ticket,  
+        e.canal,  
+        e.faixa_atraso,  
+        date_diff('day', e.dt_emissao, p.dt_pagamento)         AS delay_dias,  
+        p.vl_pago  
+    FROM emissao_detalhe e  
+    JOIN pagto p  
+      ON e.boleto_id = p.boleto_id  
+    WHERE p.dt_pagamento >= e.dt_emissao  
+      AND date_diff('day', e.dt_emissao, p.dt_pagamento) <= 60  
+),  
+safra_base AS (  
+    SELECT  
+        dt_emissao,  
+        anomes,  
+        escritorio,  
+        concat(  
+            coalesce(tp_negociacao, 'NA'), '|',  
+            coalesce(faixa_desconto, 'NA'), '|',  
+            coalesce(faixa_ticket, 'NA'), '|',  
+            coalesce(canal, 'NA'), '|',  
+            coalesce(faixa_atraso, 'NA')  
+        ) AS bucket_modelagem,  
+        tp_negociacao,  
+        faixa_desconto,  
+        faixa_ticket,  
+        canal,  
+        faixa_atraso,  
+        count(*) AS qtd_emitidos_safra  
+    FROM emissao_detalhe  
+    GROUP BY 1,2,3,4,5,6,7,8,9  
+),  
+agregado_delay AS (  
+    SELECT  
+        j.dt_emissao,  
+        j.anomes,  
+        j.escritorio,  
+        j.bucket_modelagem,  
+        j.delay_dias,  
+        j.tp_negociacao,  
+        j.faixa_desconto,  
+        j.faixa_ticket,  
+        j.canal,  
+        j.faixa_atraso,  
+        count(*)                                              AS qtd_convertidos_delay,  
+        cast(sum(j.vl_pago) as decimal(18,2))                 AS vl_convertido_delay,  
+        cast(avg(j.vl_pago) as decimal(18,2))                 AS ticket_pago_medio_delay  
+    FROM joined j  
+    GROUP BY 1,2,3,4,5,6,7,8,9,10  
+)  
+SELECT  
+    a.dt_emissao,  
+    a.anomes,  
+    a.escritorio,  
+    a.bucket_modelagem,  
+    a.delay_dias,  
+    a.tp_negociacao,  
+    a.faixa_desconto,  
+    a.faixa_ticket,  
+    a.canal,  
+    a.faixa_atraso,  
+    s.qtd_emitidos_safra,  
+    a.qtd_convertidos_delay,  
+    a.vl_convertido_delay,  
+    a.ticket_pago_medio_delay,  
+    current_timestamp,  
+    'exec_202603_safra_delay'  
+FROM agregado_delay a  
+JOIN safra_base s  
+  ON a.dt_emissao = s.dt_emissao  
+ AND a.anomes = s.anomes  
+ AND a.escritorio = s.escritorio  
+ AND a.bucket_modelagem = s.bucket_modelagem;
+
+---
+
+# 4) SQL da curva histórica de delay
+
+Aqui está a parte mais importante da base histórica.
+
+A mart abaixo calcula:
+
+- `% de conversão no delay`
+- `% acumulado até o delay`
+- conversão final histórica
+- ticket histórico
+
+Vou usar:
+
+- últimos 6 meses
+- mais o mesmo mês do ano anterior
+- `p25/p50/p75`
+
+Isso está em linha com a sua própria recomendação de combinar recência e sazonalidade anual, em vez de usar média simples.
+
+DELETE FROM gold_db.iceberg_gold_mart_cobranca_curva_delay_historica  
+WHERE anomes_referencia = 202603;  
+  
+INSERT INTO gold_db.iceberg_gold_mart_cobranca_curva_delay_historica  
+WITH historico_filtrado AS (  
+    SELECT *  
+    FROM gold_db.iceberg_gold_fato_cobranca_safra_conversao_delay  
+    WHERE anomes IN (202602, 202601, 202512, 202511, 202510, 202509, 202503)  
+),  
+conv_final_safra AS (  
+    SELECT  
+        dt_emissao,  
+        anomes,  
+        escritorio,  
+        bucket_modelagem,  
+        max(qtd_emitidos_safra)                                         AS qtd_emitidos_safra,  
+        sum(qtd_convertidos_delay)                                      AS qtd_convertidos_total,  
+        sum(cast(vl_convertido_delay as double))                        AS vl_convertido_total,  
+        sum(cast(vl_convertido_delay as double))  
+            / nullif(sum(qtd_convertidos_delay), 0)                     AS ticket_pago_final  
+    FROM historico_filtrado  
+    GROUP BY 1,2,3,4  
+),  
+delay_pct AS (  
+    SELECT  
+        h.anomes,  
+        h.escritorio,  
+        h.bucket_modelagem,  
+        h.delay_dias,  
+        h.dt_emissao,  
+  
+        cast(h.qtd_convertidos_delay as double) / nullif(h.qtd_emitidos_safra, 0) AS pct_conv_no_delay  
+    FROM historico_filtrado h  
+),  
+delay_acum AS (  
+    SELECT  
+        d.anomes,  
+        d.escritorio,  
+        d.bucket_modelagem,  
+        d.delay_dias,  
+        d.dt_emissao,  
+        d.pct_conv_no_delay,  
+  
+        sum(d.pct_conv_no_delay) over (  
+            partition by d.dt_emissao, d.escritorio, d.bucket_modelagem  
+            order by d.delay_dias  
+            rows between unbounded preceding and current row  
+        ) AS pct_conv_acum_delay  
+    FROM delay_pct d  
+),  
+base_final AS (  
+    SELECT  
+        a.anomes,  
+        a.escritorio,  
+        a.bucket_modelagem,  
+        a.delay_dias,  
+        a.pct_conv_no_delay,  
+        a.pct_conv_acum_delay,  
+        cast(f.qtd_convertidos_total as double) / nullif(f.qtd_emitidos_safra, 0) AS conv_final_hist,  
+        f.ticket_pago_final  
+    FROM delay_acum a  
+    JOIN conv_final_safra f  
+      ON a.dt_emissao = f.dt_emissao  
+     AND a.anomes = f.anomes  
+     AND a.escritorio = f.escritorio  
+     AND a.bucket_modelagem = f.bucket_modelagem  
+)  
+SELECT  
+    202603 AS anomes_referencia,  
+    escritorio,  
+    bucket_modelagem,  
+    delay_dias,  
+    count(*) AS qtd_safras,  
+  
+    approx_percentile(pct_conv_no_delay, 0.25) AS pct_conv_no_delay_p25,  
+    approx_percentile(pct_conv_no_delay, 0.50) AS pct_conv_no_delay_p50,  
+    approx_percentile(pct_conv_no_delay, 0.75) AS pct_conv_no_delay_p75,  
+  
+    approx_percentile(pct_conv_acum_delay, 0.25) AS pct_conv_acum_delay_p25,  
+    approx_percentile(pct_conv_acum_delay, 0.50) AS pct_conv_acum_delay_p50,  
+    approx_percentile(pct_conv_acum_delay, 0.75) AS pct_conv_acum_delay_p75,  
+  
+    approx_percentile(conv_final_hist, 0.25) AS conv_final_hist_p25,  
+    approx_percentile(conv_final_hist, 0.50) AS conv_final_hist_p50,  
+    approx_percentile(conv_final_hist, 0.75) AS conv_final_hist_p75,  
+  
+    approx_percentile(ticket_pago_final, 0.25) AS ticket_pago_hist_p25,  
+    approx_percentile(ticket_pago_final, 0.50) AS ticket_pago_hist_p50,  
+    approx_percentile(ticket_pago_final, 0.75) AS ticket_pago_hist_p75,  
+  
+    current_timestamp,  
+    'exec_202603_curva_delay'  
+FROM base_final  
+GROUP BY 1,2,3,4;
+
+---
+
+# 5) SQL da projeção por safra com guardrails
+
+Agora vem o coração do modelo.
+
+A lógica é esta:
+
+conv_final_implicita = conv_obs_acum / pct_hist_acum_ate_idade  
+conv_final_proj      = blend(histórico, implícita)  
+depois aplica clip
+
+E os guardrails são:
+
+- **idade da safra controla o peso do observado**
+- **clip superior/inferior relativo ao histórico**
+- **ticket também entra suavizado**
+- **não deixar D+0/D+1 mandar demais**
+
+Isso bate diretamente com o seu framework anti-estouro: projeção precisa ganhar confiança com o mês, e conversão é a variável que mais precisa ser suavizada no começo.
+
+DELETE FROM gold_db.iceberg_gold_mart_cobranca_projecao_safra_diaria  
+WHERE dt_base = current_date;  
+  
+INSERT INTO gold_db.iceberg_gold_mart_cobranca_projecao_safra_diaria  
+WITH safra_emitida AS (  
+    SELECT *  
+    FROM gold_db.iceberg_gold_fato_cobranca_safra_emissao  
+    WHERE anomes = cast(date_format(current_date, '%Y%m') as integer)  
+),  
+observado_ate_hoje AS (  
+    SELECT  
+        s.dt_emissao,  
+        s.anomes,  
+        s.escritorio,  
+        s.bucket_modelagem,  
+        max(s.qtd_emitidos) AS qtd_emitidos_safra,  
+  
+        coalesce(sum(d.qtd_convertidos_delay), 0) AS qtd_convertidos_ate_hoje,  
+        cast(coalesce(sum(cast(d.vl_convertido_delay as double)), 0) as decimal(18,2)) AS vl_convertido_ate_hoje,  
+        avg(cast(d.ticket_pago_medio_delay as double)) AS ticket_pago_obs_ate_hoje_raw  
+    FROM safra_emitida s  
+    LEFT JOIN gold_db.iceberg_gold_fato_cobranca_safra_conversao_delay d  
+      ON s.dt_emissao = d.dt_emissao  
+     AND s.anomes = d.anomes  
+     AND s.escritorio = d.escritorio  
+     AND s.bucket_modelagem = d.bucket_modelagem  
+     AND d.delay_dias <= date_diff('day', s.dt_emissao, current_date)  
+    GROUP BY 1,2,3,4  
+),  
+curva AS (  
+    SELECT *  
+    FROM gold_db.iceberg_gold_mart_cobranca_curva_delay_historica  
+    WHERE anomes_referencia = cast(date_format(current_date, '%Y%m') as integer)  
+),  
+base AS (  
+    SELECT  
+        current_date AS dt_base,  
+        o.anomes,  
+        o.escritorio,  
+        o.dt_emissao,  
+        o.bucket_modelagem,  
+        date_diff('day', o.dt_emissao, current_date) AS idade_safra_dias,  
+  
+        o.qtd_emitidos_safra,  
+        o.qtd_convertidos_ate_hoje,  
+        o.vl_convertido_ate_hoje,  
+  
+        cast(o.qtd_convertidos_ate_hoje as double) / nullif(o.qtd_emitidos_safra, 0) AS conv_obs_acum,  
+  
+        coalesce(c.pct_conv_acum_delay_p50, 1.0) AS pct_hist_acum_ate_idade,  
+        c.conv_final_hist_p50 AS conv_final_hist,  
+        c.ticket_pago_hist_p50 AS ticket_pago_hist,  
+  
+        coalesce(o.ticket_pago_obs_ate_hoje_raw, c.ticket_pago_hist_p50) AS ticket_pago_obs_ate_hoje  
+    FROM observado_ate_hoje o  
+    LEFT JOIN curva c  
+      ON o.escritorio = c.escritorio  
+     AND o.bucket_modelagem = c.bucket_modelagem  
+     AND date_diff('day', o.dt_emissao, current_date) = c.delay_dias  
+),  
+regras AS (  
+    SELECT  
+        *,  
+        CASE  
+            WHEN idade_safra_dias <= 1 THEN 0.90  
+            WHEN idade_safra_dias <= 3 THEN 0.75  
+            WHEN idade_safra_dias <= 5 THEN 0.55  
+            ELSE 0.35  
+        END AS peso_hist,  
+  
+        CASE  
+            WHEN idade_safra_dias <= 2 THEN 1.15  
+            WHEN idade_safra_dias <= 4 THEN 1.25  
+            ELSE 1.40  
+        END AS fator_teto,  
+  
+        CASE  
+            WHEN idade_safra_dias <= 2 THEN 0.85  
+            WHEN idade_safra_dias <= 4 THEN 0.80  
+            ELSE 0.70  
+        END AS fator_piso  
+    FROM base  
+),  
+calculado AS (  
+    SELECT  
+        *,  
+        1 - peso_hist AS peso_obs,  
+  
+        conv_obs_acum / nullif(pct_hist_acum_ate_idade, 0) AS conv_final_implicita_raw,  
+  
+        (  
+            peso_hist * conv_final_hist  
+            + (1 - peso_hist) * (conv_obs_acum / nullif(pct_hist_acum_ate_idade, 0))  
+        ) AS conv_final_proj_blend,  
+  
+        (  
+            peso_hist * ticket_pago_hist  
+            + (1 - peso_hist) * ticket_pago_obs_ate_hoje  
+        ) AS ticket_pago_proj_blend  
+    FROM regras  
+),  
+clipado AS (  
+    SELECT  
+        *,  
+        least(  
+            conv_final_hist * fator_teto,  
+            greatest(conv_final_hist * fator_piso, conv_final_proj_blend)  
+        ) AS conv_final_proj,  
+  
+        least(  
+            ticket_pago_hist * 1.20,  
+            greatest(ticket_pago_hist * 0.85, ticket_pago_proj_blend)  
+        ) AS ticket_pago_proj  
+    FROM calculado  
+),  
+final AS (  
+    SELECT  
+        dt_base,  
+        anomes,  
+        escritorio,  
+        dt_emissao,  
+        bucket_modelagem,  
+        idade_safra_dias,  
+  
+        qtd_emitidos_safra,  
+        qtd_convertidos_ate_hoje,  
+        vl_convertido_ate_hoje,  
+  
+        conv_obs_acum,  
+        pct_hist_acum_ate_idade,  
+        conv_final_implicita_raw AS conv_final_implicita,  
+        conv_final_hist,  
+        conv_final_proj,  
+  
+        ticket_pago_hist,  
+        ticket_pago_obs_ate_hoje,  
+        ticket_pago_proj,  
+  
+        qtd_emitidos_safra * conv_final_proj AS qtd_convertida_final_proj,  
+        (qtd_emitidos_safra * conv_final_proj) - qtd_convertidos_ate_hoje AS qtd_ainda_converter_proj,  
+  
+        cast(qtd_emitidos_safra * conv_final_proj * ticket_pago_proj as decimal(18,2)) AS regul_final_proj_safra,  
+        vl_convertido_ate_hoje AS regul_ja_observado_safra,  
+        cast((qtd_emitidos_safra * conv_final_proj * ticket_pago_proj) - cast(vl_convertido_ate_hoje as double) as decimal(18,2))  
+            AS regul_ainda_esperado_safra,  
+  
+        case when conv_final_proj = conv_final_hist * fator_teto then 1 else 0 end AS fl_clip_superior,  
+        case when conv_final_proj = conv_final_hist * fator_piso then 1 else 0 end AS fl_clip_inferior,  
+        peso_hist,  
+        peso_obs,  
+        fator_teto,  
+        fator_piso,  
+  
+        current_timestamp AS dt_ingestao_modelo,  
+        'exec_proj_safra_' || cast(current_date as varchar) AS id_execucao  
+    FROM clipado  
+)  
+SELECT * FROM final;
+
+---
+
+# 6) Consolidação final da regul projetada por escritório/mês
+
+Aqui vou fechar o mês com 3 componentes:
+
+1. regul já realizado  
+2. regul ainda esperado das safras já emitidas  
+3. regul esperado das emissões futuras do restante do mês
+
+O termo 3 usa a sua lógica de curva de emissão futura por dia útil.  
+Sem ele, você projeta só o que já foi emitido.  
+Com ele, você projeta o fechamento do mês inteiro.
+
+
+## 6.1 Curva simples de emissão futura
+
+Para manter o pacote completo, vou embutir no SQL uma previsão simples de emissão restante baseada em **percentual acumulado esperado por dia útil**, no estilo do seu framework de projeção mensal. Isso é coerente com a recomendação do seu material de não projetar o mês inteiro apenas a partir do acumulado cru, mas usar curva histórica ponderada, maturidade do mês e guardrails para evitar explosão precoce.
+
+### Pressuposto
+
+Vou assumir que você já possui ou vai criar uma mart parecida com:
+
+```text
+gold_db.iceberg_gold_mart_cobranca_curva_expectativa_emissao_du
+```
+
+com grão:
+
+```text
+1 linha = 1 escritório + 1 dia_util_mes
+```
+
+e colunas mínimas:
+
+```text
+anomes_referencia
+escritorio
+dia_util_mes
+pct_emitidos_acum_p25
+pct_emitidos_acum_p50
+pct_emitidos_acum_p75
+emitidos_final_hist_p50
+```
+
+Se você ainda não tiver essa tabela, dá para criar depois.  
+Aqui vou assumir que ela já existe para fechar o pacote da regul projetada.
+
+---
+
+## 6.2 SQL da consolidação final da regul projetada por escritório/mês
+
+A lógica abaixo fecha o mês com 3 componentes:
+
+```text
+1. regul já realizado no mês
+2. regul projetado das safras já emitidas
+3. regul projetado das emissões futuras ainda não feitas
+```
+
+### Fórmula executiva
+
+```text
+REGUL_PROJ_TOTAL_MES
+=
+REGUL_JA_REALIZADO_MES
++ REGUL_AINDA_ESPERADO_SAFRAS_EMITIDAS
++ REGUL_ESPERADO_EMISSOES_FUTURAS
+```
+
+Isso é exatamente a separação conceitual mais correta para o seu caso: fatos com timings diferentes devem viver separados, em vez de uma tabela única “misturada”. Isso está alinhado com a lógica dimensional de separar processos/fatos por timing e grão.
+
+---
+
+### SQL completo
+
+```sql
+DELETE FROM gold_db.iceberg_gold_mart_cobranca_regul_projetada_escritorio_mes
+WHERE dt_base = current_date
+  AND anomes = cast(date_format(current_date, '%Y%m') as integer);
+
+INSERT INTO gold_db.iceberg_gold_mart_cobranca_regul_projetada_escritorio_mes
+WITH params AS (
+    SELECT
+        current_date AS dt_base,
+        cast(date_format(current_date, '%Y%m') as integer) AS anomes_atual
+),
+
+-- =========================================================
+-- 1) Calendário do mês atual
+-- =========================================================
+cal_mes AS (
+    SELECT
+        c.dt_ref_date,
+        c.anomes,
+        c.dia_util_mes,
+        c.qt_dias_uteis_mes,
+        c.fl_dia_util
+    FROM ctrl_db.dim_calendario c
+    JOIN params p
+      ON c.anomes = p.anomes_atual
+    WHERE c.fl_dia_util = 1
+),
+
+du_atual AS (
+    SELECT
+        p.dt_base,
+        p.anomes_atual AS anomes,
+        max(c.dia_util_mes) AS dia_util_corrente,
+        max(c.qt_dias_uteis_mes) AS qt_dias_uteis_mes
+    FROM params p
+    JOIN cal_mes c
+      ON c.dt_ref_date <= p.dt_base
+    GROUP BY 1,2
+),
+
+-- =========================================================
+-- 2) Realizado do mês até hoje
+-- =========================================================
+realizado_mes AS (
+    SELECT
+        p.dt_base,
+        p.anomes_atual AS anomes,
+        e.escritorio,
+        cast(sum(coalesce(pg.vl_pago, 0)) as decimal(18,2)) AS regul_ja_realizado_mes,
+        count(distinct e.boleto_id) AS qtd_emitidos_ate_hoje
+    FROM params p
+    JOIN silver_db.view_silver_integrado_cobranca_boletos_emitidos e
+      ON cast(date_format(cast(e.dt_emissao as date), '%Y%m') as integer) = p.anomes_atual
+     AND cast(e.dt_emissao as date) <= p.dt_base
+    LEFT JOIN silver_db.view_silver_integrado_cobranca_boletos_pagos pg
+      ON cast(e.boleto_id as varchar) = cast(pg.boleto_id as varchar)
+     AND cast(pg.dt_pagamento as date) <= p.dt_base
+     AND cast(date_format(cast(pg.dt_pagamento as date), '%Y%m') as integer) = p.anomes_atual
+    GROUP BY 1,2,3
+),
+
+-- =========================================================
+-- 3) Projeção das safras já emitidas
+--    Aqui eu separo:
+--    - regul final projetado das safras
+--    - regul já observado das safras
+--    - regul ainda esperado
+-- =========================================================
+proj_safras_emitidas AS (
+    SELECT
+        dt_base,
+        anomes,
+        escritorio,
+        cast(sum(regul_final_proj_safra) as decimal(18,2)) AS regul_proj_safras_emitidas_mes,
+        cast(sum(regul_ja_observado_safra) as decimal(18,2)) AS regul_ja_observado_safras_mes,
+        cast(sum(regul_ainda_esperado_safra) as decimal(18,2)) AS regul_ainda_esperado_safras_mes,
+        sum(qtd_emitidos_safra) AS qtd_emitidos_safras_mes,
+        avg(conv_final_proj) AS conv_media_proj_safras,
+        avg(ticket_pago_proj) AS ticket_medio_proj_safras
+    FROM gold_db.iceberg_gold_mart_cobranca_projecao_safra_diaria
+    WHERE dt_base = current_date
+      AND anomes = cast(date_format(current_date, '%Y%m') as integer)
+    GROUP BY 1,2,3
+),
+
+-- =========================================================
+-- 4) Curva esperada de emissão por DU
+--    Mart assumida previamente construída
+-- =========================================================
+curva_emissao AS (
+    SELECT
+        c.escritorio,
+        c.dia_util_mes,
+        c.pct_emitidos_acum_p50,
+        c.emitidos_final_hist_p50
+    FROM gold_db.iceberg_gold_mart_cobranca_curva_expectativa_emissao_du c
+    JOIN params p
+      ON c.anomes_referencia = p.anomes_atual
+),
+
+-- =========================================================
+-- 5) Emissão acumulada observada até hoje
+-- =========================================================
+emitido_obs AS (
+    SELECT
+        p.dt_base,
+        p.anomes_atual AS anomes,
+        e.escritorio,
+        count(*) AS qtd_emitidos_ate_hoje
+    FROM params p
+    JOIN silver_db.view_silver_integrado_cobranca_boletos_emitidos e
+      ON cast(date_format(cast(e.dt_emissao as date), '%Y%m') as integer) = p.anomes_atual
+     AND cast(e.dt_emissao as date) <= p.dt_base
+    GROUP BY 1,2,3
+),
+
+-- =========================================================
+-- 6) Projeção da emissão total do mês
+--    Com guardrail simples: blend entre histórico e implícita
+-- =========================================================
+emitidos_proj AS (
+    SELECT
+        o.dt_base,
+        o.anomes,
+        o.escritorio,
+        d.dia_util_corrente,
+        d.qt_dias_uteis_mes,
+        o.qtd_emitidos_ate_hoje,
+        ce.pct_emitidos_acum_p50,
+        ce.emitidos_final_hist_p50,
+
+        cast(o.qtd_emitidos_ate_hoje as double)
+            / nullif(ce.pct_emitidos_acum_p50, 0) AS qtd_emitidos_proj_implicita,
+
+        CASE
+            WHEN d.dia_util_corrente <= 5 THEN 0.85
+            WHEN d.dia_util_corrente <= 8 THEN 0.75
+            WHEN d.dia_util_corrente <= 10 THEN 0.65
+            WHEN d.dia_util_corrente <= 13 THEN 0.50
+            WHEN d.dia_util_corrente <= 16 THEN 0.35
+            ELSE 0.20
+        END AS peso_hist
+    FROM emitido_obs o
+    CROSS JOIN du_atual d
+    LEFT JOIN curva_emissao ce
+      ON o.escritorio = ce.escritorio
+     AND d.dia_util_corrente = ce.dia_util_mes
+),
+
+emitidos_proj_clip AS (
+    SELECT
+        dt_base,
+        anomes,
+        escritorio,
+        qtd_emitidos_ate_hoje,
+        pct_emitidos_acum_p50,
+        emitidos_final_hist_p50,
+        qtd_emitidos_proj_implicita,
+        peso_hist,
+        1 - peso_hist AS peso_obs,
+
+        (
+            peso_hist * emitidos_final_hist_p50
+            + (1 - peso_hist) * qtd_emitidos_proj_implicita
+        ) AS qtd_emitidos_proj_blend
+    FROM emitidos_proj
+),
+
+emitidos_final AS (
+    SELECT
+        dt_base,
+        anomes,
+        escritorio,
+        qtd_emitidos_ate_hoje,
+
+        least(
+            emitidos_final_hist_p50 * 1.25,
+            greatest(emitidos_final_hist_p50 * 0.80, qtd_emitidos_proj_blend)
+        ) AS qtd_emitidos_proj_mes
+    FROM emitidos_proj_clip
+),
+
+-- =========================================================
+-- 7) Emissões futuras = total projetado - já emitido
+-- =========================================================
+emissoes_futuras AS (
+    SELECT
+        e.dt_base,
+        e.anomes,
+        e.escritorio,
+        e.qtd_emitidos_ate_hoje,
+        e.qtd_emitidos_proj_mes,
+        greatest(e.qtd_emitidos_proj_mes - e.qtd_emitidos_ate_hoje, 0) AS qtd_emitidos_futuros_proj
+    FROM emitidos_final e
+),
+
+-- =========================================================
+-- 8) Conversão/ticket esperados para emissões futuras
+--    Uso da média projetada das safras já emitidas como proxy
+--    Se não houver safra suficiente, cai para histórico implícito
+-- =========================================================
+param_futuro AS (
+    SELECT
+        ef.dt_base,
+        ef.anomes,
+        ef.escritorio,
+        ef.qtd_emitidos_ate_hoje,
+        ef.qtd_emitidos_proj_mes,
+        ef.qtd_emitidos_futuros_proj,
+
+        coalesce(ps.conv_media_proj_safras, 0.20) AS conv_media_proj_mes,
+        coalesce(ps.ticket_medio_proj_safras, 350.0) AS ticket_medio_proj_mes
+    FROM emissoes_futuras ef
+    LEFT JOIN proj_safras_emitidas ps
+      ON ef.dt_base = ps.dt_base
+     AND ef.anomes = ps.anomes
+     AND ef.escritorio = ps.escritorio
+),
+
+regul_futuro AS (
+    SELECT
+        dt_base,
+        anomes,
+        escritorio,
+        qtd_emitidos_ate_hoje,
+        qtd_emitidos_proj_mes,
+        conv_media_proj_mes,
+        ticket_medio_proj_mes,
+        cast(qtd_emitidos_futuros_proj * conv_media_proj_mes * ticket_medio_proj_mes as decimal(18,2))
+            AS regul_proj_emissoes_futuras_mes
+    FROM param_futuro
+),
+
+-- =========================================================
+-- 9) Carteira do mês para eficiência
+--    Ajuste a origem conforme sua tabela oficial mensal
+-- =========================================================
+carteira_mes AS (
+    SELECT
+        cast(anomes as integer) AS anomes,
+        cast(escritorio as varchar) AS escritorio,
+        cast(sum(vl_carteira) as double) AS carteira_mes
+    FROM gold_db.iceberg_gold_fato_cobranca_escritorio_mes
+    WHERE anomes = cast(date_format(current_date, '%Y%m') as integer)
+    GROUP BY 1,2
+),
+
+-- =========================================================
+-- 10) Consolidação
+-- =========================================================
+final AS (
+    SELECT
+        p.dt_base,
+        p.anomes,
+        p.escritorio,
+
+        coalesce(r.regul_ja_realizado_mes, cast(0 as decimal(18,2))) AS regul_ja_realizado_mes,
+        coalesce(s.regul_proj_safras_emitidas_mes, cast(0 as decimal(18,2))) AS regul_proj_safras_emitidas_mes,
+        coalesce(f.regul_proj_emissoes_futuras_mes, cast(0 as decimal(18,2))) AS regul_proj_emissoes_futuras_mes,
+
+        cast(
+            coalesce(s.regul_proj_safras_emitidas_mes, cast(0 as decimal(18,2))) +
+            coalesce(f.regul_proj_emissoes_futuras_mes, cast(0 as decimal(18,2)))
+            as decimal(18,2)
+        ) AS regul_proj_total_mes,
+
+        cast(
+            (
+                cast(
+                    coalesce(s.regul_proj_safras_emitidas_mes, cast(0 as decimal(18,2))) +
+                    coalesce(f.regul_proj_emissoes_futuras_mes, cast(0 as decimal(18,2)))
+                    as double
+                )
+            ) / nullif(c.carteira_mes, 0)
+            as double
+        ) AS eficiencia_proj_total_mes,
+
+        coalesce(f.qtd_emitidos_ate_hoje, 0) AS qtd_emitidos_ate_hoje,
+        coalesce(f.qtd_emitidos_proj_mes, 0) AS qtd_emitidos_proj_mes,
+
+        coalesce(f.conv_media_proj_mes, s.conv_media_proj_safras, 0.0) AS conv_media_proj_mes,
+        coalesce(f.ticket_medio_proj_mes, s.ticket_medio_proj_safras, 0.0) AS ticket_medio_proj_mes,
+
+        CASE
+            WHEN d.dia_util_corrente <= 5 THEN 'baixa'
+            WHEN d.dia_util_corrente <= 10 THEN 'media'
+            WHEN d.dia_util_corrente <= 15 THEN 'media_alta'
+            ELSE 'alta'
+        END AS nivel_confianca,
+
+        concat(
+            'Projeção de regul de ',
+            cast(round(
+                cast(
+                    coalesce(s.regul_proj_safras_emitidas_mes, cast(0 as decimal(18,2))) +
+                    coalesce(f.regul_proj_emissoes_futuras_mes, cast(0 as decimal(18,2)))
+                    as double
+                ), 0
+            ) as varchar),
+            '. Eficiência projetada de ',
+            cast(round(
+                (
+                    cast(
+                        coalesce(s.regul_proj_safras_emitidas_mes, cast(0 as decimal(18,2))) +
+                        coalesce(f.regul_proj_emissoes_futuras_mes, cast(0 as decimal(18,2)))
+                        as double
+                    ) / nullif(c.carteira_mes, 0)
+                ) * 100, 2
+            ) as varchar),
+            '%. Confiança ',
+            CASE
+                WHEN d.dia_util_corrente <= 5 THEN 'baixa'
+                WHEN d.dia_util_corrente <= 10 THEN 'média'
+                WHEN d.dia_util_corrente <= 15 THEN 'média-alta'
+                ELSE 'alta'
+            END,
+            '.'
+        ) AS txt_projecao,
+
+        current_timestamp AS dt_ingestao_modelo,
+        'exec_regul_proj_' || cast(current_date as varchar) AS id_execucao
+    FROM params p
+    CROSS JOIN du_atual d
+    LEFT JOIN realizado_mes r
+      ON p.dt_base = r.dt_base
+     AND p.anomes_atual = r.anomes
+    LEFT JOIN proj_safras_emitidas s
+      ON p.dt_base = s.dt_base
+     AND p.anomes_atual = s.anomes
+     AND r.escritorio = s.escritorio
+    LEFT JOIN regul_futuro f
+      ON p.dt_base = f.dt_base
+     AND p.anomes_atual = f.anomes
+     AND coalesce(r.escritorio, s.escritorio) = f.escritorio
+    LEFT JOIN carteira_mes c
+      ON p.anomes_atual = c.anomes
+     AND coalesce(r.escritorio, s.escritorio, f.escritorio) = c.escritorio
+    WHERE coalesce(r.escritorio, s.escritorio, f.escritorio) IS NOT NULL
+)
+
+SELECT * FROM final;
+```
+
+---
+
+# 7) O que esse SQL está fazendo, de verdade
+
+## Bloco 1 — realizado
+
+Pega o que já entrou em regul no mês.
+
+## Bloco 2 — safras emitidas
+
+Pega o que já foi emitido e usa a mart de projeção por safra para estimar quanto ainda deve converter.
+
+## Bloco 3 — emissões futuras
+
+Projeta o que ainda falta emitir no mês com base na curva histórica de emissão por dia útil.
+
+## Bloco 4 — emissões futuras em regul
+
+Transforma a emissão futura em regul esperado usando:
+
+- conversão média projetada
+    
+- ticket médio projetado
+    
+
+## Bloco 5 — eficiência
+
+Divide a regul projetada pela carteira do mês.
+
+---
+
+# 8) Onde eu refinaria depois
+
+Esse pacote já funciona, mas eu refinaria em 5 evoluções.
+
+## 8.1 Delay em dias úteis
+
+Hoje o delay está em dias corridos para simplificar.  
+Depois eu trocaria para dias úteis usando `dim_calendario`.
+
+## 8.2 Curva de emissão futura por bucket
+
+Hoje a emissão futura está por escritório.  
+Depois pode evoluir para:
+
+- escritório + tipo_negociação
+    
+- escritório + faixa desconto
+    
+- escritório + canal
+    
+
+## 8.3 Fallback por cluster
+
+Quando um bucket for muito pequeno, usar fallback:
+
+- bucket próprio
+    
+- cluster do escritório
+    
+- escritório
+    
+- fila
+    
+- total rede
+    
+
+Isso é coerente com a ideia de robustez operacional e evitar modelagem frágil com pouca amostra.
+
+## 8.4 Faixas conservadora / central / otimista
+
+Hoje o exemplo usa central.  
+Depois você pode gerar:
+
+- p25
+    
+- p50
+    
+- p75
+    
+
+tanto para conversão quanto para regul final.
+
+## 8.5 Score de confiança
+
+Hoje a confiança está só por maturidade do mês.  
+Depois eu acrescentaria:
+
+- quantidade de boletos emitidos acumulados
+    
+- estabilidade histórica do bucket
+    
+- % de uso de fallback
+    
+- % de clipping acionado
+    
+
+---
+
+# 9) Ordem correta de implantação
+
+Eu implementaria nessa ordem:
+
+## Etapa 1
+
+`iceberg_gold_fato_cobranca_safra_emissao`
+
+## Etapa 2
+
+`iceberg_gold_fato_cobranca_safra_conversao_delay`
+
+## Etapa 3
+
+`iceberg_gold_mart_cobranca_curva_delay_historica`
+
+## Etapa 4
+
+`iceberg_gold_mart_cobranca_projecao_safra_diaria`
+
+## Etapa 5
+
+`iceberg_gold_mart_cobranca_regul_projetada_escritorio_mes`
+
+## Etapa 6
+
+QuickSight
+
+---
+
+# 10) Testes que eu colocaria logo de saída
+
+Crie pelo menos estes testes.
+
+## Safra emissão
+
+- duplicidade por `dt_emissao + escritorio + bucket_modelagem`
+    
+- `qtd_emitidos > 0`
+    
+- `ticket_emitido_medio >= 0`
+    
+
+## Safra delay
+
+- `delay_dias >= 0`
+    
+- `qtd_convertidos_delay <= qtd_emitidos_safra`
+    
+- `ticket_pago_medio_delay >= 0`
+    
+
+## Curva histórica
+
+- percentuais entre `0` e `1`
+    
+- `pct_conv_acum_delay_p50` crescente por `delay_dias`
+    
+- `conv_final_hist_p50 <= 1`
+    
+
+## Projeção safra
+
+- `conv_final_proj` entre piso e teto
+    
+- `regul_final_proj_safra >= regul_ja_observado_safra` na maioria dos casos normais
+    
+- flags de clipping monitoradas
+    
+
+## Consolidação final
+
+- `regul_proj_total_mes >= regul_ja_realizado_mes`
+    
+- `eficiencia_proj_total_mes >= 0`
+    
+
+A disciplina de testes como parte do produto analítico aparece com força no seu material de framework e estrutura de testes; não basta a query rodar, a saída precisa estar consistente e auditável.
+
+---
+
+# 11) Observações técnicas importantes
+
+## Sobre Athena / Iceberg
+
+Athena é apropriado para esse tipo de ETL SQL serverless sobre S3, integrado ao Glue Data Catalog e com consumo fácil pelo QuickSight. A documentação também cobre CTAS, `INSERT INTO` para ETL e suporte a Iceberg, incluindo operações ACID e Engine v3.
+
+## Sobre CTAS vs INSERT vs MERGE
+
+Para esse caso eu manteria assim:
+
+- **CTAS** para bootstrap inicial
+    
+- **DELETE + INSERT** por `anomes` ou `dt_base` para recálculo simples
+    
+- **MERGE INTO** só se você realmente precisar de upsert fino
+    
+
+Isso está alinhado com a recomendação de não complicar sem necessidade e com o uso de CTAS/INSERT em ETL no Athena.
+
+## Sobre orquestração
+
+Step Functions entra bem como orquestrador das etapas SQL, inclusive com integração nativa com Athena e casos documentados de execução de queries em sequência/paralelo.
+
+## Sobre arquitetura
+
+O desenho que separei em fatos e marts diferentes também conversa com:
+
+- processo e grão do Kimball
+    
+- separação de fatos com timings diferentes do Adamson
+    
+- padrão `bronze → silver_padronizado → silver_integrado → gold` do seu stack
+    
+- visão de sistema de decisão analítico do seu framework de cobrança e simulação
+    
+
+---
+
+# 12) Fechamento
+
+Com esse desenho, você passa a ter:
+
+```text
+1. fato de emissão por safra
+2. fato de conversão observada por delay
+3. curva histórica robusta de delay
+4. projeção diária por safra com guardrails
+5. consolidação final da regul projetada por escritório/mês
+```
+
+Ou seja, você deixa de fazer:
+
+```text
+projeção bruta = acumulado / percentual qualquer
+```
+
+e passa a fazer:
+
+```text
+projeção por coorte de emissão
++ curva histórica de delay
++ clipping
++ blend com histórico
++ componente separado de emissão futura
+```
+
+Esse é um desenho muito mais defensável em produção.
+
+No próximo passo, eu posso transformar isso em um **pacote Obsidian completo**, com:
+
+- nota-mãe
+    
+- DDL separado por arquivo
+    
+- SQL separado por etapa
+    
+- checklist de testes
+    
+- desenho de Step Functions
+    
+- proposta de tela no QuickSight
