@@ -1,0 +1,1270 @@
+
+# 🎯 Objetivo
+
+Construir um framework de projeção mensal que responda, de forma confiável:
+
+- quanto o escritório deve fechar de **regul**
+- quanto deve fechar de **eficiência**
+- se está **acima ou abaixo do esperado**
+- quanto disso vem de:
+  - emissão de boletos
+  - conversão de boletos
+- e, principalmente:
+  - **sem deixar a projeção explodir nos primeiros dias**
+
+A ideia é sair de:
+
+```text
+"até agora está bom"
+````
+
+e ir para:
+
+```text
+"se continuar nesse ritmo, com base na curva histórica de emissão e conversão, o fechamento mais provável é X, com faixa conservadora entre Y e Z"
+```
+
+---
+
+# 🧠 Ideia central
+
+## O problema da projeção ingênua
+
+A projeção mais ingênua costuma ser algo assim:
+
+```text
+projecao_final = realizado_ate_hoje / % esperado no dia
+```
+
+Exemplo:
+
+- até o 3º dia útil o escritório fez R$ 900 mil
+    
+- historicamente no 3º DU ele costuma ter feito 10% do mês
+    
+
+Logo:
+
+```text
+900 mil / 10% = 9 milhões
+```
+
+Isso parece lógico, mas é perigosíssimo.
+
+Porque, se os primeiros dias vieram **muito acima da curva**, a projeção explode cedo demais.
+
+---
+
+# 🚨 O risco do “estouro”
+
+## Quando isso acontece
+
+Geralmente por uma combinação de fatores:
+
+- primeiros dias com carteira muito favorável
+    
+- emissão muito forte em 1 ou 2 dias
+    
+- pagamento represado do mês anterior
+    
+- efeito calendário
+    
+- variação operacional pontual
+    
+- amostra ainda pequena
+    
+
+## O efeito prático
+
+No dia 3 ou dia 4 útil, o painel já começa a “prometer” um fechamento extraordinário, que depois não se sustenta.
+
+Isso destrói confiança na análise.
+
+---
+
+# ✅ Princípio de modelagem da projeção
+
+A projeção não deve ser:
+
+```text
+realizado acumulado / curva acumulada
+```
+
+de forma pura e simples.
+
+Ela deve ser:
+
+```text
+uma combinação ponderada entre:
+1. o realizado atual
+2. a curva histórica
+3. a estabilidade histórica
+4. a maturidade do mês
+5. limites de agressividade
+```
+
+Ou seja:
+
+> **a projeção precisa ganhar confiança ao longo do mês.**
+
+Isso conversa diretamente com a ideia de confiabilidade analítica, previsão simples e desvio precoce do seu framework.
+
+---
+
+# 🏗️ O que estamos modelando
+
+## Processo de negócio
+
+No espírito de Kimball, primeiro definimos o processo:
+
+```text
+performance mensal de cobrança por escritório
+```
+
+## Grão principal
+
+```text
+1 linha = 1 data + 1 escritório
+```
+
+para a base diária.
+
+E depois:
+
+```text
+1 linha = 1 data + 1 escritório
+```
+
+também para a projeção diária.
+
+Esse desenho respeita a lógica de grão explícito como contrato de modelagem.
+
+---
+
+# 📦 Camadas recomendadas
+
+A arquitetura segue o fluxo oficial já consolidado no seu material:
+
+```text
+bronze_fonte
+   ↓
+silver_padronizado
+   ↓
+silver_integrado
+   ↓
+gold
+   ↓
+mart de projeção
+   ↓
+QuickSight
+```
+
+Seu padrão oficial reforça bronze → silver_padronizado → silver_integrado → gold, com naming padronizado e separação de responsabilidades.
+
+---
+
+# 🧱 Tabelas recomendadas
+
+## 1. Base diária observada
+
+```text
+mart.cobranca_escritorio_dia
+```
+
+### Grão
+
+```text
+1 linha = 1 data + 1 escritório
+```
+
+### Colunas mínimas
+
+```text
+data
+anomes
+escritorio
+dia_util_mes
+qt_dias_uteis_mes
+
+emitidos_dia
+boletos_pagos_dia
+vl_regul_dia
+
+emitidos_acum
+boletos_pagos_acum
+vl_regul_acum
+
+taxa_conversao_dia
+taxa_conversao_acum
+ticket_dia
+ticket_acum
+```
+
+---
+
+## 2. Curva histórica mensal
+
+```text
+mart.cobranca_escritorio_curva_mes
+```
+
+### Grão
+
+```text
+1 linha = 1 anomes + 1 escritório + 1 dia_util_mes
+```
+
+### Objetivo
+
+Guardar, para cada mês passado, o acumulado percentual de:
+
+- emissão
+    
+- conversão
+    
+- regul
+    
+
+Exemplo:
+
+```text
+no 5º dia útil de jan/2026, o escritório X já tinha emitido 23% do total do mês
+no 5º dia útil de jan/2026, o escritório X já tinha convertido 19% do total do mês
+no 5º dia útil de jan/2026, o escritório X já tinha realizado 17% do regul do mês
+```
+
+---
+
+## 3. Curva esperada ponderada
+
+```text
+mart.cobranca_curva_expectativa_dia_util
+```
+
+### Grão
+
+```text
+1 linha = 1 escritório + 1 dia_util_mes
+```
+
+### Objetivo
+
+Guardar a curva de expectativa consolidada e ponderada:
+
+- `pct_emitidos_acum_exp`
+    
+- `pct_conv_acum_exp`
+    
+- `pct_regul_acum_exp`
+    
+
+e também faixas:
+
+- p25
+    
+- p50
+    
+- p75
+    
+
+---
+
+## 4. Mart final de projeção
+
+```text
+mart.cobranca_projecao_eficiencia_regul_diaria
+```
+
+### Grão
+
+```text
+1 linha = 1 data + 1 escritório
+```
+
+### Objetivo
+
+Ser a tabela consumida pelo QuickSight.
+
+---
+
+# 🧠 Como pensar a projeção corretamente
+
+Em vez de projetar direto do regul, vamos decompor.
+
+## Fórmula estrutural
+
+```text
+REGUL = EMISSÃO × CONVERSÃO × TICKET
+```
+
+ou, se ticket não for o foco principal:
+
+```text
+REGUL ≈ EMISSÃO × CONVERSÃO
+```
+
+No seu caso, como você pediu foco em:
+
+- curva de emissão
+    
+- curva de conversão
+    
+
+o melhor desenho é:
+
+```text
+projecao_regul_final
+= projecao_emitidos_final
+× projecao_taxa_conversao_final
+× ticket_esperado_final
+```
+
+E depois:
+
+```text
+projecao_eficiencia_final
+= projecao_regul_final / carteira_mes
+```
+
+---
+
+# ✅ Melhor abordagem: projetar peças separadas
+
+Em vez de projetar o regul final diretamente, projete separadamente:
+
+## 1. emissão final esperada
+
+```text
+quantos boletos serão emitidos até o fim do mês?
+```
+
+## 2. conversão final esperada
+
+```text
+qual será a taxa final de conversão sobre os emitidos?
+```
+
+## 3. ticket esperado
+
+```text
+qual será o ticket médio provável?
+```
+
+## 4. regul final
+
+```text
+emitidos_final × conversão_final × ticket
+```
+
+Isso é melhor porque deixa claro **onde está o risco**.
+
+---
+
+# 🚧 Mecanismos anti-estouro
+
+Agora entra a parte mais importante.
+
+---
+
+# 1. Projeção blendada por maturidade do mês
+
+## Ideia
+
+Nos primeiros dias, a projeção deve confiar pouco no realizado corrente e mais na história.
+
+Conforme o mês avança, ela passa a confiar mais no realizado.
+
+## Fórmula mental
+
+```text
+projecao_final =
+peso_histórico × expectativa_histórica
++
+peso_atual × projeção_pelo_realizado
+```
+
+Onde:
+
+```text
+peso_atual cresce ao longo do mês
+peso_histórico cai ao longo do mês
+```
+
+## Exemplo de pesos simples
+
+|Faixa do mês|Peso histórico|Peso atual|
+|---|--:|--:|
+|até 5º DU|85%|15%|
+|6º a 8º DU|75%|25%|
+|9º a 10º DU|65%|35%|
+|11º a 13º DU|50%|50%|
+|14º a 16º DU|35%|65%|
+|17º DU em diante|20%|80%|
+
+## Interpretação
+
+No começo do mês, você **não deixa o realizado mandar demais**.
+
+---
+
+# 2. Clipping de agressividade
+
+Mesmo com blend, ainda vale limitar o quanto a projeção pode se afastar do histórico esperado.
+
+## Regra prática
+
+Nos primeiros dias, imponha um teto de multiplicador sobre o esperado histórico.
+
+### Exemplo
+
+Até o 5º dia útil:
+
+```text
+projecao_emitidos_final ≤ 1,20 × emitidos_esperado_hist
+projecao_regul_final ≤ 1,18 × regul_esperado_hist
+```
+
+Do 6º ao 10º dia útil:
+
+```text
+≤ 1,25 × esperado
+```
+
+Depois do 10º:
+
+```text
+≤ 1,35 × esperado
+```
+
+E, analogamente, um piso:
+
+```text
+≥ 0,80 × esperado no início
+```
+
+Assim você evita tanto explosão quanto pessimismo extremo.
+
+---
+
+# 3. Shrinkage da conversão
+
+Conversão é muito instável no começo do mês.
+
+Então, em vez de usar a conversão acumulada atual “bruta”, use uma conversão suavizada.
+
+## Fórmula
+
+```text
+conversao_suavizada =
+(boletos_pagos_acum + k × conversao_hist_final)
+/
+(emitidos_acum + k)
+```
+
+Onde `k` é uma pseudo-amostra.
+
+## Interpretação
+
+Você está dizendo:
+
+> “Antes de acreditar totalmente no que aconteceu até aqui, eu misturo com um histórico prévio.”
+
+## Exemplo
+
+Suponha:
+
+- emitidos_acum = 500
+    
+- pagos_acum = 180
+    
+- conversão acumulada observada = 36%
+    
+- conversão histórica final = 24%
+    
+- `k = 1000`
+    
+
+Então:
+
+```text
+conversao_suavizada =
+(180 + 1000 × 0,24) / (500 + 1000)
+= (180 + 240) / 1500
+= 28%
+```
+
+Perceba como isso evita que os 36% iniciais “prometam demais”.
+
+---
+
+# 4. Curva esperada com mediana, não média simples
+
+Sempre que possível, use:
+
+- p50
+    
+- p25
+    
+- p75
+    
+
+A mediana é muito mais robusta a meses atípicos.
+
+O próprio desenho que você já vinha construindo usa p25/p50/p75 como benchmark de robustez.
+
+---
+
+# 5. Ponderação por recência
+
+Use últimos 6 meses com pesos decrescentes.
+
+## Exemplo recomendado
+
+```text
+M-1 = 6
+M-2 = 5
+M-3 = 4
+M-4 = 3
+M-5 = 2
+M-6 = 1
+```
+
+Opcionalmente:
+
+- mesmo mês do ano anterior com peso 3
+    
+
+Isso ajuda a respeitar sazonalidade sem deixar meses antigos dominarem a curva.
+
+---
+
+# 6. Faixa de projeção em vez de ponto único
+
+Em vez de mostrar só:
+
+```text
+projeção = 8,7%
+```
+
+mostre:
+
+```text
+cenário conservador = 8,1%
+cenário central = 8,7%
+cenário otimista = 9,1%
+```
+
+Como construir:
+
+- conservador → p25
+    
+- central → blend com p50
+    
+- otimista → blend com p75, ainda com clip
+    
+
+Isso reduz o risco político de parecer que você “prometeu” demais.
+
+---
+
+# 🧮 Modelo recomendado de projeção
+
+# Etapa 1 — projetar emissão final
+
+## Base histórica
+
+```text
+emitidos_esperado_final_hist
+```
+
+pode ser:
+
+- mediana dos últimos 6 meses
+    
+- ou média ponderada por recência
+    
+
+## Projeção pelo realizado
+
+```text
+proj_emitidos_realizado =
+emitidos_acum_real / pct_emitidos_acum_exp
+```
+
+## Blend
+
+```text
+proj_emitidos_blend =
+peso_hist × emitidos_esperado_final_hist
++
+peso_atual × proj_emitidos_realizado
+```
+
+## Clip
+
+```text
+proj_emitidos_final =
+least(
+    teto_emitidos,
+    greatest(piso_emitidos, proj_emitidos_blend)
+)
+```
+
+---
+
+# Etapa 2 — projetar conversão final
+
+Conversão merece mais cuidado.
+
+## Base histórica
+
+```text
+conv_final_hist
+```
+
+## Conversão suavizada atual
+
+```text
+conv_suavizada =
+(pagos_acum + k × conv_final_hist) / (emitidos_acum + k)
+```
+
+## Blend adicional por maturidade
+
+```text
+conv_final_proj =
+peso_hist_conv × conv_final_hist
++
+peso_atual_conv × conv_suavizada
+```
+
+## Clip
+
+Até o 5º dia útil, por exemplo:
+
+```text
+conv_final_proj ≤ conv_final_hist + 3 pp
+```
+
+ou em fator relativo:
+
+```text
+conv_final_proj ≤ 1,12 × conv_final_hist
+```
+
+---
+
+# Etapa 3 — projetar ticket final
+
+Se quiser simplificar, use:
+
+- ticket médio histórico ponderado
+    
+- ou blend entre histórico e atual
+    
+
+Mas como seu foco está mais em emissão e conversão, o mais simples é:
+
+```text
+ticket_final_proj = ticket_hist_ponderado
+```
+
+ou
+
+```text
+ticket_final_proj =
+0,8 × ticket_hist
++
+0,2 × ticket_atual
+```
+
+nos primeiros dias.
+
+---
+
+# Etapa 4 — projetar regul final
+
+```text
+regul_final_proj =
+proj_emitidos_final
+× conv_final_proj
+× ticket_final_proj
+```
+
+---
+
+# Etapa 5 — projetar eficiência final
+
+```text
+eficiencia_final_proj =
+regul_final_proj / carteira_mes
+```
+
+Se a carteira variar no mês, use a carteira oficial do fechamento esperado ou a carteira vigente do mês.
+
+---
+
+# 🧪 Exemplo numérico completo
+
+Suponha que no 4º dia útil um escritório esteja assim:
+
+## Observado até agora
+
+```text
+emitidos_acum = 1.200
+pagos_acum = 360
+conversao_observada = 30%
+ticket_atual = 420
+regul_acum = 151.200
+carteira_mes = 5.000.000
+```
+
+## Histórico
+
+```text
+emitidos_final_hist = 8.000
+conv_final_hist = 22%
+ticket_hist = 390
+pct_emitidos_acum_exp no 4º DU = 18%
+```
+
+## Projeção ingênua
+
+```text
+proj_emitidos = 1.200 / 18% = 6.667
+```
+
+Até aqui até parece ok.
+
+Mas imagine que a conversão observada de 30% fosse usada direto:
+
+```text
+regul_proj_ingenuo = 6.667 × 30% × 420 = 840.042
+eficiencia_proj_ingenua = 840.042 / 5.000.000 = 16,8%
+```
+
+Talvez isso fique agressivo demais.
+
+---
+
+## Agora com guardrails
+
+### 1. emissão blendada
+
+No 4º DU, suponha pesos:
+
+```text
+peso_hist = 85%
+peso_atual = 15%
+```
+
+```text
+proj_emitidos_realizado = 6.667
+proj_emitidos_blend =
+0,85 × 8.000 + 0,15 × 6.667
+= 6.800 + 1.000
+= 7.800
+```
+
+Como a projeção pelo realizado veio abaixo do histórico, ela não explode.
+
+### 2. conversão suavizada
+
+Com `k = 1500`:
+
+```text
+conv_suavizada =
+(360 + 1500 × 22%) / (1200 + 1500)
+= (360 + 330) / 2700
+= 25,6%
+```
+
+Depois blend adicional:
+
+```text
+conv_final_proj =
+0,80 × 22%
++
+0,20 × 25,6%
+= 22,7%
+```
+
+### 3. ticket
+
+```text
+ticket_final_proj =
+0,85 × 390 + 0,15 × 420
+= 394,5
+```
+
+### 4. regul final
+
+```text
+regul_final_proj =
+7.800 × 22,7% × 394,5
+≈ 699.000
+```
+
+### 5. eficiência final
+
+```text
+eficiencia_final_proj =
+699.000 / 5.000.000
+= 13,98%
+```
+
+Perceba:
+
+- continua reconhecendo o bom começo
+    
+- mas não deixa a projeção prometer uma explosão irreal
+    
+
+---
+
+# 🧱 Estrutura sugerida da mart final
+
+```sql
+CREATE TABLE mart.cobranca_projecao_eficiencia_regul_diaria (
+    data date,
+    anomes bigint,
+    escritorio varchar,
+    dia_util_mes int,
+    qt_dias_uteis_mes int,
+
+    emitidos_acum double,
+    pagos_acum double,
+    regul_acum double,
+
+    pct_emitidos_acum_exp double,
+    pct_conv_acum_exp double,
+    pct_regul_acum_exp double,
+
+    emitidos_final_hist double,
+    conv_final_hist double,
+    ticket_final_hist double,
+
+    proj_emitidos_realizado double,
+    proj_emitidos_final double,
+
+    conv_observada_acum double,
+    conv_suavizada double,
+    conv_final_proj double,
+
+    ticket_final_proj double,
+
+    regul_final_proj double,
+    eficiencia_final_proj double,
+
+    regul_proj_piso double,
+    regul_proj_central double,
+    regul_proj_teto double,
+
+    eficiencia_proj_piso double,
+    eficiencia_proj_central double,
+    eficiencia_proj_teto double,
+
+    peso_hist double,
+    peso_atual double,
+    k_conversao double,
+
+    fl_clip_superior int,
+    fl_clip_inferior int,
+    nivel_confianca varchar,
+
+    txt_projecao varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    location = 's3://lakehouse/mart/cobranca_projecao_eficiencia_regul_diaria/'
+);
+```
+
+---
+
+# 🧠 Campo de confiança da projeção
+
+Muito importante.
+
+## Regra sugerida
+
+```text
+Até 5º DU      → baixa
+6º ao 10º DU   → média
+11º ao 15º DU  → média-alta
+16º DU+        → alta
+```
+
+Você também pode combinar com:
+
+- estabilidade histórica
+    
+- volatilidade do escritório
+    
+- quantidade de emitidos acumulados
+    
+
+## Exemplo de texto
+
+```text
+Projeção ainda com confiança baixa, pois o mês está em estágio inicial e a estimativa está fortemente ancorada na curva histórica.
+```
+
+Isso conversa diretamente com a camada de **confiabilidade da análise** do seu framework.
+
+---
+
+# ⚙️ Heurísticas práticas prontas
+
+## Para emissão
+
+### até 5º DU
+
+- peso histórico alto
+    
+- clip forte
+    
+- não confiar demais no acumulado
+    
+
+### 6º ao 10º DU
+
+- começar a deixar o realizado influenciar
+    
+- ainda manter teto
+    
+
+### 11º DU+
+
+- projeção pode ficar mais responsiva
+    
+
+---
+
+## Para conversão
+
+### regra forte
+
+Conversão deve ser sempre a métrica mais suavizada no começo do mês.
+
+Porque ela é a que mais “engana” cedo.
+
+---
+
+## Para regul
+
+### nunca projetar só com regul acumulado
+
+Projetar regul direto costuma esconder se o bom começo veio de:
+
+- emissão excepcional
+    
+- conversão excepcional
+    
+- ticket atípico
+    
+
+Muito melhor decompor.
+
+---
+
+# 📊 Como mostrar isso no QuickSight
+
+# Aba 1 — Projeção de fechamento
+
+## Cards
+
+- Regul acumulado
+    
+- Regul projetado central
+    
+- Eficiência projetada central
+    
+- Gap vs esperado
+    
+- Nível de confiança
+    
+- Risco de fechamento
+    
+
+## Linha
+
+- % realizado acumulado
+    
+- % esperado acumulado
+    
+- faixa p25-p75
+    
+
+## Tabela
+
+- escritório
+    
+- dia útil
+    
+- emissão projetada
+    
+- conversão projetada
+    
+- regul projetado
+    
+- eficiência projetada
+    
+- confiança
+    
+
+---
+
+# Aba 2 — Decomposição da projeção
+
+## Visual 1
+
+Atual vs esperado:
+
+- emissão
+    
+- conversão
+    
+- ticket
+    
+
+## Visual 2
+
+Impacto marginal:
+
+- quanto da projeção vem de emissão
+    
+- quanto vem de conversão
+    
+- quanto vem de ticket
+    
+
+## Visual 3
+
+Faixa de projeção:
+
+- piso
+    
+- central
+    
+- teto
+    
+
+---
+
+# 📝 Texto narrativo sugerido
+
+## Exemplo 1 — início do mês
+
+```text
+No 4º dia útil, o escritório apresenta início forte de emissão e conversão, mas a projeção ainda está ancorada majoritariamente na curva histórica para evitar superestimação precoce. O fechamento central projetado é de 14,0% de eficiência, com faixa provável entre 13,2% e 14,6%.
+```
+
+## Exemplo 2 — mês já maduro
+
+```text
+No 13º dia útil, a projeção já incorpora de forma mais relevante o desempenho observado no mês. O escritório projeta fechamento em 8,7% de eficiência, ainda 0,6 pp abaixo do esperado histórico, com principal pressão vinda de conversão.
+```
+
+## Exemplo 3 — risco de estouro evitado
+
+```text
+Embora os primeiros dias tenham sido muito fortes, a projeção foi suavizada por maturidade do mês e por estabilização da conversão, reduzindo risco de superestimação do fechamento.
+```
+
+---
+
+# 🧪 Pseudológica SQL do motor
+
+```sql
+WITH base_atual AS (...),
+curva AS (...),
+historico AS (...),
+
+parametros AS (
+    SELECT
+        CASE
+            WHEN dia_util_mes <= 5 THEN 0.85
+            WHEN dia_util_mes <= 8 THEN 0.75
+            WHEN dia_util_mes <= 10 THEN 0.65
+            WHEN dia_util_mes <= 13 THEN 0.50
+            WHEN dia_util_mes <= 16 THEN 0.35
+            ELSE 0.20
+        END AS peso_hist
+),
+
+calc AS (
+    SELECT
+        ...,
+        1 - peso_hist AS peso_atual,
+
+        emitidos_acum / NULLIF(pct_emitidos_acum_exp, 0) AS proj_emitidos_realizado,
+
+        (peso_hist * emitidos_final_hist)
+        + ((1 - peso_hist) * (emitidos_acum / NULLIF(pct_emitidos_acum_exp, 0)))
+            AS proj_emitidos_blend,
+
+        (pagos_acum + (1500 * conv_final_hist))
+        / NULLIF(emitidos_acum + 1500, 0)
+            AS conv_suavizada
+    FROM ...
+),
+
+final AS (
+    SELECT
+        ...,
+        least(emitidos_final_hist * 1.20,
+              greatest(emitidos_final_hist * 0.80, proj_emitidos_blend)
+        ) AS proj_emitidos_final,
+
+        least(conv_final_hist * 1.12,
+              greatest(conv_final_hist * 0.90,
+                       (0.80 * conv_final_hist) + (0.20 * conv_suavizada))
+        ) AS conv_final_proj
+    FROM calc
+)
+
+SELECT
+    ...,
+    proj_emitidos_final * conv_final_proj * ticket_final_proj AS regul_final_proj,
+    (proj_emitidos_final * conv_final_proj * ticket_final_proj) / NULLIF(carteira_mes, 0) AS eficiencia_final_proj
+FROM final;
+```
+
+---
+
+# 🚨 Erros comuns
+
+## 1. Projetar usando só regul acumulado
+
+Erro clássico. Esconde os drivers.
+
+## 2. Não suavizar conversão
+
+Conversão no começo do mês é muito instável.
+
+## 3. Não usar piso/teto
+
+Sem isso a projeção “estoura”.
+
+## 4. Usar média simples em vez de mediana/faixas
+
+Média simples sofre muito com meses atípicos.
+
+## 5. Dar o mesmo peso ao realizado no 3º DU e no 18º DU
+
+Errado. A projeção precisa amadurecer junto com o mês.
+
+---
+
+# ✅ Regra operacional final
+
+```text
+Nos primeiros dias:
+história manda mais que realizado
+
+No meio do mês:
+história e realizado convivem
+
+No fim do mês:
+realizado manda mais que história
+```
+
+E, adicionalmente:
+
+```text
+Conversão sempre entra suavizada
+Emissão entra blendada
+Regul final é produto das peças
+Toda projeção tem piso, central e teto
+```
+
+---
+
+# 🏁 Ordem recomendada de implantação
+
+## Fase 1
+
+- base diária
+    
+- curva histórica por DU
+    
+- curva esperada ponderada
+    
+- projeção central de regul
+    
+- projeção central de eficiência
+    
+
+## Fase 2
+
+- piso e teto
+    
+- confiança
+    
+- textos automáticos
+    
+- cards no QuickSight
+    
+
+## Fase 3
+
+- decomposição por emissão vs conversão
+    
+- benchmarking vs p50/p75
+    
+- alertas de desvio precoce
+    
+
+## Fase 4
+
+- elasticidade
+    
+- custo da inação
+    
+- recomendação automática
+    
+
+---
+
+# 📌 Frase final para guardar
+
+> **Projeção boa não é a mais agressiva.  
+> É a que continua confiável quando o mês ainda está nascendo.**
+
+```
+
+## Complemento consultivo
+
+A solução mais sólida, no seu caso, é esta:
+
+- **não projetar eficiência direto**
+- projetar:
+  - emissão final
+  - conversão final
+  - ticket final
+- depois recompor:
+  - regul final
+  - eficiência final
+
+E, para não estourar:
+
+- usar **blend por maturidade do mês**
+- usar **shrinkage na conversão**
+- usar **clipping com piso/teto**
+- mostrar **faixa** e não só ponto único
+
+Isso fica bem alinhado com:
+- a lógica de **grão explícito** e modelagem orientada a processo do Kimball :contentReference[oaicite:7]{index=7}
+- a separação de responsabilidades entre camadas do seu framework Athena/Medallion :contentReference[oaicite:8]{index=8}
+- a visão de arquitetura como sistema progressivamente confiável e orientado a decisão do seu material operacional :contentReference[oaicite:9]{index=9}
+
+No próximo passo, eu posso te entregar isso já em formato de **pacote operacional**, com:
+
+- DDL das tabelas
+- SQL completo da curva histórica por dia útil
+- SQL completo da projeção com guardrails
+- campos calculados e layout do QuickSight
+- lógica de classificação de confiança e risco
+```
