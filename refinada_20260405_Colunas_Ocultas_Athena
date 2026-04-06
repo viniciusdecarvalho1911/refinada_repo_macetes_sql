@@ -1,0 +1,1159 @@
+# 🎯 Objetivo
+
+Esta nota existe para ensinar, do zero e de forma operacional, 5 coisas que um analista júnior costuma confundir no começo:
+
+1. o que são **metadados**
+2. o que são **hidden columns** no Amazon Athena
+3. qual a diferença entre **tabela externa** e **tabela Iceberg**
+4. como isso se conecta com **SCD2**
+5. como transformar isso em um pipeline utilizável com **Athena + Iceberg + Step Functions**
+
+A ideia é sair de uma visão solta, do tipo:
+
+```text
+"$file_modified_time parece útil"
+````
+
+e chegar numa visão madura:
+
+```text
+metadado físico detecta mudança
+→ Iceberg materializa histórico
+→ SCD2 preserva versões
+→ Step Functions orquestra
+```
+
+---
+
+# 📌 Leitura rápida
+
+## Resumo executivo
+
+- **Metadado** é dado sobre o dado.
+    
+- No Athena, tabelas externas expõem metadados úteis por meio de **hidden columns** como `"$path"`, `"$file_size"` e `"$file_modified_time"`.
+    
+- Essas colunas ajudam a descobrir **qual arquivo gerou a linha**, **quanto ele pesa** e **quando foi modificado**.
+    
+- Em **views**, Athena não suporta `"$file_modified_time"`, `"$file_size"` e `"$partition"`; então esse tipo de auditoria deve ser feito na **tabela base**, não na view.
+    
+- Para **SCD2**, a ideia conceitual correta continua sendo a clássica do Kimball: **quando algo muda, você fecha a versão antiga e insere uma nova linha**.
+    
+- Em produção, o desenho mais forte é:
+    
+
+```text
+origem externa no S3
+→ detecção física por hidden columns
+→ stage do recorte impactado
+→ dimensão/fato histórico em Iceberg
+```
+
+- Athena engine 3 suporta `MERGE INTO`, `UPDATE`, `DELETE`, `OPTIMIZE` e `VACUUM` para Iceberg.
+    
+- Step Functions integra diretamente com Athena e suporta `athena:startQueryExecution.sync`, o que é ótimo para orquestrar cargas SQL.
+    
+
+---
+
+# 1. 🧠 O que são metadados
+
+## Definição simples
+
+Metadado é:
+
+```text
+dado sobre o dado
+```
+
+Exemplos:
+
+- nome da tabela
+    
+- schema
+    
+- partições
+    
+- tamanho dos arquivos
+    
+- última modificação
+    
+- snapshot atual
+    
+- tipo da coluna
+    
+- localização no S3
+    
+- histórico de versões
+    
+
+## Intuição prática
+
+Pense assim:
+
+### Dado de negócio
+
+```text
+contrato = 123
+vl_pago = 550.00
+dt_pagamento = 2026-03-15
+```
+
+### Metadado
+
+```text
+esse registro veio do arquivo X
+esse arquivo está em tal caminho S3
+esse arquivo foi alterado em tal horário
+essa tabela está no snapshot Y
+essa partição foi regravada
+```
+
+## Por que isso importa
+
+Porque engenharia de dados boa não vive só de `SELECT *`.
+
+Ela precisa saber:
+
+- o que mudou
+    
+- quando mudou
+    
+- onde mudou
+    
+- se deve reprocessar
+    
+- se deve fechar histórico
+    
+- se está lendo do lugar certo
+    
+
+---
+
+# 2. 🪵 O que o material-base cobre
+
+## No material do Athena
+
+O Athena documenta o uso de **hidden metadata columns** em tabelas Hive/Iceberg e também documenta uma limitação muito importante: em views, `"$file_modified_time"`, `"$file_size"` e `"$partition"` não são suportadas.
+
+Também documenta que Athena engine 3 suporta Iceberg com `MERGE INTO`, `VACUUM`, CTAS e views.
+
+Além disso, o guia mostra que Iceberg suporta **hidden partitioning**, e que filtros adequados ajudam no pushdown e pruning.
+
+## No Kimball
+
+Kimball reforça duas ideias fundamentais:
+
+### 1. Grain é contrato
+
+A declaração do grão precisa acontecer antes de escolher fatos e dimensões. Grãos diferentes não devem ser misturados na mesma tabela fato.
+
+### 2. Cada linha representa um evento de medição
+
+Uma linha de fato tem relação 1:1 com um evento de negócio mensurável.
+
+Essas duas ideias são essenciais para entender SCD2 sem bagunça.
+
+## No Glue
+
+O Glue documenta Iceberg como formato suportado e traz otimizações importantes:
+
+- compaction
+    
+- snapshot retention
+    
+- orphan file deletion
+    
+- estatísticas de coluna para Iceberg
+    
+
+## No Step Functions
+
+O guia documenta integração nativa com Athena, incluindo `StartQueryExecution`, `GetQueryExecution` e `GetQueryResults`, além do padrão `.sync`.
+
+---
+
+# 3. 🧱 Hidden columns no Athena
+
+## O que são
+
+São colunas ocultas que não fazem parte do schema lógico da tabela, mas podem ser usadas em query.
+
+Exemplos práticos:
+
+- `"$path"`
+    
+- `"$file_size"`
+    
+- `"$file_modified_time"`
+    
+- `"$partition"`
+    
+
+## O que elas te dão
+
+### `"$path"`
+
+Mostra de qual arquivo no S3 a linha veio.
+
+### `"$file_size"`
+
+Mostra o tamanho do arquivo.
+
+### `"$file_modified_time"`
+
+Mostra a última modificação física do arquivo.
+
+### `"$partition"`
+
+Expõe a partição da linha, quando aplicável.
+
+## O ponto mais importante
+
+Essas colunas são, na prática, **metadados físicos**.
+
+Ou seja, elas não dizem diretamente:
+
+```text
+o cliente mudou de segmento
+```
+
+Elas dizem:
+
+```text
+o arquivo dessa partição mudou
+```
+
+Isso parece simples, mas muda tudo.
+
+---
+
+# 4. 📦 Nível de leitura real: arquivo, não partição
+
+Esse é um dos erros mais comuns.
+
+## Verdade técnica
+
+As hidden columns operam primeiro no nível de:
+
+```text
+arquivo
+```
+
+não no nível de:
+
+```text
+partição lógica
+```
+
+Exemplo mental:
+
+```text
+s3://bucket/tabela/anomesdia=20260315/file1.parquet
+s3://bucket/tabela/anomesdia=20260315/file2.parquet
+s3://bucket/tabela/anomesdia=20260316/file1.parquet
+```
+
+Cada linha lida do `file1.parquet` herda o mesmo `"$path"` e o mesmo `"$file_modified_time"` daquele arquivo.
+
+## Então como virar partição?
+
+Por agregação.
+
+Exemplo:
+
+```sql
+SELECT
+    anomesdia,
+    max("$file_modified_time") AS max_modified,
+    sum("$file_size")          AS total_bytes,
+    count(DISTINCT "$path")    AS total_arquivos
+FROM raw.cobranca_boletos
+GROUP BY 1;
+```
+
+## O que isso gera
+
+Uma **assinatura física da partição**.
+
+Isso é extremamente útil para:
+
+- detectar reprocessamento
+    
+- detectar retroação
+    
+- detectar crescimento estranho
+    
+- escolher só o recorte impactado
+    
+
+---
+
+# 5. ⚠️ Limitação crítica: não use isso em view
+
+O Athena documenta explicitamente que `"$file_modified_time"`, `"$file_size"` e `"$partition"` não são suportadas em views.
+
+## Consequência prática
+
+Se você tentar fazer esta auditoria em:
+
+```sql
+view_silver_padronizado_*
+```
+
+vai criar dívida técnica ou erro.
+
+## Regra operacional
+
+```text
+hidden columns → consultar na tabela base
+views → usar para semântica e padronização
+```
+
+### Em português direto:
+
+- view é boa para contrato técnico e semântico
+    
+- tabela base é onde você lê metadado físico
+    
+
+---
+
+# 6. 🪞 Tabela externa vs Iceberg
+
+Aqui mora a grande virada de maturidade.
+
+## 6.1 Tabela externa
+
+Boa para:
+
+- landing
+    
+- bronze
+    
+- auditoria física
+    
+- leitura barata do que chegou
+    
+- detectar mudança por arquivo
+    
+
+Ruim para:
+
+- update linha a linha
+    
+- histórico transacional
+    
+- SCD2 físico robusto
+    
+
+## 6.2 Iceberg
+
+Boa para:
+
+- histórico
+    
+- transação
+    
+- `MERGE INTO`
+    
+- `UPDATE`
+    
+- `DELETE`
+    
+- snapshots
+    
+- time travel
+    
+- manutenção com `OPTIMIZE` e `VACUUM`
+    
+
+## Regra prática forte
+
+```text
+externa = detectar
+iceberg = materializar
+```
+
+Essa é a arquitetura mais sólida no teu stack.
+
+---
+
+# 7. 🧬 O que é SCD2 de verdade
+
+## Definição curta
+
+SCD2 é a técnica em que, quando um atributo rastreado muda, você:
+
+1. fecha a linha antiga
+    
+2. insere uma nova linha
+    
+3. preserva histórico
+    
+
+## Exemplo mental
+
+### Antes
+
+|nk_cliente|segmento|dt_inicio|dt_fim|fl_ativo|
+|---|--:|---|---|---|
+|123|varejo|2025-01-01|9999-12-31|true|
+
+### Depois da mudança para atacado
+
+|nk_cliente|segmento|dt_inicio|dt_fim|fl_ativo|
+|---|--:|---|---|---|
+|123|varejo|2025-01-01|2026-03-14|false|
+|123|atacado|2026-03-15|9999-12-31|true|
+
+## O que não muda
+
+Mesmo usando Athena, S3 e Iceberg, o conceito continua o mesmo do Kimball:
+
+```text
+mudou atributo rastreado
+→ não sobrescreve
+→ cria nova versão
+```
+
+---
+
+# 8. 🔑 Estrutura mínima de uma dimensão SCD2
+
+No teu contexto, uma dimensão SCD2 em Athena + Iceberg deveria ter pelo menos:
+
+```sql
+sk_cliente
+nk_cliente
+hash_atributos_scd2
+nome
+segmento
+status
+dt_inicio_vigencia
+dt_fim_vigencia
+fl_ativo
+dt_ingestao_modelo
+id_execucao
+```
+
+## Papel de cada coluna
+
+### `sk_*`
+
+Chave substituta da dimensão.
+
+### `nk_*`
+
+Chave natural do negócio.
+
+### `hash_atributos_scd2`
+
+Fingerprint dos atributos rastreados.
+
+### `dt_inicio_vigencia` / `dt_fim_vigencia`
+
+Período de validade da versão.
+
+### `fl_ativo`
+
+Marca a linha vigente.
+
+---
+
+# 9. 🔍 Como hidden columns entram no SCD2
+
+Aqui está a parte mais importante da nota.
+
+## Hidden columns não fazem SCD2 sozinhas
+
+Elas não dizem:
+
+```text
+o cliente mudou de status
+```
+
+Elas só dizem:
+
+```text
+o arquivo/partição mudou fisicamente
+```
+
+## Então para que servem?
+
+Servem para responder:
+
+```text
+vale a pena olhar essa partição de novo?
+```
+
+## Fluxo mental correto
+
+```text
+metadado físico detecta recorte impactado
+→ lê só esse recorte
+→ calcula hash lógico de negócio
+→ compara com a dimensão atual
+→ fecha e insere versões quando necessário
+```
+
+### Em outras palavras
+
+- hidden columns fazem **change detection físico**
+    
+- hash + nk fazem **change detection lógico**
+    
+- Iceberg faz **materialização histórica**
+    
+
+---
+
+# 10. 🏗️ Arquitetura recomendada
+
+## Desenho forte
+
+```text
+tabela_bronze_fonte_*
+    ↓
+view_silver_padronizado_*
+    ↓
+view_silver_integrado_*
+    ↓
+stage.particoes_alteradas
+    ↓
+stage.src_delta
+    ↓
+stage.src_atual
+    ↓
+iceberg_gold_dimensao_*_scd2
+```
+
+## Papel de cada etapa
+
+### Bronze
+
+Dado próximo da origem.
+
+### Silver padronizado
+
+Contrato técnico inicial.  
+Seu template oficial reforça esse papel: tipagem, padronização, partições `p_*`, chaves e hashes técnicos.
+
+### Silver integrado
+
+Junção, deduplicação, fallback, consolidação.  
+O seu material também fixa isso como camada de integração e informação reutilizável.
+
+### `stage.particoes_alteradas`
+
+Lista das partições que mudaram fisicamente.
+
+### `stage.src_delta`
+
+Recorte bruto só das partições alteradas.
+
+### `stage.src_atual`
+
+Uma linha por chave natural no estado mais recente.
+
+### `iceberg_gold_dimensao_*_scd2`
+
+Histórico oficial.
+
+---
+
+# 11. 🪙 Por que Iceberg é melhor que tabela externa para SCD2
+
+## Porque SCD2 precisa de duas operações distintas
+
+1. fechar linha anterior
+    
+2. inserir nova linha
+    
+
+Em tabela externa, isso é feio e frágil.
+
+Você acaba caindo em um destes jeitos:
+
+- rebuild de slice
+    
+- append-only com linha vigente calculada em query
+    
+- regravação de partição inteira
+    
+
+Tudo isso funciona, mas pior.
+
+## Com Iceberg
+
+Você ganha:
+
+- `MERGE INTO`
+    
+- `UPDATE`
+    
+- `DELETE`
+    
+- snapshots
+    
+- time travel
+    
+- otimização de arquivos
+    
+- retenção e limpeza de metadados
+    
+
+---
+
+# 12. 🧪 Exemplo prático: detectar partições alteradas
+
+## Exemplo simples
+
+```sql
+CREATE TABLE stage.particoes_alteradas AS
+WITH assinatura_atual AS (
+    SELECT
+        anomesdia,
+        max("$file_modified_time") AS max_file_modified_time,
+        sum("$file_size")          AS total_file_size_bytes,
+        count(DISTINCT "$path")    AS total_file_count,
+        md5(
+            concat(
+                cast(max("$file_modified_time") AS varchar), '|',
+                cast(sum("$file_size") AS varchar), '|',
+                cast(count(DISTINCT "$path") AS varchar)
+            )
+        ) AS hash_assinatura_externa
+    FROM raw.cobranca_cliente
+    GROUP BY 1
+),
+controle_anterior AS (
+    SELECT
+        chave_particao_canonica,
+        hash_assinatura_externa
+    FROM ctrl.tb_controle_fonte_estado
+    WHERE nm_database = 'raw'
+      AND nm_tabela   = 'cobranca_cliente'
+      AND fl_ativo    = true
+)
+SELECT
+    a.anomesdia,
+    concat('anomesdia=', cast(a.anomesdia AS varchar)) AS chave_particao_canonica,
+    a.max_file_modified_time,
+    a.total_file_size_bytes,
+    a.total_file_count,
+    a.hash_assinatura_externa
+FROM assinatura_atual a
+LEFT JOIN controle_anterior c
+       ON concat('anomesdia=', cast(a.anomesdia AS varchar)) = c.chave_particao_canonica
+WHERE c.chave_particao_canonica IS NULL
+   OR a.hash_assinatura_externa <> c.hash_assinatura_externa;
+```
+
+## O que isso faz
+
+Não decide o SCD2 ainda.
+
+Só decide:
+
+```text
+quais partições merecem investigação
+```
+
+---
+
+# 13. 🧪 Exemplo prático: montar delta lógico
+
+```sql
+CREATE TABLE stage.src_delta AS
+SELECT
+    nk_cliente,
+    nome,
+    segmento,
+    status,
+    anomesdia,
+    xxhash64(
+        coalesce(nome, ''),
+        coalesce(segmento, ''),
+        coalesce(status, '')
+    ) AS hash_atributos_scd2
+FROM raw.cobranca_cliente
+WHERE anomesdia IN (
+    SELECT anomesdia
+    FROM stage.particoes_alteradas
+);
+```
+
+## Próximo passo
+
+Agora você reduz para uma linha mais recente por chave natural:
+
+```sql
+CREATE TABLE stage.src_atual AS
+WITH ranked AS (
+    SELECT
+        *,
+        row_number() OVER (
+            PARTITION BY nk_cliente
+            ORDER BY anomesdia DESC
+        ) AS rn
+    FROM stage.src_delta
+)
+SELECT
+    nk_cliente,
+    nome,
+    segmento,
+    status,
+    anomesdia,
+    hash_atributos_scd2
+FROM ranked
+WHERE rn = 1;
+```
+
+---
+
+# 14. 🧪 Exemplo prático: SCD2 em Iceberg
+
+## 14.1 Fechar linha ativa alterada
+
+```sql
+MERGE INTO gold_db.iceberg_gold_dimensao_cliente_scd2 t
+USING (
+    SELECT
+        s.nk_cliente,
+        cast(date_parse(cast(s.anomesdia as varchar), '%Y%m%d') as date) AS dt_ref,
+        s.hash_atributos_scd2
+    FROM stage.src_atual s
+) s
+ON t.nk_cliente = s.nk_cliente
+AND t.fl_ativo = true
+WHEN MATCHED
+ AND t.hash_atributos_scd2 <> s.hash_atributos_scd2
+THEN UPDATE SET
+    dt_fim_vigencia = date_add('day', -1, s.dt_ref),
+    fl_ativo = false;
+```
+
+## 14.2 Inserir novas versões
+
+```sql
+INSERT INTO gold_db.iceberg_gold_dimensao_cliente_scd2
+SELECT
+    cast(to_unixtime(current_timestamp) * 1000 as bigint) AS sk_cliente,
+    s.nk_cliente,
+    s.hash_atributos_scd2,
+    s.nome,
+    s.segmento,
+    s.status,
+    cast(date_parse(cast(s.anomesdia as varchar), '%Y%m%d') as date) AS dt_inicio_vigencia,
+    date '9999-12-31' AS dt_fim_vigencia,
+    true AS fl_ativo,
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao
+FROM stage.src_atual s
+LEFT JOIN gold_db.iceberg_gold_dimensao_cliente_scd2 t
+       ON s.nk_cliente = t.nk_cliente
+      AND t.fl_ativo = true
+WHERE t.nk_cliente IS NULL
+   OR t.hash_atributos_scd2 <> s.hash_atributos_scd2;
+```
+
+## Por que em 2 passos?
+
+Porque fica mais:
+
+- legível
+    
+- auditável
+    
+- fácil de debugar
+    
+- mais natural para SCD2
+    
+
+---
+
+# 15. 🧾 Tabela de controle: o elo entre físico e lógico
+
+O teu material já vai na direção certa com a separação entre:
+
+- **estado atual**
+    
+- **histórico de execuções**
+    
+
+Esse é um desenho bom.
+
+## Estrutura recomendada
+
+### `ctrl.tb_controle_fonte_estado`
+
+Guarda o último estado conhecido por tabela ou partição.
+
+### `ctrl.tb_controle_fonte_execucao`
+
+Guarda cada rodada de inspeção e processamento.
+
+## Ideia central
+
+A tabela de controle precisa suportar dois mundos:
+
+### EXTERNAL
+
+- `max_file_modified_time`
+    
+- `total_file_size_bytes`
+    
+- `total_file_count`
+    
+- `hash_assinatura_externa`
+    
+
+### ICEBERG
+
+- `snapshot_id_ultimo`
+    
+- `committed_at_ultimo`
+    
+- `iceberg_operation_ultima`
+    
+- `hash_assinatura_iceberg`
+    
+
+Esse desenho é coerente com a tua necessidade real e evita uma tabela “genérica demais”.
+
+---
+
+# 16. 🧊 Iceberg metadata tables: o equivalente mais forte
+
+Quando a origem já é Iceberg, hidden columns deixam de ser o melhor instrumento.
+
+Você passa a ter ferramentas melhores:
+
+- `tabela$files`
+    
+- `tabela$snapshots`
+    
+- `tabela$history`
+    
+- `tabela$partitions`
+    
+- `tabela$refs`
+    
+
+## O que isso muda
+
+Em vez de detectar:
+
+```text
+mudança física por arquivo no S3
+```
+
+você detecta:
+
+```text
+mudança transacional da tabela
+```
+
+## Regra prática
+
+```text
+fonte externa → hidden columns
+fonte Iceberg → metadata tables + snapshot_id
+```
+
+---
+
+# 17. 🪓 OPTIMIZE, VACUUM e manutenção
+
+## Athena
+
+O Athena documenta:
+
+- `OPTIMIZE ... REWRITE DATA USING BIN_PACK`
+    
+- `VACUUM` para snapshot expiration e orphan file removal em Iceberg
+    
+
+## Glue
+
+O Glue documenta três famílias de otimização para Iceberg:
+
+- compaction
+    
+- snapshot retention
+    
+- orphan file deletion
+    
+
+## Cuidado importante
+
+Snapshot retention e orphan file deletion podem impedir time travel para snapshots expirados. O próprio Athena alerta que, após expirar snapshots, você não consegue mais viajar para eles.
+
+## Regra prática
+
+```text
+precisa auditoria longa?
+→ retenha snapshots por mais tempo
+
+precisa custo baixo?
+→ retenção mais agressiva, mas consciente
+```
+
+---
+
+# 18. 🧵 Hidden partitioning no Iceberg
+
+Athena suporta **hidden partitioning** no Iceberg.
+
+## O que isso quer dizer
+
+Você pode particionar por transformações como:
+
+- `year(ts)`
+    
+- `month(ts)`
+    
+- `day(ts)`
+    
+- `bucket(...)`
+    
+- `truncate(...)`
+    
+
+sem precisar trabalhar da forma antiga de Hive.
+
+## Benefício
+
+A engine cuida do pruning de forma mais inteligente.
+
+## Dica prática
+
+Quando a partição é derivada de timestamp para date, o Athena recomenda usar filtros em faixa de dia completo para permitir pushdown melhor.
+
+---
+
+# 19. 🏷️ Naming recomendado no seu framework
+
+Seguindo teu padrão oficial:
+
+```text
+<materializacao>_<camada>_<tipo_logico>_<dominio>_<entidade>[_<contexto>]
+```
+
+## Exemplo para este caso
+
+```text
+tabela_bronze_fonte_cobranca_cliente
+view_silver_padronizado_cobranca_cliente
+view_silver_integrado_cobranca_cliente_atual
+iceberg_gold_dimensao_cobranca_cliente_scd2
+iceberg_gold_fato_cobranca_pagadoria
+ctrl_tb_controle_fonte_estado
+ctrl_tb_controle_fonte_execucao
+```
+
+O teu documento de naming é muito consistente nessa separação entre maturidade do dado, tipo lógico e materialização.
+
+---
+
+# 20. 🔄 Pipeline orquestrado com Step Functions
+
+O Step Functions integra com Athena e suporta o padrão:
+
+```json
+"Resource": "arn:aws:states:::athena:startQueryExecution.sync"
+```
+
+com `StartQueryExecution`, `GetQueryExecution` e `GetQueryResults`.
+
+## Fluxo recomendado
+
+```text
+1. Detectar partições alteradas
+2. Materializar stage.particoes_alteradas
+3. Materializar stage.src_delta
+4. Materializar stage.src_atual
+5. Fechar linhas antigas no Iceberg
+6. Inserir novas versões
+7. Atualizar tabela de controle
+8. Registrar auditoria de execução
+```
+
+## Exemplo mental de orquestração
+
+```text
+Pass: definir contexto
+  ↓
+Task: detectar alterações
+  ↓
+Task: gerar stage delta
+  ↓
+Task: fechar versões antigas
+  ↓
+Task: inserir novas versões
+  ↓
+Task: atualizar controle
+  ↓
+Succeed
+```
+
+---
+
+# 21. ❌ Erros comuns
+
+## 1. Achar que hidden columns resolvem SCD2 sozinhas
+
+Não resolvem.
+
+Elas só detectam recorte físico suspeito.
+
+## 2. Fazer auditoria física em view
+
+Athena não suporta isso bem para `"$file_modified_time"`, `"$file_size"` e `"$partition"` em views.
+
+## 3. Misturar grãos
+
+Kimball é explícito: o grão é contrato; grãos diferentes não devem conviver na mesma fato.
+
+## 4. Tentar manter SCD2 físico principal em tabela externa
+
+Funciona mal, escala pior e aumenta fragilidade operacional.
+
+## 5. Não separar mudança física de mudança lógica
+
+```text
+arquivo mudou ≠ negócio mudou
+```
+
+Essa distinção é obrigatória.
+
+## 6. Expirar snapshots cedo demais
+
+Aí depois não consegue auditar nem usar time travel.
+
+---
+
+# 22. ✅ Heurísticas prontas
+
+## Quando usar hidden columns
+
+Use quando a pergunta é:
+
+```text
+quais partições mudaram fisicamente?
+de qual arquivo veio essa linha?
+quais arquivos estão pequenos?
+qual partição foi regravada?
+```
+
+## Quando usar Iceberg metadata tables
+
+Use quando a pergunta é:
+
+```text
+qual snapshot foi o último?
+houve commit novo?
+quais arquivos entraram/saíram?
+posso viajar para versão anterior?
+```
+
+## Quando usar SCD2
+
+Use quando a pergunta é:
+
+```text
+quero preservar histórico de atributo
+quero saber como a entidade era em determinada data
+quero evitar overwrite cego
+```
+
+## Quando usar tabela externa
+
+Use como:
+
+```text
+landing
+bronze
+auditoria física
+origem de recorte impactado
+```
+
+## Quando usar Iceberg
+
+Use como:
+
+```text
+gold oficial
+dimensão histórica
+fato incremental confiável
+camada transacional do lakehouse
+```
+
+---
+
+# 23. 🧭 Regra-mãe para decorar
+
+```text
+Metadado físico detecta que algo pode ter mudado.
+Hash lógico confirma se o negócio realmente mudou.
+Iceberg materializa a nova verdade histórica.
+Step Functions orquestra a sequência.
+```
+
+Ou, ainda mais curto:
+
+```text
+detectar → comparar → historizar
+```
+
+---
+
+# 24. 🧩 Exemplo final completo em uma frase
+
+```text
+Use "$file_modified_time" e "$path" na tabela externa para descobrir as partições alteradas; recorte só esse delta; compare por nk + hash; feche a linha ativa antiga e insira a nova versão em uma dimensão Iceberg SCD2; depois atualize a tabela de controle e mantenha a tabela com OPTIMIZE/VACUUM.
+```
+
+---
+
+# 25. 🚀 Próximos passos
+
+## Ordem sugerida de estudo
+
+1. revisar o conceito de **grão**
+    
+2. revisar diferença entre **tabela externa** e **Iceberg**
+    
+3. praticar **hash lógico**
+    
+4. montar uma **dimensão SCD2 simples**
+    
+5. só depois acoplar **Step Functions**
+    
+
+## Parte do material que mais vale revisar
+
+- Athena hidden columns e limitações de views
+    
+- Iceberg em Athena: MERGE, VACUUM, hidden partitioning
+    
+- Kimball: grain como contrato e fatos em grão único
+    
+- teu padrão oficial de naming e silver/gold
+    
+
+## Frase final para levar
+
+> **Hidden columns ajudam a saber onde olhar. SCD2 decide o que historizar. Iceberg é o lugar certo para guardar esse histórico.**
+
+```
+
+Se quiser, no próximo passo eu posso transformar essa nota em uma versão 2 ainda mais operacional, já com:
+
+- DDL final da `dim_*_scd2`
+- DDL da `ctrl.tb_controle_fonte_estado`
+- SQL de detecção de partição alterada
+- SQL de carga incremental
+- e um JSON de Step Functions pronto para Athena `.sync`
+```
