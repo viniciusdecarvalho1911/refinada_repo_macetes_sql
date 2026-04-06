@@ -57,9 +57,12 @@ view_silver_padronizado_<dominio>_<entidade>
 CREATE OR REPLACE VIEW <database>.view_silver_padronizado_<dominio>_<entidade> AS
 SELECT
     -- =========================================================
-    -- 1) PARTIÇÃO FÍSICA
+    -- 1) PARTIÇÕES FÍSICAS
+    --    sempre expor com prefixo p_
+    --    use 1, 2 ou mais conforme a tabela
     -- =========================================================
-    <particao_origem> AS p_<particao_origem>,
+    <particao_fisica_1> AS p_<particao_fisica_1>,
+    <particao_fisica_2> AS p_<particao_fisica_2>,
 
     -- =========================================================
     -- 2) COLUNAS TEMPORAIS CANÔNICAS
@@ -70,43 +73,128 @@ SELECT
     <expr_ts_ref>        AS ts_ref,
 
     -- =========================================================
-    -- 3) CHAVES DE NEGÓCIO
+    -- 3) CHAVES DE NEGÓCIO ORIGINAIS
+    --    manter valor bruto/original
     -- =========================================================
     <coluna_chave_1>,
     <coluna_chave_2>,
     <coluna_chave_3>,
 
     -- =========================================================
-    -- 4) ATRIBUTOS DE NEGÓCIO
+    -- 4) DUAL LAYER - CHAVES
+    --    valor normalizado + flag de presença
     -- =========================================================
-    <atributo_1>,
-    <atributo_2>,
-    <atributo_3>,
+    coalesce(cast(<coluna_chave_1> as varchar), '') AS <coluna_chave_1>_norm,
+    case when <coluna_chave_1> is null then 0 else 1 end AS fl_<coluna_chave_1>_informado,
+
+    coalesce(cast(<coluna_chave_2> as varchar), '') AS <coluna_chave_2>_norm,
+    case when <coluna_chave_2> is null then 0 else 1 end AS fl_<coluna_chave_2>_informado,
+
+    coalesce(cast(<coluna_chave_3> as varchar), '') AS <coluna_chave_3>_norm,
+    case when <coluna_chave_3> is null then 0 else 1 end AS fl_<coluna_chave_3>_informado,
 
     -- =========================================================
-    -- 5) COLUNAS TÉCNICAS
+    -- 5) ATRIBUTOS DE NEGÓCIO ORIGINAIS
+    --    ajuste a lista conforme o caso
+    -- =========================================================
+    <atributo_texto_1>,
+    <atributo_texto_2>,
+    <atributo_num_1>,
+    <atributo_num_2>,
+    <atributo_flag_1>,
+
+    -- =========================================================
+    -- 6) DUAL LAYER - TEXTO / CATEGORIA
+    --    placeholder técnico, não semântico
+    -- =========================================================
+    coalesce(cast(<atributo_texto_1> as varchar), '') AS <atributo_texto_1>_norm,
+    case when <atributo_texto_1> is null then 0 else 1 end AS fl_<atributo_texto_1>_informado,
+
+    coalesce(cast(<atributo_texto_2> as varchar), '') AS <atributo_texto_2>_norm,
+    case when <atributo_texto_2> is null then 0 else 1 end AS fl_<atributo_texto_2>_informado,
+
+    -- =========================================================
+    -- 7) DUAL LAYER - NUMÉRICOS
+    --    valor utilizável + flag de presença
+    -- =========================================================
+    coalesce(cast(<atributo_num_1> as decimal(18,2)), 0) AS <atributo_num_1>_norm,
+    case when <atributo_num_1> is null then 0 else 1 end AS fl_<atributo_num_1>_informado,
+
+    coalesce(cast(<atributo_num_2> as decimal(18,2)), 0) AS <atributo_num_2>_norm,
+    case when <atributo_num_2> is null then 0 else 1 end AS fl_<atributo_num_2>_informado,
+
+    -- =========================================================
+    -- 8) DUAL LAYER - BOOLEAN / FLAG
+    --    padroniza tri-state sem perder semântica
+    -- =========================================================
+    coalesce(cast(<atributo_flag_1> as integer), 0) AS <atributo_flag_1>_norm,
+    case when <atributo_flag_1> is null then 0 else 1 end AS fl_<atributo_flag_1>_informado,
+
+    -- =========================================================
+    -- 9) FLAGS DE QUALIDADE TÉCNICA
+    --    não são regra de negócio
+    -- =========================================================
+    case
+        when <coluna_chave_1> is not null
+         and <coluna_chave_2> is not null
+        then 1 else 0
+    end AS fl_chave_minima_ok,
+
+    case
+        when <atributo_num_1> is not null
+         and cast(<atributo_num_1> as decimal(18,2)) >= 0
+        then 1 else 0
+    end AS fl_<atributo_num_1>_valido,
+
+    case
+        when <expr_dt_ref_date> is not null
+        then 1 else 0
+    end AS fl_data_referencia_ok,
+
+    -- =========================================================
+    -- 10) COLUNAS TÉCNICAS
     -- =========================================================
     current_timestamp AS dt_ingestao_modelo,
     '<id_execucao>'   AS id_execucao,
 
     -- =========================================================
-    -- 6) HASHES
+    -- 11) HASH CHAVE DE NEGÓCIO
     -- =========================================================
     md5(
         concat(
             coalesce(cast(<coluna_chave_1> as varchar), ''),
             '|', coalesce(cast(<coluna_chave_2> as varchar), ''),
+            '|', coalesce(cast(<coluna_chave_3> as varchar), ''),
             '|', coalesce(cast(<expr_dt_ref_int> as varchar), '')
         )
     ) AS hash_chave_negocio,
 
+    -- =========================================================
+    -- 12) HASH DE ATRIBUTOS
+    -- =========================================================
     md5(
         concat(
-            coalesce(cast(<atributo_1> as varchar), ''),
-            '|', coalesce(cast(<atributo_2> as varchar), ''),
-            '|', coalesce(cast(<atributo_3> as varchar), '')
+            coalesce(cast(<atributo_texto_1> as varchar), ''),
+            '|', coalesce(cast(<atributo_texto_2> as varchar), ''),
+            '|', coalesce(cast(cast(<atributo_num_1> as decimal(18,2)) as varchar), ''),
+            '|', coalesce(cast(cast(<atributo_num_2> as decimal(18,2)) as varchar), ''),
+            '|', coalesce(cast(<atributo_flag_1> as varchar), '')
         )
-    ) AS hash_atributos
+    ) AS hash_atributos,
+
+    -- =========================================================
+    -- 13) SCORE SIMPLES DE PREENCHIMENTO
+    -- =========================================================
+    (
+        (case when <coluna_chave_1> is null then 0 else 1 end) +
+        (case when <coluna_chave_2> is null then 0 else 1 end) +
+        (case when <coluna_chave_3> is null then 0 else 1 end) +
+        (case when <atributo_texto_1> is null then 0 else 1 end) +
+        (case when <atributo_texto_2> is null then 0 else 1 end) +
+        (case when <atributo_num_1> is null then 0 else 1 end) +
+        (case when <atributo_num_2> is null then 0 else 1 end) +
+        (case when <atributo_flag_1> is null then 0 else 1 end)
+    ) AS score_preenchimento_basico
 
 FROM <database_origem>.<tabela_origem>;
 ```
