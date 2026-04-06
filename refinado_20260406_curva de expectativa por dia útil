@@ -1,0 +1,680 @@
+Perfeito. Vamos montar a **mart de curva de expectativa por dias úteis**, com foco em:
+
+- sazonalidade por dia útil
+- ponderação de meses anteriores
+- projeção de fechamento
+- desvio precoce
+- uso no QuickSight
+- encaixe no seu stack Athena + Iceberg + Step Functions
+
+Athena permite criar tabelas Iceberg por `CREATE TABLE` ou `CTAS`, e CTAS costuma ser o jeito mais prático de criar e carregar uma tabela em uma tacada. Step Functions integra diretamente com Athena para rodar essas queries de forma orquestrada. No QuickSight, parâmetros podem alimentar campos calculados e controles, então essa curva também pode virar camada de simulação ou comparação visual.
+
+# 1. O que é a curva de expectativa por dia útil
+
+A ideia é responder:
+
+> “No dia útil X do mês, quanto esse escritório normalmente já deveria ter entregue?”
+
+Em vez de comparar:
+
+- dia 10 do calendário contra dia 10 do calendário
+
+você compara:
+
+- **8º dia útil do mês atual** contra
+- **8º dia útil de meses comparáveis**
+
+Isso é muito melhor porque cobrança costuma responder mais a ritmo operacional do que a dia corrido.
+
+---
+
+# 2. O que você quer modelar
+
+Para cada escritório e dia útil do mês, você quer ter algo como:
+
+- `% acumulado esperado de caixa`
+- `% acumulado esperado de emitidos`
+- `% acumulado esperado de pagos`
+- `% acumulado esperado de ticket`
+- faixa de referência (`p25`, `p50`, `p75`)
+
+Assim, no mês corrente, você calcula:
+
+- realizado acumulado
+- esperado acumulado
+- gap
+- projeção de fechamento
+
+---
+
+# 3. A lógica-base
+
+## Passo 1
+
+Construir uma base diária histórica.
+
+## Passo 2
+
+Para cada mês passado, calcular:
+
+- valor diário
+- valor acumulado
+- % acumulado dentro do mês
+
+## Passo 3
+
+Empilhar vários meses históricos e, para cada `dia_util_mes`, tirar:
+
+- mediana
+- p25
+- p75
+- média ponderada
+
+## Passo 4
+
+No mês atual, juntar o realizado do dia útil corrente com essa curva esperada.
+
+---
+
+# 4. Tabelas que eu criaria
+
+## 4.1 Base diária
+
+`mart.cobranca_escritorio_dia`
+
+Grão:
+
+- `data`
+- `escritorio`
+
+Colunas mínimas:
+
+- `data`
+- `anomes`
+- `escritorio`
+- `dia_util_mes`
+- `qt_dias_uteis_mes`
+- `caixa_dia`
+- `emitidos_dia`
+- `pagos_dia`
+- `ticket_dia`
+
+## 4.2 Curva histórica por mês
+
+`mart.cobranca_escritorio_curva_mes`
+
+Grão:
+
+- `anomes`
+- `escritorio`
+- `dia_util_mes`
+
+Colunas:
+
+- `caixa_acum`
+- `emitidos_acum`
+- `pagos_acum`
+- `% acumulado`
+
+## 4.3 Curva esperada ponderada
+
+`mart.cobranca_curva_expectativa_dia_util`
+
+Grão:
+
+- `escritorio`
+- `dia_util_mes`
+
+Colunas:
+
+- `pct_acum_caixa_exp`
+- `pct_acum_emitidos_exp`
+- `pct_acum_pagos_exp`
+- `pct_acum_caixa_p25`
+- `pct_acum_caixa_p50`
+- `pct_acum_caixa_p75`
+- e equivalentes para emitidos/pagos
+
+## 4.4 Projeção diária
+
+`mart.cobranca_previsao_diaria`
+
+Grão:
+
+- `data`
+- `escritorio`
+
+Colunas:
+
+- `caixa_acum_real`
+- `pct_esperado`
+- `caixa_proj_fechamento`
+- `gap_proj`
+- `risco_flag`
+
+---
+
+# 5. Como montar a base diária
+
+Você precisa ter uma tabela calendário boa. Idealmente, uma `dim_data` com:
+
+- `data`
+- `anomes`
+- `fl_dia_util`
+- `dia_util_mes`
+- `qt_dias_uteis_mes`
+- `fl_ultimo_dia_nao_util`
+- `fl_penultimo_dia_nao_util`
+
+Depois, consolida sua base operacional por `data + escritorio`.
+
+## Exemplo SQL
+
+WITH base_eventos AS (  
+    SELECT  
+        dt_evento AS data,  
+        escritorio,  
+        SUM(vl_pagamento) AS caixa_dia,  
+        COUNT_IF(fl_emitido = 1) AS emitidos_dia,  
+        COUNT_IF(fl_pago = 1) AS pagos_dia  
+    FROM gold.cobranca_eventos_diarios  
+    GROUP BY 1,2  
+)  
+  
+SELECT  
+    d.data,  
+    d.anomes,  
+    b.escritorio,  
+    d.dia_util_mes,  
+    d.qt_dias_uteis_mes,  
+    COALESCE(b.caixa_dia, 0) AS caixa_dia,  
+    COALESCE(b.emitidos_dia, 0) AS emitidos_dia,  
+    COALESCE(b.pagos_dia, 0) AS pagos_dia,  
+    COALESCE(b.caixa_dia / NULLIF(b.pagos_dia, 0), 0) AS ticket_dia  
+FROM dim_data d  
+LEFT JOIN base_eventos b  
+  ON d.data = b.data  
+WHERE d.fl_dia_util = 1;
+
+---
+
+# 6. Como montar a curva histórica mensal
+
+Agora, para cada mês histórico, você quer o acumulado por dia útil.
+
+## Exemplo SQL
+
+WITH base AS (  
+    SELECT *  
+    FROM mart.cobranca_escritorio_dia  
+),  
+  
+acumulado AS (  
+    SELECT  
+        anomes,  
+        escritorio,  
+        dia_util_mes,  
+        qt_dias_uteis_mes,  
+  
+        caixa_dia,  
+        emitidos_dia,  
+        pagos_dia,  
+  
+        SUM(caixa_dia) OVER (  
+            PARTITION BY anomes, escritorio  
+            ORDER BY dia_util_mes  
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW  
+        ) AS caixa_acum,  
+  
+        SUM(emitidos_dia) OVER (  
+            PARTITION BY anomes, escritorio  
+            ORDER BY dia_util_mes  
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW  
+        ) AS emitidos_acum,  
+  
+        SUM(pagos_dia) OVER (  
+            PARTITION BY anomes, escritorio  
+            ORDER BY dia_util_mes  
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW  
+        ) AS pagos_acum,  
+  
+        SUM(caixa_dia) OVER (PARTITION BY anomes, escritorio) AS caixa_mes_total,  
+        SUM(emitidos_dia) OVER (PARTITION BY anomes, escritorio) AS emitidos_mes_total,  
+        SUM(pagos_dia) OVER (PARTITION BY anomes, escritorio) AS pagos_mes_total  
+    FROM base  
+)  
+  
+SELECT  
+    anomes,  
+    escritorio,  
+    dia_util_mes,  
+    qt_dias_uteis_mes,  
+  
+    caixa_acum,  
+    emitidos_acum,  
+    pagos_acum,  
+  
+    caixa_acum / NULLIF(caixa_mes_total, 0) AS pct_acum_caixa,  
+    emitidos_acum / NULLIF(emitidos_mes_total, 0) AS pct_acum_emitidos,  
+    pagos_acum / NULLIF(pagos_mes_total, 0) AS pct_acum_pagos  
+FROM acumulado;
+
+---
+
+# 7. Como ponderar meses anteriores
+
+Aqui está a parte mais importante.
+
+Você não quer usar uma média simples boba.  
+Você quer algo que considere:
+
+- recência
+- sazonalidade
+- comparabilidade
+
+## Estratégia que eu recomendo
+
+### camada 1 — recência
+
+Use os últimos 6 meses com pesos decrescentes:
+
+- M-1 → peso 6
+- M-2 → 5
+- M-3 → 4
+- M-4 → 3
+- M-5 → 2
+- M-6 → 1
+
+### camada 2 — mesmo mês do ano anterior
+
+Se fizer sentido no seu processo, acrescente:
+
+- mesmo mês do ano anterior com peso 3 ou 4
+
+Isso ajuda quando há sazonalidade anual forte.
+
+### camada 3 — benchmark de robustez
+
+Além da média ponderada, guarde:
+
+- p25
+- p50
+- p75
+
+Assim você não depende só de um valor esperado.
+
+---
+
+# 8. SQL da curva esperada ponderada
+
+Suponha que você quer gerar a curva para `202603`.  
+Você usa meses anteriores e atribui pesos.
+
+## Exemplo conceitual
+
+WITH historico AS (  
+    SELECT  
+        anomes,  
+        escritorio,  
+        dia_util_mes,  
+        pct_acum_caixa,  
+        pct_acum_emitidos,  
+        pct_acum_pagos  
+    FROM mart.cobranca_escritorio_curva_mes  
+    WHERE anomes IN (202602, 202601, 202512, 202511, 202510, 202509, 202503)  
+),  
+  
+pesos AS (  
+    SELECT  
+        anomes,  
+        CASE  
+            WHEN anomes = 202602 THEN 6  
+            WHEN anomes = 202601 THEN 5  
+            WHEN anomes = 202512 THEN 4  
+            WHEN anomes = 202511 THEN 3  
+            WHEN anomes = 202510 THEN 2  
+            WHEN anomes = 202509 THEN 1  
+            WHEN anomes = 202503 THEN 3  
+            ELSE 1  
+        END AS peso  
+    FROM historico  
+    GROUP BY 1  
+),  
+  
+base_pesada AS (  
+    SELECT  
+        h.escritorio,  
+        h.dia_util_mes,  
+        h.pct_acum_caixa,  
+        h.pct_acum_emitidos,  
+        h.pct_acum_pagos,  
+        p.peso  
+    FROM historico h  
+    JOIN pesos p  
+      ON h.anomes = p.anomes  
+)  
+  
+SELECT  
+    escritorio,  
+    dia_util_mes,  
+  
+    SUM(pct_acum_caixa * peso) / NULLIF(SUM(peso), 0) AS pct_acum_caixa_exp,  
+    SUM(pct_acum_emitidos * peso) / NULLIF(SUM(peso), 0) AS pct_acum_emitidos_exp,  
+    SUM(pct_acum_pagos * peso) / NULLIF(SUM(peso), 0) AS pct_acum_pagos_exp  
+  
+FROM base_pesada  
+GROUP BY 1,2;
+
+---
+
+# 9. Como obter p25, p50 e p75
+
+Athena tem funções aproximadas úteis para percentis, como `approx_percentile`, boas para esse tipo de uso analítico. Você pode aplicá-las por escritório e dia útil para construir faixas de referência.
+
+## Exemplo
+
+SELECT  
+    escritorio,  
+    dia_util_mes,  
+    approx_percentile(pct_acum_caixa, 0.25) AS pct_acum_caixa_p25,  
+    approx_percentile(pct_acum_caixa, 0.50) AS pct_acum_caixa_p50,  
+    approx_percentile(pct_acum_caixa, 0.75) AS pct_acum_caixa_p75  
+FROM historico  
+GROUP BY 1,2;
+
+Faça o mesmo para:
+
+- emitidos
+- pagos
+- talvez ticket
+
+---
+
+# 10. Como projetar o fechamento do mês atual
+
+Agora você pega o acumulado do mês atual e divide pelo `% esperado`.
+
+Exemplo:
+
+- caixa acumulado até o 8º dia útil = R$ 3,9M
+- `% esperado no 8º dia útil` = 0,47
+
+Logo:
+
+caixa_proj = 3,9 / 0,47 = 8,30
+
+## SQL
+
+WITH atual AS (  
+    SELECT  
+        anomes,  
+        escritorio,  
+        MAX(dia_util_mes) AS dia_util_corrente,  
+        SUM(caixa_dia) AS caixa_acum_real  
+    FROM mart.cobranca_escritorio_dia  
+    WHERE anomes = 202603  
+      AND data <= current_date  
+    GROUP BY 1,2  
+),  
+  
+curva AS (  
+    SELECT  
+        escritorio,  
+        dia_util_mes,  
+        pct_acum_caixa_exp,  
+        pct_acum_caixa_p25,  
+        pct_acum_caixa_p50,  
+        pct_acum_caixa_p75  
+    FROM mart.cobranca_curva_expectativa_dia_util  
+)  
+  
+SELECT  
+    a.anomes,  
+    a.escritorio,  
+    a.dia_util_corrente,  
+    a.caixa_acum_real,  
+    c.pct_acum_caixa_exp,  
+    c.pct_acum_caixa_p25,  
+    c.pct_acum_caixa_p50,  
+    c.pct_acum_caixa_p75,  
+  
+    a.caixa_acum_real / NULLIF(c.pct_acum_caixa_exp, 0) AS caixa_proj_fechamento_exp,  
+    a.caixa_acum_real / NULLIF(c.pct_acum_caixa_p50, 0) AS caixa_proj_fechamento_p50,  
+    a.caixa_acum_real / NULLIF(c.pct_acum_caixa_p75, 0) AS caixa_proj_fechamento_p75  
+  
+FROM atual a  
+LEFT JOIN curva c  
+  ON a.escritorio = c.escritorio  
+ AND a.dia_util_corrente = c.dia_util_mes;
+
+---
+
+# 11. Como transformar isso em risco
+
+Você pode comparar a projeção com:
+
+- mês anterior
+- meta
+- p50/p75
+- esperado do próprio escritório
+
+## Exemplo de flag
+
+CASE  
+    WHEN caixa_proj_fechamento_exp < caixa_meta * 0.90 THEN 'alto'  
+    WHEN caixa_proj_fechamento_exp < caixa_meta * 0.97 THEN 'medio'  
+    ELSE 'baixo'  
+END AS risco_flag
+
+Ou:
+
+CASE  
+    WHEN caixa_proj_fechamento_exp < caixa_mes_anterior * 0.90 THEN 'alto'  
+    WHEN caixa_proj_fechamento_exp < caixa_mes_anterior * 0.97 THEN 'medio'  
+    ELSE 'baixo'  
+END
+
+---
+
+# 12. Como usar no QuickSight
+
+## Página “Previsão e pacing”
+
+### Bloco 1
+
+Cards:
+
+- acumulado real
+- acumulado esperado
+- projeção de fechamento
+- gap projetado
+- risco
+
+### Bloco 2
+
+Linha:
+
+- `% acumulado realizado`
+- `% acumulado esperado`
+- faixa p25–p75
+
+### Bloco 3
+
+Tabela:
+
+- escritório
+- dia útil corrente
+- `% realizado`
+- `% esperado`
+- projeção
+- risco
+
+### Bloco 4
+
+Texto:
+
+- “No 8º dia útil, o escritório está 8 pp abaixo da curva esperada, projetando fechamento 11% inferior ao esperado.”
+
+---
+
+# 13. Como ponderar melhor ainda
+
+Se quiser sofisticar sem exagerar:
+
+## abordagem A — recência + sazonalidade
+
+Peso final = média entre:
+
+- peso de recência
+- peso de similaridade sazonal
+
+## abordagem B — clusters
+
+Se o escritório tem pouco histórico ou é muito volátil, use:
+
+- curva do cluster
+- curva da fila dominante
+- curva do grupo de escritórios similares
+
+## abordagem C — trimming
+
+Exclua meses extremamente atípicos antes de calcular a curva:
+
+- greve
+- feriado muito anômalo
+- mudança de processo
+
+---
+
+# 14. Soluções práticas para implantar
+
+## solução 1 — simples e forte
+
+Use últimos 6 meses ponderados por recência.
+
+Melhor custo-benefício.
+
+## solução 2 — mais robusta
+
+Use:
+
+- últimos 6 meses ponderados
+- - mesmo mês do ano anterior
+- - p25/p50/p75
+
+Melhor para sazonalidade real.
+
+## solução 3 — avançada
+
+Curvas por:
+
+- escritório
+- cluster
+- fallback cluster quando escritório tem pouca estabilidade
+
+Melhor para operação grande e heterogênea.
+
+---
+
+# 15. Step Functions: como orquestrar isso
+
+Fluxo sugerido:
+
+1. atualizar `mart.cobranca_escritorio_dia`
+2. atualizar `mart.cobranca_escritorio_curva_mes`
+3. atualizar `mart.cobranca_curva_expectativa_dia_util`
+4. atualizar `mart.cobranca_previsao_diaria`
+5. refresh do QuickSight
+
+Step Functions integra com Athena para rodar essas queries e esperar a conclusão com `.sync`.
+
+---
+
+# 16. Ordem exata de implementação
+
+Eu faria assim:
+
+### etapa 1
+
+Criar `mart.cobranca_escritorio_dia`
+
+### etapa 2
+
+Criar `mart.cobranca_escritorio_curva_mes`
+
+### etapa 3
+
+Criar `mart.cobranca_curva_expectativa_dia_util`
+
+### etapa 4
+
+Criar `mart.cobranca_previsao_diaria`
+
+### etapa 5
+
+Criar página de previsão no QuickSight
+
+### etapa 6
+
+Adicionar alertas de risco
+
+---
+
+# 17. Heurísticas práticas
+
+Use estas regras:
+
+- se o escritório tem histórico estável → curva própria
+- se não tem → fallback para cluster
+- se o mês atual está abaixo do p25 esperado → alerta
+- se a projeção está 10% abaixo do esperado → risco alto
+- se a curva está muito fora do padrão já na primeira quinzena → agir antes do fechamento
+
+---
+
+# 18. O que mais pode melhorar essa abordagem
+
+Depois de implantar, você pode sofisticar com:
+
+- curva separada por fila
+- curva separada por parceiro
+- curva separada por tipo de carteira
+- curva de emissão
+- curva de conversão
+- curva de ticket
+
+A versão mais forte costuma ser:
+
+- curva de caixa
+- curva de emitidos
+- curva de pagos
+
+Porque juntas explicam o desvio.
+
+---
+
+# 19. Regra de ouro
+
+> **A curva de expectativa não serve para descrever; serve para detectar cedo quando o mês saiu dos trilhos.**
+
+Esse é o valor real.
+
+---
+
+# 20. Minha recomendação objetiva
+
+Comece com:
+
+- curva de caixa acumulado por dia útil
+- ponderação por recência
+- p25/p50/p75
+- projeção de fechamento por escritório
+
+Depois expanda para:
+
+- emitidos
+- pagos
+- conversão
+
+Se você quiser, no próximo passo eu monto o pacote mais operacional de todos:  
+**DDL das 4 tabelas (`escritorio_dia`, `curva_mes`, `curva_expectativa_dia_util`, `previsao_diaria`) + SQL completo de CTAS/INSERT para cada uma**.
