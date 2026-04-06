@@ -1,0 +1,1796 @@
+
+# Sistema Operacional de Alto ROI Corporativo
+
+> [!important]
+> Este material é um playbook para sair do nível de **executor técnico** e evoluir para o nível de **referência estrutural**, isto é, a pessoa que:
+> - organiza o caos
+> - cria padrão
+> - reduz fricção
+> - transforma trabalho recorrente em sistema
+> - comunica com clareza
+> - entrega decisão, não só atividade
+
+---
+
+# Ideia central
+
+No corporativo, vantagem desproporcional raramente vem só de inteligência bruta.
+
+Ela costuma vir de cinco coisas:
+
+- **visibilidade**
+- **previsibilidade**
+- **reutilização**
+- **redução de fricção**
+- **confiança**
+
+A lógica é simples:
+
+> **ROI alto não é sobre parecer brilhante. É sobre criar alavancagem.**
+
+---
+
+# A regra-mãe
+
+## ROI não é inteligência. ROI é alavancagem.
+
+No mundo do trabalho:
+
+- inteligência ajuda
+- esforço ajuda
+- consistência ajuda
+- mas **alavancagem muda o jogo**
+
+## O que é alavancagem?
+
+É fazer algo **uma vez** e colher **muitas vezes**.
+
+Exemplos:
+
+- uma query repetida vira view
+- uma análise recorrente vira template
+- um processo manual vira pipeline
+- uma regra espalhada vira tabela de regra
+- uma explicação boa vira nota padrão
+- uma estrutura útil vira padrão do time
+
+> [!tip]
+> Sempre pergunte:
+> **“Isso vai acontecer de novo?”**
+>
+> Se a resposta for sim, existe chance de transformar em ativo.
+
+---
+
+# A mudança de nível
+
+## Antes
+
+> “Pessoa que faz análise”
+
+## Depois
+
+> “Pessoa que define como a empresa analisa”
+
+Essa é a verdadeira virada.
+
+Você deixa de entregar só tarefas e passa a construir:
+
+- sistema
+- camada de confiança
+- padrão
+- infraestrutura invisível
+- narrativa executiva
+- mecanismos de decisão
+
+---
+
+# O meta-jogo
+
+## A maioria
+
+- faz a parte dela
+- entrega
+- desaparece
+
+## Quem sobe rápido
+
+- resolve ponta a ponta
+- reduz esforço dos outros
+- comunica impacto
+- organiza a bagunça
+- deixa rastro útil
+- cria padrão que permanece
+
+> [!quote]
+> **Se eu sair amanhã, isso continua funcionando?**
+>
+> Se sim, você criou ativo.  
+> Se não, você só executou.
+
+---
+
+# Os hacks de mais alto ROI
+
+## 1. Faça visível o que ninguém vê
+
+A maior parte das pessoas comunica atividade.
+
+Exemplo fraco:
+
+> Rodei a base e o resultado foi X.
+
+Exemplo forte:
+
+> Identifiquei queda de eficiência de 3pp, concentrada em 2 escritórios, com potencial impacto de R$ X. Recomendo ação Y.
+
+Mesmo trabalho. Percepção de valor muito maior.
+
+## Fórmula prática de comunicação
+
+Toda entrega deveria responder:
+
+- o que aconteceu
+- por que importa
+- onde está concentrado
+- qual a ação sugerida
+
+## Modelo de frase
+
+> Houve alteração em **X**, explicada principalmente por **Y**, concentrada em **Z**, com impacto potencial em **W**. Recomenda-se **ação A**.
+
+---
+
+## 2. Transforme trabalho manual em ativo reutilizável
+
+Toda atividade recorrente é candidata a virar:
+
+- template
+- view
+- tabela gold
+- query parametrizada
+- pipeline
+- dashboard
+- checklist
+- nota de referência
+- tabela de controle
+- regra de negócio documentada
+
+## Exemplos no contexto de dados
+
+- query Athena complexa → `view` padrão
+- processamento recorrente → Step Function genérica
+- análise mensal → template Obsidian
+- base de consumo → dataset para QuickSight
+- regra de elegibilidade → tabela de regra
+
+> [!tip]
+> O salto profissional acontece quando você para de apenas **executar** e começa a **sistematizar**.
+
+---
+
+## 3. Documentação mínima vence documentação perfeita
+
+Quase ninguém documenta bem.
+
+Quem documenta **só um pouco melhor** já ganha vantagem.
+
+## Estrutura mínima de documentação útil
+
+```markdown
+# Objetivo
+# Fonte dos dados
+# Regra aplicada
+# Saída esperada
+# Riscos / observações
+# Próximo passo
+````
+
+Essa estrutura já resolve muito porque:
+
+- reduz dependência de memória
+    
+- facilita revisão
+    
+- ajuda onboarding
+    
+- cria sensação de dono
+    
+- acelera manutenção
+    
+
+---
+
+## 4. Nunca entregue só análise. Entregue próximo passo.
+
+Análise sem encaminhamento vira observação.
+
+Análise com recomendação vira instrumento de decisão.
+
+### Exemplo fraco
+
+> A inadimplência subiu.
+
+### Exemplo forte
+
+> A inadimplência subiu, principalmente na faixa X e nos escritórios Y/Z. Recomenda-se revisar alocação e abordagem nesses grupos prioritários.
+
+## Regra prática
+
+Toda análise deve terminar com pelo menos um dos seguintes blocos:
+
+- ação sugerida
+    
+- hipótese prioritária
+    
+- próxima validação
+    
+- decisão recomendada
+    
+- risco se nada for feito
+    
+
+---
+
+## 5. Resolva o problema inteiro
+
+A maioria resolve uma etapa.
+
+Quem ganha destaque resolve a cadeia inteira.
+
+## Exemplo no seu contexto
+
+Não só:
+
+- query Athena
+    
+
+Mas:
+
+- dado
+    
+- regra
+    
+- camada confiável
+    
+- análise
+    
+- dashboard
+    
+- narrativa
+    
+- recomendação
+    
+- automação
+    
+- monitoramento
+    
+
+> [!important]  
+> Resolver ponta a ponta é raro.  
+> E justamente por isso tem ROI altíssimo.
+
+---
+
+## 6. Crie atalhos organizacionais
+
+Facilitar a vida dos outros gera influência estrutural.
+
+## Exemplos
+
+- base pronta para Excel
+    
+- dataset pronto para QuickSight
+    
+- dashboard navegável
+    
+- query base reutilizável
+    
+- checklist operacional
+    
+- padrão de naming
+    
+- dicionário de métricas
+    
+
+Quando você cria atalhos, você vira:
+
+- referência
+    
+- facilitador
+    
+- infraestrutura invisível
+    
+- dono informal do fluxo
+    
+
+---
+
+## 7. Use naming como arma
+
+Naming não é perfumaria.
+
+Naming é:
+
+- compressão de contexto
+    
+- clareza
+    
+- governança implícita
+    
+- redução de erro
+    
+- aumento de credibilidade
+    
+
+> [!quote]  
+> **Quem nomeia bem organiza melhor. Quem organiza melhor escala melhor.**
+
+---
+
+## 8. Reduza fricção obsessivamente
+
+Uma pergunta poderosa:
+
+> **“O que está chato aqui?”**
+
+Depois:
+
+> **“Como eu removo ou diminuo isso?”**
+
+## Exemplos
+
+- login repetitivo → automatização
+    
+- query manual → scheduler
+    
+- exportação manual → pipeline
+    
+- relatório confuso → estrutura fixa
+    
+- regra escondida em SQL → tabela de regra
+    
+- informação espalhada → nota central
+    
+
+Quem remove fricção se torna rapidamente valioso.
+
+---
+
+## 9. Use o poder do default
+
+Se você cria o padrão, você passa a definir o funcionamento implícito da área.
+
+Exemplos:
+
+- modelo padrão de dashboard
+    
+- modelo padrão de query
+    
+- template de análise
+    
+- estrutura de tabelas
+    
+- convenção de nomes
+    
+- forma padrão de comunicar resultados
+    
+
+> [!tip]  
+> O padrão mais usado tende a virar o padrão oficial, mesmo sem anúncio formal.
+
+---
+
+## 10. Pequenos ganhos acumulados vencem grandes ideias isoladas
+
+Não é preciso genialidade.
+
+É preciso melhorar continuamente em:
+
+- clareza
+    
+- estrutura
+    
+- naming
+    
+- documentação
+    
+- automação
+    
+- narrativa
+    
+- reutilização
+    
+
+Em alguns meses, isso cria distância enorme.
+
+---
+
+# O framework de maturidade
+
+Pense em qualquer entrega subindo estes níveis:
+
+## Nível 1 — Execução
+
+> Fiz uma tarefa.
+
+## Nível 2 — Análise
+
+> Expliquei o que aconteceu.
+
+## Nível 3 — Sistema
+
+> Estruturei para não precisar refazer.
+
+## Nível 4 — Influência
+
+> Os outros passaram a usar isso como padrão.
+
+## Objetivo prático
+
+Mover cada trabalho recorrente de:
+
+- execução → sistema
+    
+- análise → influência
+    
+
+---
+
+# O framework McKinsey-like para qualquer entrega
+
+## Estrutura-base
+
+1. **Contexto**
+    
+2. **Problema**
+    
+3. **Evidência**
+    
+4. **Insight**
+    
+5. **Recomendação**
+    
+6. **Próximo passo**
+    
+
+## Teste de qualidade
+
+> Se alguém ler isso, consegue agir?
+
+Se a resposta for não, falta qualidade executiva.
+
+---
+
+## Exemplo simples
+
+### Versão fraca
+
+> A eficiência caiu.
+
+### Versão forte
+
+**Contexto:** eficiência da carteira no mês corrente  
+**Problema:** queda de 3pp vs mês anterior  
+**Evidência:** piora concentrada em 2 escritórios  
+**Insight:** possível problema de estratégia/alocação  
+**Recomendação:** revisar distribuição e abordagem nesses escritórios  
+**Próximo passo:** validar carteira enviada e desempenho por cluster
+
+---
+
+# Sistema operacional corporativo
+
+## As 5 camadas do trabalho de alto ROI
+
+### 1. Captura
+
+Onde nasce a informação.
+
+### 2. Organização
+
+Onde ela ganha forma.
+
+### 3. Confiança
+
+Onde a regra é consolidada.
+
+### 4. Decisão
+
+Onde vira insight acionável.
+
+### 5. Influência
+
+Onde vira padrão do time.
+
+---
+
+## Tradução para o mundo de dados
+
+### Dados
+
+- `bronze` → bruto
+    
+- `silver` → tratado
+    
+- `gold` → regra consolidada
+    
+- `mart` → pronto para consumo
+    
+- `ctrl` → metadados, decisão e controle
+    
+
+### Trabalho pessoal
+
+- entrada de demandas
+    
+- triagem
+    
+- execução
+    
+- padronização
+    
+- documentação
+    
+- comunicação
+    
+- reutilização
+    
+
+---
+
+# Blueprint técnico de alto ROI
+
+## Estrutura lógica recomendada
+
+```text
+s3://lakehouse/
+  bronze/
+  silver/
+  gold/
+  mart/
+  ctrl/
+```
+
+## Papel de cada camada
+
+### Bronze
+
+Espelha origem.  
+Pouca regra.  
+Histórico bruto.  
+Mais próximo do dado original.
+
+### Silver
+
+Normaliza:
+
+- tipos
+    
+- datas
+    
+- chaves
+    
+- deduplicação
+    
+- nomes
+    
+- colunas padrão
+    
+
+### Gold
+
+Consolida regra de negócio:
+
+- classificação
+    
+- elegibilidade
+    
+- métricas
+    
+- carteira
+    
+- comissão
+    
+- visões confiáveis
+    
+
+### Mart
+
+Pronto para consumo analítico e executivo.
+
+### Ctrl
+
+Controla o sistema:
+
+- estado
+    
+- decisão
+    
+- execução
+    
+- auditoria
+    
+
+---
+
+# A camada CTRL como diferencial
+
+> [!important]  
+> Muita gente pensa em bronze, silver e gold.  
+> Pouca gente constrói uma camada de controle realmente útil.
+
+Essa camada separa o improviso da engenharia operacional.
+
+## Tabelas mínimas de controle
+
+### 1. Controle de execuções
+
+```sql
+CREATE TABLE ctrl.tb_execucoes (
+    id_execucao varchar,
+    nm_processo varchar,
+    dt_inicio timestamp,
+    dt_fim timestamp,
+    status varchar,
+    detalhe_erro varchar
+);
+```
+
+## 2. Estado da fonte
+
+```sql
+CREATE TABLE ctrl.tb_fonte_estado (
+    nm_database varchar,
+    nm_tabela varchar,
+    tp_fonte varchar,
+    estrategia_deteccao varchar,
+    ultimo_evento_ref varchar,
+    dt_ultima_verificacao timestamp,
+    fl_ativo boolean
+);
+```
+
+## 3. Decisão de execução
+
+```sql
+CREATE TABLE ctrl.tb_decisoes_pipeline (
+    id_execucao varchar,
+    nm_processo varchar,
+    deve_executar boolean,
+    motivo varchar,
+    dt_decisao timestamp
+);
+```
+
+---
+
+# Pipeline inteligente
+
+## Lógica ideal
+
+1. verificar se a origem mudou
+    
+2. registrar decisão
+    
+3. executar só se necessário
+    
+4. registrar execução
+    
+5. atualizar estado
+    
+
+## Fluxo mental
+
+```text
+origem mudou?
+  sim -> processa
+  não -> pula
+
+sempre -> loga
+```
+
+## Benefícios
+
+- reduz custo
+    
+- evita reprocessamento desnecessário
+    
+- melhora rastreabilidade
+    
+- dá previsibilidade
+    
+- simplifica manutenção
+    
+
+---
+
+# O pulo do gato: Athena decide, orquestrador executa
+
+Uma ideia fortíssima:
+
+> **A lógica fica no SQL. A orquestração só executa.**
+
+## Vantagens
+
+- lógica auditável
+    
+- fácil de revisar
+    
+- versionável
+    
+- menos gambiarra
+    
+- menos acoplamento no Step Functions
+    
+
+## Exemplo conceitual
+
+```sql
+SELECT
+    'gold_pagamentos' AS processo,
+    CASE
+        WHEN max_origem > max_destino THEN true
+        ELSE false
+    END AS deve_executar,
+    'origem mais recente que destino' AS motivo
+FROM alguma_comparacao;
+```
+
+Essa saída pode alimentar a tabela de decisões.
+
+---
+
+# Hacks específicos para o contexto de dados
+
+## 1. Crie camada de confiança
+
+Construa tabelas ou views que virem:
+
+> **fonte oficial**
+
+Características:
+
+- regra clara
+    
+- grão definido
+    
+- auditável
+    
+- reaproveitável
+    
+- confiável
+    
+
+---
+
+## 2. Faça dashboard contar história
+
+Dashboard não é coleção de gráfico.
+
+Dashboard bom tem:
+
+- contexto
+    
+- hierarquia
+    
+- insight
+    
+- ação
+    
+
+## Estrutura sugerida
+
+### Topo
+
+- KPI principal
+    
+- variação MoM
+    
+- alerta
+    
+- resumo executivo
+    
+
+### Meio
+
+- decomposição por escritório
+    
+- decomposição por faixa
+    
+- tendência temporal
+    
+
+### Base
+
+- tabela detalhada
+    
+- filtros úteis
+    
+- drilldown
+    
+
+## Bloco de insight pronto
+
+> Caixa cresceu +12% MoM. Eficiência caiu 3pp. A piora ficou concentrada em 2 escritórios, sugerindo revisão de estratégia nesses pontos.
+
+---
+
+## 3. Pipeline idempotente
+
+Objetivo:
+
+- só rodar quando necessário
+    
+- não duplicar efeito
+    
+- não desperdiçar custo
+    
+- ser reexecutável com segurança
+    
+
+Isso parece detalhe técnico, mas no corporativo tem ROI enorme.
+
+---
+
+## 4. Transforme regras de negócio em dados
+
+Ao invés de deixar regras escondidas em `CASE WHEN` espalhado:
+
+- tabela de comissão
+    
+- tabela de gate
+    
+- tabela de elegibilidade
+    
+- tabela de classificação
+    
+- tabela de faixa
+    
+
+## Benefícios
+
+- reduz código espalhado
+    
+- facilita manutenção
+    
+- separa lógica de implementação
+    
+- melhora governança
+    
+
+---
+
+## 5. Monte datasets plugáveis
+
+Criar bases prontas para uso tem enorme valor.
+
+Exemplos:
+
+- base pronta para QuickSight
+    
+- base pronta para Excel
+    
+- base pronta para análise ad hoc
+    
+- base pronta para narrativa executiva
+    
+
+> [!quote]  
+> Quando você deixa dados plugáveis, você deixa de ser usuário do ecossistema e vira plataforma.
+
+---
+
+# Naming como governança invisível
+
+## Princípio
+
+> Alguém que não sabe nada deveria entender boa parte só lendo o nome.
+
+## Estrutura sugerida para objetos
+
+```text
+[layer].[dominio]_[objeto]_[granularidade]_[tipo]
+```
+
+## Exemplos bons
+
+```text
+gold.cobranca_pagamentos_fato
+silver.cobranca_boletos
+mart.exec_resumo_escritorio_mes
+ctrl.pipeline_execucoes
+```
+
+## Componentes do naming
+
+### Layer
+
+- bronze
+    
+- silver
+    
+- gold
+    
+- mart
+    
+- ctrl
+    
+
+### Domínio
+
+- cobranca
+    
+- pagamentos
+    
+- contratos
+    
+- clientes
+    
+
+### Objeto
+
+- pagamentos
+    
+- boletos
+    
+- carteira
+    
+- execucoes
+    
+
+### Granularidade
+
+- fato
+    
+- snapshot
+    
+- resumo
+    
+- mensal
+    
+- diario
+    
+- contrato
+    
+- cliente
+    
+
+### Tipo
+
+- fato
+    
+- dim
+    
+- bridge
+    
+- agg
+    
+
+---
+
+## Exemplos ruins
+
+```text
+base_final_2
+dados_corrigidos
+teste_vini
+tabela_nova
+```
+
+Esses nomes falham porque:
+
+- não informam camada
+    
+- não informam domínio
+    
+- não informam grão
+    
+- não transmitem confiança
+    
+- envelhecem mal
+    
+
+---
+
+# Naming de colunas
+
+## Prefixos úteis
+
+- `dt_` → data
+    
+- `vl_` → valor
+    
+- `qt_` → quantidade
+    
+- `fl_` → flag booleana
+    
+- `cd_` → código
+    
+- `nm_` → nome textual
+    
+- `id_` → identificador técnico
+    
+- `pc_` → percentual
+    
+
+## Exemplos
+
+```text
+dt_pagamento
+vl_pagamento
+qt_contratos
+fl_pago
+cd_escritorio
+nm_escritorio
+pc_eficiencia_recuperacao
+```
+
+---
+
+# Naming de métricas
+
+## Evite nomes vagos
+
+Ruim:
+
+- eficiencia
+    
+- taxa
+    
+- resultado
+    
+
+Bom:
+
+- `pc_eficiencia_recuperacao`
+    
+- `vl_total_recuperado`
+    
+- `qt_contratos_ativos`
+    
+- `pc_quebra_30d`
+    
+
+---
+
+# Naming de pipelines e queries
+
+## Padrão sugerido
+
+```text
+[acao]_[dominio]_[objetivo]
+```
+
+## Exemplos
+
+- `gerar_gold_pagamentos`
+    
+- `atualizar_snapshot_carteira`
+    
+- `validar_integridade_boletos`
+    
+- `calcular_eficiencia_escritorio`
+    
+
+---
+
+# Comunicação executiva de alto impacto
+
+## Regra de ouro
+
+> Não reporte atividade. Reporte consequência.
+
+## Estrutura de resumo executivo
+
+```text
+Contexto:
+Problema:
+Achado principal:
+Impacto:
+Recomendação:
+Próximo passo:
+```
+
+## Exemplo preenchido
+
+```text
+Contexto:
+Análise mensal de eficiência da carteira.
+
+Problema:
+Eficiência caiu 3pp em relação ao mês anterior.
+
+Achado principal:
+A piora está concentrada em 2 escritórios.
+
+Impacto:
+Esses escritórios representam a maior parte do desvio da carteira.
+
+Recomendação:
+Revisar mix de carteira, estratégia de cobrança e abordagem operacional.
+
+Próximo passo:
+Validar recorte por faixa de atraso e perfil de alocação.
+```
+
+---
+
+# Como gerar influência sem parecer excessivamente político
+
+## 1. Leve estrutura, não só crítica
+
+Em vez de:
+
+> Isso está ruim.
+
+Prefira:
+
+> Montei uma forma mais simples de organizar isso para facilitar reaproveitamento.
+
+## 2. Padronize sem impor
+
+Em vez de:
+
+> Esse é o padrão correto.
+
+Prefira:
+
+> Estruturei uma sugestão que pode facilitar manutenção e entendimento.
+
+## 3. Dê atalhos reais
+
+Se sua entrega economiza tempo, ela tende a ser adotada naturalmente.
+
+## 4. Seja lembrado por clareza
+
+Clareza é uma moeda fortíssima no corporativo.
+
+---
+
+# Plano de 30 dias
+
+## Objetivo do plano
+
+Sair de:
+
+> analista bom
+
+Para:
+
+> referência que estrutura, documenta, automatiza e orienta decisão
+
+---
+
+## Semana 1 — Visibilidade e clareza
+
+### Meta
+
+Parar de apenas entregar e começar a comunicar impacto.
+
+### Ações
+
+-  Passar a usar resumo executivo em toda entrega
+    
+-  Criar 1 dashboard executivo simples
+    
+-  Definir 1 padrão inicial de naming
+    
+-  Reescrever 1 análise técnica em formato de decisão
+    
+
+### Resultado esperado
+
+Você começa a parecer mais estratégico sem mudar radicalmente o volume de trabalho.
+
+---
+
+## Semana 2 — Reutilização e sistema
+
+### Meta
+
+Parar de refazer trabalho.
+
+### Ações
+
+-  Listar as 5 queries mais recorrentes
+    
+-  Converter pelo menos 1 em view ou tabela gold
+    
+-  Criar 1 template fixo de nota Obsidian
+    
+-  Criar 1 tabela de controle de execuções
+    
+-  Organizar uma pasta de artefatos reutilizáveis
+    
+
+### Resultado esperado
+
+Você reduz refação e começa a acumular ativos.
+
+---
+
+## Semana 3 — Pensamento estratégico
+
+### Meta
+
+Sair do técnico puro e virar alguém que recomenda ação.
+
+### Ações
+
+-  Reestruturar uma análise usando Contexto → Problema → Evidência → Insight → Recomendação
+    
+-  Produzir 1 entrega “nível diretoria”
+    
+-  Documentar 1 regra de negócio crítica
+    
+-  Preparar uma narrativa simples com impacto financeiro ou operacional
+    
+
+### Resultado esperado
+
+Sua análise começa a ser lida como instrumento de decisão.
+
+---
+
+## Semana 4 — Escala e influência
+
+### Meta
+
+Criar algo que outras pessoas passem a usar.
+
+### Ações
+
+-  Criar uma base “oficial” de consumo
+    
+-  Criar um atalho operacional para o time
+    
+-  Documentar 3 coisas críticas
+    
+-  Definir 1 padrão reutilizável de comunicação
+    
+-  Identificar 1 fricção recorrente e resolver
+    
+
+### Resultado esperado
+
+Você deixa de ser só um executor eficiente e passa a ser uma referência estrutural.
+
+---
+
+# O que fazer amanhã
+
+## Plano imediato
+
+-  Criar um template fixo de resumo executivo
+    
+-  Listar 10 entregas recorrentes
+    
+-  Classificar quais viram template, automação, dashboard ou base oficial
+    
+-  Criar uma tabela simples de controle de execuções
+    
+-  Escolher 1 regra crítica e documentar
+    
+-  Escolher 1 fonte de fricção e atacar
+    
+
+---
+
+# Ritual semanal de alto ROI
+
+## Segunda
+
+- revisar dados
+    
+- identificar anomalias
+    
+- revisar gargalos
+    
+- decidir foco da semana
+    
+
+## Quarta
+
+- estruturar análise
+    
+- validar evidências
+    
+- preparar recomendação
+    
+
+## Sexta
+
+- comunicar insight
+    
+- propor ação
+    
+- registrar aprendizados
+    
+- transformar algo em ativo
+    
+
+---
+
+# Sistema de perguntas mentais
+
+## Ao receber uma demanda
+
+Pergunte:
+
+- isso é recorrente?
+    
+- isso pode virar padrão?
+    
+- isso pode virar ativo?
+    
+- isso reduz fricção de alguém?
+    
+- isso precisa de melhor naming?
+    
+- isso merece documentação?
+    
+
+## Ao finalizar uma entrega
+
+Pergunte:
+
+- está claro?
+    
+- está acionável?
+    
+- está reutilizável?
+    
+- está documentado?
+    
+- alguém além de mim consegue usar?
+    
+
+---
+
+# O verdadeiro diferencial
+
+No seu contexto, a vantagem competitiva mais forte vem da combinação de quatro coisas:
+
+- técnica
+    
+- organização
+    
+- narrativa
+    
+- sistema
+    
+
+Tem muita gente técnica sem estrutura.  
+Tem muita gente organizada sem profundidade.  
+Tem muita gente que fala bem sem construir ativo.
+
+Quem junta os quatro cresce muito.
+
+---
+
+# Livros e referências de altíssimo ROI
+
+## The Pyramid Principle
+
+Livro central para comunicação executiva.
+
+Ensina:
+
+- começar pela resposta
+    
+- estruturar raciocínio de cima para baixo
+    
+- organizar argumentos hierarquicamente
+    
+
+## Bulletproof Problem Solving
+
+Excelente para:
+
+- quebrar problema
+    
+- pensar por hipóteses
+    
+- estruturar análise
+    
+
+## Storytelling with Data
+
+Muito útil para:
+
+- transformar gráfico em insight
+    
+- tirar ruído
+    
+- guiar atenção
+    
+
+## Say It with Charts
+
+Ótimo para:
+
+- escolher visual certo
+    
+- comunicar dados com clareza
+    
+
+## Good Strategy Bad Strategy
+
+Útil para:
+
+- diferenciar observação de estratégia
+    
+- focar em ação real
+    
+
+## The McKinsey Way
+
+Interessante para:
+
+- estilo consultivo
+    
+- estrutura mental
+    
+- posicionamento
+    
+
+> [!tip]  
+> Prioridade prática:
+> 
+> 1. The Pyramid Principle
+>     
+> 2. Bulletproof Problem Solving
+>     
+> 3. Storytelling with Data
+>     
+
+---
+
+# Templates prontos
+
+## Template de análise no Obsidian
+
+```markdown
+---
+tipo: analise
+tema: negocio
+status: rascunho
+data: {{date}}
+---
+
+# Contexto
+Descreva o contexto.
+
+# Problema
+Qual é o problema ou pergunta?
+
+# Dados usados
+- tabela_a
+- tabela_b
+- regra_x
+
+# Evidências
+O que os dados mostram?
+
+# Insight
+O que isso significa?
+
+# Recomendação
+Qual ação é sugerida?
+
+# Próximos passos
+- [ ] Ação 1
+- [ ] Ação 2
+```
+
+---
+
+## Template de regra de negócio
+
+```markdown
+---
+tipo: regra_negocio
+dominio: cobranca
+status: ativo
+---
+
+# Nome da regra
+Nome claro da regra.
+
+# Objetivo
+Para que essa regra existe?
+
+# Grão
+Qual a unidade da regra?
+
+# Entradas
+Quais tabelas ou campos entram?
+
+# Lógica
+Explique em português simples.
+
+# Exceções
+O que fica de fora?
+
+# Riscos
+Onde pode dar erro?
+
+# Saída esperada
+O que a regra produz?
+```
+
+---
+
+## Template de pipeline
+
+```markdown
+---
+tipo: pipeline
+status: ativo
+---
+
+# Nome do pipeline
+
+# Objetivo
+O que ele gera?
+
+# Origem
+Quais tabelas ou fontes?
+
+# Destino
+Qual tabela final?
+
+# Critério de execução
+Quando deve rodar?
+
+# Etapas
+1. Verificar mudança
+2. Registrar decisão
+3. Processar
+4. Registrar execução
+5. Atualizar estado
+
+# Falhas comuns
+- permissão
+- partição ausente
+- schema drift
+
+# Observabilidade
+Onde verificar logs, estado e saída?
+```
+
+---
+
+## Template SQL base
+
+```sql
+WITH origem AS (
+    SELECT *
+    FROM minha_origem
+),
+
+tratada AS (
+    SELECT
+        campo_1,
+        campo_2,
+        CAST(dt_ref AS date) AS dt_ref,
+        COALESCE(valor, 0) AS valor
+    FROM origem
+),
+
+agregada AS (
+    SELECT
+        campo_1,
+        SUM(valor) AS vl_total,
+        COUNT(*) AS qtd_registros
+    FROM tratada
+    GROUP BY 1
+)
+
+SELECT *
+FROM agregada;
+```
+
+---
+
+## Template de resumo executivo
+
+```text
+Contexto:
+Problema:
+Achado principal:
+Impacto:
+Recomendação:
+Próximo passo:
+```
+
+---
+
+## Template de dashboard executivo
+
+```text
+[TOPO]
+- KPI principal
+- variação
+- alerta
+- insight executivo
+
+[MEIO]
+- decomposição por escritório
+- decomposição por faixa
+- tendência temporal
+
+[BASE]
+- tabela detalhada
+- filtros
+- drilldown
+```
+
+---
+
+# Checklists
+
+## Checklist de entrega forte
+
+-  Está claro?
+    
+-  Tem contexto?
+    
+-  Mostra evidência?
+    
+-  Tem insight?
+    
+-  Sugere ação?
+    
+-  Alguém consegue agir com isso?
+    
+-  Pode virar ativo?
+    
+
+## Checklist de ativo reutilizável
+
+-  Isso é recorrente?
+    
+-  Está documentado?
+    
+-  Está nomeado de forma clara?
+    
+-  Está fácil de encontrar?
+    
+-  Outro analista consegue usar?
+    
+-  Há risco de depender só de mim?
+    
+
+## Checklist de naming
+
+-  A camada está clara?
+    
+-  O domínio está claro?
+    
+-  O objeto está claro?
+    
+-  O grão está claro?
+    
+-  O nome é consistente com o resto?
+    
+-  Evita ambiguidade?
+    
+
+---
+
+# Mapa de maturidade pessoal
+
+## Nível 1 — Você faz
+
+Entrega tarefa.
+
+## Nível 2 — Você explica
+
+Entrega entendimento.
+
+## Nível 3 — Você organiza
+
+Entrega estrutura.
+
+## Nível 4 — Você automatiza
+
+Entrega escalabilidade.
+
+## Nível 5 — Você vira referência
+
+Entrega padrão, confiança e direção.
+
+> [!important]  
+> O foco não é “fazer mais coisa”.
+> 
+> O foco é fazer com que o que você já faz:
+> 
+> - gere mais clareza
+>     
+> - deixe mais rastro
+>     
+> - possa ser reutilizado
+>     
+> - tenha mais impacto percebido
+>     
+
+---
+
+# Princípios finais
+
+## 1. Trabalho recorrente deve tender a virar sistema.
+
+## 2. Trabalho invisível deve ganhar narrativa.
+
+## 3. Regra crítica deve sair da cabeça e virar artefato.
+
+## 4. Fricção recorrente deve ser atacada como prioridade.
+
+## 5. Nome ruim gera erro, retrabalho e baixa confiança.
+
+## 6. Dashboard sem insight é painel decorativo.
+
+## 7. Análise sem recomendação é observação.
+
+## 8. Quem organiza bem parece mais inteligente porque pensa com estrutura.
+
+## 9. Clareza gera influência.
+
+## 10. A meta não é só ser bom. É ser indispensável sem ser insubstituível.
+
+---
+
+# Resumo executivo desta nota
+
+> O caminho de maior ROI no corporativo é deixar de apenas executar tarefas e passar a transformar trabalho recorrente em sistema confiável, decisão clara, padrão reutilizável e estrutura que reduz fricção para os outros.
+
+---
+
+# Frase-síntese
+
+> **Seja a pessoa que transforma trabalho recorrente em sistema confiável e decisão clara.**
+
+---
+
+# Ver também
+
+- [[The Pyramid Principle]]
+    
+- [[Storytelling with Data]]
+    
+- [[Bulletproof Problem Solving]]
+    
+- [[Athena]]
+    
+- [[QuickSight]]
+    
+- [[Step Functions]]
+    
+- [[Arquitetura Medallion]]
+    
+- [[Obsidian]]
+    
+- [[Analytics Engineering]]
+    
+
+---
+
+# Próximos passos sugeridos
+
+-  Criar nota filha: `[[Padrão de Naming da Área]]`
+    
+-  Criar nota filha: `[[Template de Resumo Executivo]]`
+    
+-  Criar nota filha: `[[Camada CTRL no Athena]]`
+    
+-  Criar nota filha: `[[Plano de 30 dias - execução real]]`
+    
+-  Criar nota filha: `[[Playbook de Dashboards Executivos]]`
+    
+
+```
+
+Se quiser, eu também posso transformar essa nota em uma versão ainda mais “premium Obsidian”, com callouts melhores, links internos sugeridos e blocos separados em notas filhas.
+```
