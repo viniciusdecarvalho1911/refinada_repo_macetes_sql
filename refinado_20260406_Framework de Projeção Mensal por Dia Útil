@@ -1,0 +1,827 @@
+
+# 🎯 Objetivo
+
+Construir um framework de projeção mensal que responda, de forma confiável:
+
+- quanto o escritório deve fechar
+- quanto deve fechar de regul
+- quanto deve fechar de eficiência
+- se está acima ou abaixo do esperado
+- qual faixa provável de fechamento
+- qual o nível de confiança da projeção
+- e principalmente: **sem deixar a projeção explodir cedo demais**
+
+A ideia não é fazer uma “conta esperta”.
+A ideia é construir um **sistema analítico defensável em produção**.
+
+---
+
+# 🧠 Ideia central
+
+A projeção correta **não** é:
+
+```text
+“cresceu X% até agora, então fecha X% acima”
+```
+
+A projeção correta é:
+
+```text
+“dado o quanto já aconteceu até este dia útil,
+quanto normalmente já deveria ter acontecido,
+e quanto do comportamento atual merece confiança?”
+```
+
+Em termos práticos:
+
+```text
+projecao_base = acumulado_real / pct_acumulado_esperado_no_DU
+```
+
+Mas essa projeção-base **nunca deve ser usada sozinha** no início do mês.
+
+A versão robusta precisa combinar:
+
+```text
+1. realizado corrente
+2. curva histórica por dia útil
+3. recência
+4. sazonalidade
+5. bandas históricas
+6. guardrails anti-estouro
+7. score de confiança
+```
+
+---
+
+# 1. 📌 O que o material cobre bem
+
+O seu material já consolida alguns princípios fortes:
+
+## 1.1 A comparação correta é por dia útil
+
+O framework de simulação e projeção insiste na lógica de:
+
+```text
+No 8º dia útil, quanto esse escritório normalmente deveria ter entregue?
+```
+
+e recomenda explicitamente as estruturas:
+
+```text
+mart.cobranca_escritorio_dia
+mart.cobranca_escritorio_curva_mes
+mart.cobranca_curva_expectativa_dia_util
+mart.cobranca_previsao_diaria
+```
+
+Além disso, o material reforça que o ponto forte é comparar por **dia útil**, não por dia corrido. :contentReference[oaicite:3]{index=3}
+
+## 1.2 A curva deve ser ponderada por recência e corrigida por sazonalidade
+
+O material de recência recomenda uma curva composta por:
+
+- últimos 6 meses ponderados
+- mesmo mês do ano anterior
+- bandas p25 / p50 / p75
+
+com a heurística-base:
+
+```text
+M-1 = 6
+M-2 = 5
+M-3 = 4
+M-4 = 3
+M-5 = 2
+M-6 = 1
+YoY = peso fixo relevante
+```
+
+A motivação é clara: recência captura o estado atual da operação; YoY corrige sazonalidade; p50 ajuda quando o histórico é volátil. :contentReference[oaicite:4]{index=4}
+
+## 1.3 A projeção robusta deve decompor o resultado
+
+O framework de projeção recomenda explicitamente pensar:
+
+```text
+REGUL = EMISSÃO × CONVERSÃO × TICKET
+```
+
+e afirma que projetar direto pelo regul acumulado costuma esconder de onde veio o risco. A recomendação é projetar separadamente emissão, conversão e ticket, para depois recompor o regul final e derivar eficiência. :contentReference[oaicite:5]{index=5}
+
+## 1.4 A arquitetura correta é bronze → silver → gold → mart
+
+O material de analytics engineering e o seu padrão interno convergem no uso de camadas Bronze, Silver e Gold, com refinamento progressivo do dado e entrega de camada semântica confiável para BI. O próprio material do lakehouse/medallion descreve Bronze como camada de entrada, Silver como camada de consolidação/refino e Gold como camada de insights para BI. :contentReference[oaicite:6]{index=6}
+
+---
+
+# 2. 🏗️ Princípios de modelagem
+
+## 2.1 Declare o grão antes de qualquer SQL
+
+Essa é a regra mais importante.
+
+O modelo só fica estável quando o grão está escrito em texto puro.
+
+### Base diária observada
+
+```text
+1 linha = 1 data + 1 escritório
+```
+
+### Curva histórica mensal
+
+```text
+1 linha = 1 anomes + 1 escritório + 1 dia_util_mes
+```
+
+### Curva esperada consolidada
+
+```text
+1 linha = 1 escritório + 1 dia_util_mes
+```
+
+### Mart final de projeção
+
+```text
+1 linha = 1 data + 1 escritório
+```
+
+Esse cuidado conversa com a tradição dimensional: o desenho começa pelo processo de negócio e pelo grão; misturar níveis de agregação na mesma tabela gera risco real de dupla contagem e leituras ambíguas. :contentReference[oaicite:7]{index=7}
+
+## 2.2 Não misture fatos com timings diferentes sem necessidade
+
+Se emissão e conversão acontecem em momentos diferentes, o desenho mais forte é separar os fatos e só consolidar depois na mart analítica. Esse princípio aparece no seu próprio material físico de previsão e também bate com a lógica dimensional de fatos com timings diferentes. :contentReference[oaicite:8]{index=8}
+
+---
+
+# 3. 🧱 Arquitetura recomendada
+
+```text
+tabela_bronze_fonte_*
+    ↓
+view_silver_padronizado_*
+    ↓
+view_silver_integrado_*
+    ↓
+iceberg_gold_fato_* / iceberg_gold_mart_*
+    ↓
+view_gold_mart_*_quicksight
+```
+
+## Papel de cada camada
+
+### Bronze
+Camada de entrada. Preserva a origem.
+
+### Silver padronizado
+Cria o contrato técnico do dado:
+- tipos
+- colunas temporais
+- chaves
+- colunas técnicas
+- padronização mínima
+
+### Silver integrado
+Faz:
+- joins
+- deduplicação
+- consolidação entre fontes
+- enriquecimento
+
+### Gold / mart
+Materializa a verdade de negócio:
+- curva esperada
+- baseline
+- projeção diária
+- confiança
+- texto para consumo
+
+Essa separação é coerente com a definição de medallion do material de analytics engineering. :contentReference[oaicite:9]{index=9}
+
+---
+
+# 4. 📦 Tabelas recomendadas
+
+# 4.1 `mart.cobranca_escritorio_dia`
+
+## Grão
+
+```text
+1 linha = 1 data + 1 escritório
+```
+
+## Colunas mínimas
+
+```text
+data
+anomes
+escritorio
+dia_util_mes
+qt_dias_uteis_mes
+
+emitidos_dia
+pagos_dia
+caixa_dia
+regul_dia
+
+emitidos_acum
+pagos_acum
+caixa_acum
+regul_acum
+
+taxa_conversao_dia
+taxa_conversao_acum
+ticket_dia
+ticket_acum
+```
+
+## Papel
+
+É a base observada do mês atual e do histórico.
+
+---
+
+# 4.2 `mart.cobranca_escritorio_curva_mes`
+
+## Grão
+
+```text
+1 linha = 1 anomes + 1 escritório + 1 dia_util_mes
+```
+
+## Papel
+
+Guardar, para cada mês passado, quanto já tinha sido acumulado até cada dia útil.
+
+Exemplo mental:
+
+```text
+no 5º dia útil de jan/2026, o escritório X já tinha emitido 23% do mês
+no 5º dia útil de jan/2026, o escritório X já tinha convertido 19% do mês
+no 5º dia útil de jan/2026, o escritório X já tinha realizado 17% do regul do mês
+```
+
+Esse desenho aparece explicitamente no seu framework de projeção. :contentReference[oaicite:10]{index=10}
+
+---
+
+# 4.3 `mart.cobranca_curva_expectativa_dia_util`
+
+## Grão
+
+```text
+1 linha = 1 escritório + 1 dia_util_mes
+```
+
+## Papel
+
+Guardar a curva consolidada esperada, com:
+
+```text
+pct_emitidos_acum_exp
+pct_conv_acum_exp
+pct_regul_acum_exp
+
+pct_emitidos_acum_p25
+pct_emitidos_acum_p50
+pct_emitidos_acum_p75
+
+pct_conv_acum_p25
+pct_conv_acum_p50
+pct_conv_acum_p75
+
+pct_regul_acum_p25
+pct_regul_acum_p50
+pct_regul_acum_p75
+```
+
+---
+
+# 4.4 `mart.cobranca_projecao_eficiencia_regul_diaria`
+
+## Grão
+
+```text
+1 linha = 1 data + 1 escritório
+```
+
+## Papel
+
+Ser a tabela final consumida pelo QuickSight.
+
+Ela deve conter:
+- acumulado real
+- curva esperada
+- baseline
+- projeção base
+- projeção suavizada
+- projeção final
+- bandas
+- confiança
+- narrativa
+
+---
+
+# 5. 📐 Fórmula-base da projeção
+
+## 5.1 Projeção-base
+
+A conta mais direta é:
+
+```text
+projecao_base = acumulado_real / pct_acum_esperado
+```
+
+Exemplo:
+
+```text
+DU8
+realizado = 3,9M
+esperado acumulado = 47%
+projeção-base = 3,9 / 0,47 = 8,30M
+```
+
+Isso reconstrói o mês inteiro a partir do ponto atual.
+
+## 5.2 Por que isso sozinho é perigoso?
+
+Porque, cedo no mês:
+- o percentual acumulado esperado ainda é baixo
+- poucos dias extremos distorcem o acumulado
+- um único evento pode inflar demais a conta
+
+Então a projeção-base é útil, mas **não basta**.
+
+---
+
+# 6. 🔁 Curva esperada: recência + YoY + bandas
+
+## Estratégia recomendada
+
+Usar:
+
+```text
+últimos 6 meses ponderados
++
+mesmo mês do ano anterior
++
+bandas p25 / p50 / p75
+```
+
+## Exemplo de pesos
+
+```text
+M-1 = 6
+M-2 = 5
+M-3 = 4
+M-4 = 3
+M-5 = 2
+M-6 = 1
+YoY = 4
+```
+
+## Leitura
+
+- recência domina
+- sazonalidade corrige
+- bandas reduzem falsa precisão
+
+## Regra prática
+
+- se a operação mudou muito, aumente recência
+- se a sazonalidade é forte, aumente YoY
+- se o histórico é volátil, use p50 como referência principal
+- se o histórico do escritório é pobre, use fallback por cluster
+
+Essas heurísticas aparecem de forma explícita no seu material de recência. :contentReference[oaicite:11]{index=11}
+
+---
+
+# 7. 🚧 Guardrails anti-estouro
+
+Essa é a parte mais importante do framework.
+
+A projeção boa **não é a mais agressiva**.
+É a que erra menos sem reagir demais a ruído.
+
+## 7.1 Janela mínima de confiança
+
+Nos primeiros dias, a projeção deve ser lida com muito cuidado.
+
+### Heurística
+
+```text
+DU1–3  → confiança baixa
+DU4–6  → confiança média-baixa
+DU7–10 → confiança média
+DU11+  → confiança alta
+```
+
+O seu material recomenda exatamente esse raciocínio: até o 5º DU o histórico deve pesar mais; do 6º ao 10º DU o realizado começa a ganhar espaço; do 11º DU em diante a projeção pode ficar mais responsiva. :contentReference[oaicite:12]{index=12}
+
+---
+
+## 7.2 Blend entre projeção e baseline
+
+Em vez de usar só a projeção-base, misture com um baseline histórico.
+
+## Fórmula
+
+```text
+projecao_suavizada =
+peso_projecao * projecao_base
++ (1 - peso_projecao) * baseline_historico
+```
+
+## Exemplo de peso por maturidade
+
+```text
+DU1–3   → 0,20
+DU4–6   → 0,40
+DU7–10  → 0,60
+DU11–15 → 0,80
+DU16+   → 1,00
+```
+
+## O que é o baseline?
+
+Pode ser:
+- média ponderada dos últimos 6 meses
+- p50 histórico
+- combinação de recência + YoY
+
+Essa lógica está diretamente alinhada com o seu framework de projeção. :contentReference[oaicite:13]{index=13}
+
+---
+
+## 7.3 Cap / floor
+
+Mesmo depois do blend, limite a agressividade.
+
+## Regra simples
+
+```text
+piso = baseline * 0,80
+teto = baseline * 1,20
+```
+
+## Fórmula
+
+```text
+projecao_final =
+min(
+  max(projecao_suavizada, piso),
+  teto
+)
+```
+
+## Observação
+
+Esse range é um ponto de partida.
+Depois você calibra por escritório, fila ou volatilidade.
+
+---
+
+## 7.4 Bandas p25 / p50 / p75
+
+Em vez de vender uma previsão única como verdade, entregue intervalo plausível.
+
+## Fórmulas
+
+```text
+proj_conservadora = acumulado_real / pct_p75
+proj_central      = acumulado_real / pct_p50
+proj_otimista     = acumulado_real / pct_p25
+```
+
+A inversão é correta: quanto menor o percentual acumulado esperado, maior a projeção final inferida.
+
+---
+
+## 7.5 Score de confiança
+
+A projeção precisa informar **o quão confiável ela é**.
+
+## Regras sugeridas
+
+```text
+baixa:
+- DU <= 3
+- ou outlier recente = 1
+- ou volatilidade alta
+
+media:
+- DU entre 4 e 8
+- sem evento extremo forte
+
+alta:
+- DU > 8
+- sem outlier recente
+- volatilidade aceitável
+```
+
+## Texto padrão
+
+```text
+Projeção ainda com confiança baixa, pois o mês está em estágio inicial e a estimativa está fortemente ancorada na curva histórica.
+```
+
+Esse exemplo aparece no seu material. :contentReference[oaicite:14]{index=14}
+
+---
+
+# 8. 🧩 Melhor prática: projetar peças separadas
+
+A projeção mais forte é a decomposição estrutural.
+
+## Fórmula
+
+```text
+REGUL = EMISSÃO × CONVERSÃO × TICKET
+```
+
+ou, se ticket não for driver relevante no contexto:
+
+```text
+REGUL ≈ EMISSÃO × CONVERSÃO
+```
+
+## Estratégia recomendada
+
+Projetar separadamente:
+
+### 1. emissão final esperada
+```text
+quantos boletos devem ser emitidos até o fim do mês?
+```
+
+### 2. conversão final esperada
+```text
+qual taxa final de conversão deve ocorrer?
+```
+
+### 3. ticket esperado
+```text
+qual ticket médio provável?
+```
+
+### 4. regul final
+```text
+emitidos_final × conversão_final × ticket_final
+```
+
+### 5. eficiência final
+```text
+regul_final / carteira_mes
+```
+
+Esse desenho está explicitamente recomendado no seu framework de projeção. :contentReference[oaicite:15]{index=15}
+
+## Por que isso é superior?
+
+Porque responde:
+- o mês vai fechar mal porque emitiu pouco?
+- porque converteu mal?
+- porque o ticket caiu?
+- ou porque houve só efeito temporal / calendário?
+
+---
+
+# 9. 🏛️ Modelo físico recomendado no Athena
+
+## Materialização
+
+Para esse stack, o caminho natural é usar Athena com Iceberg como camada oficial materializada. Athena suporta CTAS, Iceberg, Glue Data Catalog e integração com QuickSight. :contentReference[oaicite:16]{index=16} :contentReference[oaicite:17]{index=17} :contentReference[oaicite:18]{index=18}
+
+## Regras práticas
+
+### Bootstrap
+```text
+CTAS
+```
+
+### Reprocessamento simples
+```text
+DELETE + INSERT por anomes ou dt_base
+```
+
+### Upsert fino
+```text
+MERGE INTO só quando realmente necessário
+```
+
+Essa recomendação aparece no seu material físico de previsão. :contentReference[oaicite:19]{index=19}
+
+## Exemplo de tabela Iceberg
+
+Athena documenta a criação de tabelas Iceberg com propriedades como:
+
+```sql
+CREATE TABLE ... 
+TBLPROPERTIES (
+  'table_type'='ICEBERG',
+  'format'='parquet',
+  'write_compression'='snappy'
+)
+```
+
+e também cobre uso por CTAS. :contentReference[oaicite:20]{index=20}
+
+---
+
+# 10. ⚙️ Orquestração com Step Functions
+
+## Papel correto do Step Functions
+
+Orquestrar, registrar e chamar Athena.
+Não carregar lógica analítica demais.
+
+O seu material de simulação já sugere esse papel: Step Functions deve decidir pouco; Athena deve calcular quase tudo. :contentReference[oaicite:21]{index=21}
+
+## Fluxo diário sugerido
+
+```text
+1. atualizar mart.cobranca_escritorio_dia
+2. atualizar mart.cobranca_escritorio_curva_mes
+3. atualizar mart.cobranca_curva_expectativa_dia_util
+4. atualizar baseline histórico
+5. atualizar mart.cobranca_projecao_eficiencia_regul_diaria
+6. rodar testes
+7. publicar consumo QuickSight
+```
+
+## Integração nativa com Athena
+
+Step Functions suporta integração otimizada com Athena, incluindo `StartQueryExecution` no padrão `.sync`, o que permite disparar a query e esperar sua conclusão antes de seguir. Também há suporte a `GetQueryResults`. :contentReference[oaicite:22]{index=22}
+
+## Exemplo mental de task
+
+```text
+arn:aws:states:::athena:startQueryExecution.sync
+```
+
+---
+
+# 11. 📊 Como expor no QuickSight
+
+## Aba 1 — Projeção de fechamento
+
+### Cards
+- regul acumulado
+- regul projetado central
+- eficiência projetada
+- gap vs esperado
+- confiança
+- risco
+
+### Linha
+- % realizado acumulado
+- % esperado acumulado
+- faixa p25–p75
+
+### Tabela
+- escritório
+- dia útil
+- emissão projetada
+- conversão projetada
+- regul projetado
+- eficiência projetada
+- confiança
+
+Esse desenho está em linha com o seu framework de projeção. :contentReference[oaicite:23]{index=23}
+
+## Aba 2 — Decomposição
+
+### Visual 1
+Atual vs esperado:
+- emissão
+- conversão
+- ticket
+
+### Visual 2
+Impacto marginal:
+- quanto da projeção vem de emissão
+- quanto vem de conversão
+- quanto vem de ticket
+
+### Visual 3
+Faixa de projeção:
+- piso
+- central
+- teto
+
+---
+
+# 12. 📝 Narrativas prontas
+
+## Exemplo — início do mês
+
+```text
+No 4º dia útil, o escritório apresenta início forte, mas a projeção ainda está majoritariamente ancorada na curva histórica para evitar superestimação precoce. O fechamento central projetado é de 14,0% de eficiência, com faixa provável entre 13,2% e 14,6%.
+```
+
+## Exemplo — mês já maduro
+
+```text
+No 13º dia útil, a projeção já incorpora de forma mais relevante o desempenho observado no mês. O escritório projeta fechamento em 8,7% de eficiência, ainda 0,6 pp abaixo do esperado histórico, com principal pressão vinda de conversão.
+```
+
+## Exemplo — risco controlado
+
+```text
+Houve um dia atípico positivo recentemente, mas a projeção foi suavizada por baseline histórico e limites de agressividade. Isso reduz o risco de superestimação precoce do fechamento.
+```
+
+Essas linhas estão alinhadas com a camada de narrativa sugerida no seu material de projeção. :contentReference[oaicite:24]{index=24}
+
+---
+
+# 13. 🧪 Checklist operacional para analista júnior/pleno
+
+## Etapa 1 — base diária
+- [ ] Tenho `data + escritorio`?
+- [ ] Tenho `dia_util_mes` confiável?
+- [ ] Tenho acumulados corretos?
+- [ ] O grão está explícito?
+
+## Etapa 2 — curva histórica
+- [ ] Calculei % acumulado por dia útil em cada mês?
+- [ ] Separei emissão, conversão e regul?
+- [ ] Excluí meses claramente anômalos, se necessário?
+
+## Etapa 3 — curva esperada
+- [ ] Ponderei recência?
+- [ ] Incluí YoY?
+- [ ] Guardei p25/p50/p75?
+
+## Etapa 4 — baseline
+- [ ] Tenho baseline histórico por escritório?
+- [ ] Sei qual fallback usar quando o histórico é ruim?
+
+## Etapa 5 — projeção
+- [ ] Calculei projeção-base?
+- [ ] Apliquei blend?
+- [ ] Apliquei cap/floor?
+- [ ] Gerei bandas?
+
+## Etapa 6 — confiança
+- [ ] Marquei outlier recente?
+- [ ] Medi volatilidade?
+- [ ] Classifiquei confiança?
+
+## Etapa 7 — publicação
+- [ ] Materializei em Iceberg?
+- [ ] Rodei testes?
+- [ ] Entreguei tabela pronta para QuickSight?
+
+---
+
+# 14. ⚠️ Erros comuns
+
+## 1. Comparar dia corrido
+Errado.
+O correto é comparar dia útil. :contentReference[oaicite:25]{index=25}
+
+## 2. Usar média simples dos últimos meses
+Fraco.
+O material recomenda ponderar recência e considerar YoY. :contentReference[oaicite:26]{index=26}
+
+## 3. Projetar regul direto sem decomposição
+Isso esconde o driver.
+Melhor separar emissão, conversão e ticket. :contentReference[oaicite:27]{index=27}
+
+## 4. Reagir demais no começo do mês
+Projeção crua cedo demais destrói confiança.
+Por isso existem blend, cap/floor e confiança. :contentReference[oaicite:28]{index=28}
+
+## 5. Misturar níveis de agregação na mesma tabela
+Isso eleva o risco de dupla contagem e leitura errada. :contentReference[oaicite:29]{index=29}
+
+---
+
+# 15. ✅ Recomendação final
+
+Se fosse para começar com o menor caminho robusto possível, eu faria assim:
+
+```text
+1. criar base diária por escritório
+2. criar curva histórica por dia útil
+3. ponderar últimos 6 meses + YoY
+4. guardar p25 / p50 / p75
+5. calcular projeção-base
+6. aplicar blend por maturidade do mês
+7. aplicar cap/floor
+8. classificar confiança
+9. publicar mart final em Iceberg
+10. consumir no QuickSight com narrativa pronta
+```
+
+---
+
+# 16. Frase-mãe para guardar
+
+```text
+Forecast bom não é o que reage mais rápido.
+É o que reage na velocidade certa sem confundir ruído com sinal.
+	```
