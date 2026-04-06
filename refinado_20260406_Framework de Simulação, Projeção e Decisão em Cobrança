@@ -1,0 +1,2429 @@
+---  
+title: Framework de Simulação, Projeção e Decisão em Cobrança  
+tags:  
+- dominio/cobranca  
+- tipo/framework  
+- tema/simulacao  
+- tema/projecao  
+- tema/quicksight  
+- tema/athena  
+- tema/iceberg  
+- tema/step_functions  
+status: oficial  
+fonte_principal: mart_cenarios + framework_projecao + playbook_causa_raiz  
+---  
+  
+# 🎯 Framework de Simulação, Projeção e Decisão em Cobrança  
+  
+## Objetivo  
+  
+Construir um sistema analítico que permita, ao mesmo tempo:  
+  
+- simular cenários de cobrança por escritório  
+- projetar fechamento do mês sem “explodir” cedo demais  
+- explicar causa raiz de piora ou melhora  
+- priorizar onde agir primeiro  
+- transformar SQL em produto analítico  
+- entregar narrativa executiva pronta no QuickSight  
+  
+A lógica central é esta:  
+  
+```text  
+PERGUNTA DE NEGÓCIO  
+↓  
+GRÃO  
+↓  
+MODELO ANALÍTICO  
+↓  
+MART OFICIAL  
+↓  
+NARRATIVA + VISUAL  
+↓  
+DECISÃO  
+```  
+  
+Frase para guardar:  
+  
+> Você não entrega só uma query.  
+> Você entrega um sistema de decisão.  
+  
+---  
+  
+# 🧠 Ideia-mãe  
+  
+No contexto de cobrança, a análise forte não para em:  
+  
+```text  
+o que aconteceu?  
+```  
+  
+Ela precisa responder também:  
+  
+```text  
+por que aconteceu?  
+quanto cada fator explica?  
+o que acontece se eu agir?  
+o que deve acontecer se nada mudar?  
+onde priorizar?  
+quão confiável é essa leitura?  
+```  
+  
+Por isso, o framework precisa juntar 5 blocos:  
+  
+1. **Diagnóstico**  
+2. **Simulação**  
+3. **Projeção**  
+4. **Priorização**  
+5. **Execução e aprendizado**  
+  
+---  
+  
+# 🧱 Regra de ouro: grão antes de tudo  
+  
+Antes de qualquer SQL, escreva literalmente:  
+  
+```text  
+Grão desta tabela:  
+1 linha = ...  
+```  
+  
+## Grão recomendado da mart de simulação  
+  
+```text  
+1 linha = 1 anomes + 1 escritorio + 1 cenario  
+```  
+  
+## Grão recomendado da mart de projeção diária  
+  
+```text  
+1 linha = 1 data + 1 escritorio  
+```  
+  
+## Grão recomendado da mart de causa raiz mensal  
+  
+```text  
+1 linha = 1 anomes + 1 escritorio + 1 recorte analítico  
+```  
+  
+Se isso não estiver explícito, o risco vira:  
+  
+```text  
+GRÃO → JOIN → EXPLOSÃO  
+```  
+  
+---  
+  
+# 🏗️ Arquitetura recomendada  
+  
+A arquitetura oficial fica assim:  
+  
+```text  
+tabela_bronze_fonte_*  
+↓  
+view_silver_padronizado_*  
+↓  
+view_silver_integrado_*  
+↓  
+iceberg_gold_fato_*  
+↓  
+iceberg_gold_mart_*  
+↓  
+view_gold_mart_*_quicksight  
+↓  
+QuickSight  
+```  
+  
+## Papel de cada camada  
+  
+### Bronze  
+Dado cru, próximo da origem.  
+  
+### Silver padronizado  
+Contrato técnico inicial do dado.  
+  
+Use para:  
+  
+- cast  
+- parsing de data  
+- nomes padronizados  
+- colunas temporais canônicas  
+- partição física `p_*`  
+- hashes  
+- colunas técnicas  
+  
+### Silver integrado  
+Consolidação técnica entre fontes.  
+  
+Use para:  
+  
+- joins  
+- enriquecimento  
+- fallback  
+- deduplicação  
+- priorização entre fontes  
+- elegibilidade técnica  
+  
+### Gold  
+Verdade oficial de negócio.  
+  
+Use para:  
+  
+- eficiência  
+- caixa  
+- regul  
+- ticket  
+- classificações oficiais  
+- fatos e dimensões oficiais  
+  
+### Mart  
+Produto final para consumo e decisão.  
+  
+Use para:  
+  
+- cenários  
+- projeção  
+- narrativa  
+- priorização  
+- visuais executivos  
+  
+---  
+  
+# 🧭 Onde cada tipo de regra deve viver  
+  
+## Silver padronizado  
+Quando a pergunta é:  
+  
+```text  
+como ler a fonte sem quebrar?  
+```  
+  
+## Silver integrado  
+Quando a pergunta é:  
+  
+```text  
+como unir os dados?  
+qual fonte ganha?  
+como resolver conflito?  
+```  
+  
+## Gold / Mart  
+Quando a pergunta é:  
+  
+```text  
+qual número será defendido?  
+o que é verdade para o negócio?  
+```  
+  
+## Tabela de regra  
+Quando a regra:  
+  
+- muda com frequência  
+- tem vigência temporal  
+- tem faixas negociáveis  
+- precisa auditoria  
+- é discutida com negócio  
+  
+## Orquestração / parâmetro  
+Quando depende de:  
+  
+- data de corte  
+- modo full vs incremental  
+- janela de reprocessamento  
+- referência temporal da execução  
+  
+---  
+  
+# 📦 O que este framework constrói de verdade  
+  
+Você não está construindo só um painel.  
+  
+Você está construindo 4 coisas ao mesmo tempo:  
+  
+## 1. Modelo de dados confiável  
+Com grão, métricas e benchmarks oficiais.  
+  
+## 2. Motor de cenários  
+Para testar hipóteses operacionais.  
+  
+## 3. Camada de explicação  
+Para transformar métrica em narrativa.  
+  
+## 4. Ferramenta de decisão  
+Para dizer o que fazer amanhã.  
+  
+---  
+  
+# 1️⃣ Mart principal de cenários  
+  
+## Nome sugerido  
+  
+```text  
+iceberg_gold_mart_cobranca_escritorio_cenarios_mes  
+```  
+  
+ou, mantendo a convenção simplificada já usada:  
+  
+```text  
+mart.cobranca_escritorio_cenarios_mes  
+```  
+  
+## Grão  
+  
+```text  
+1 linha = 1 anomes + 1 escritorio + 1 cenario  
+```  
+  
+## Objetivo  
+  
+Materializar cenários comparáveis e oficiais por escritório/mês.  
+  
+## Estrutura recomendada  
+  
+```sql  
+CREATE TABLE mart.cobranca_escritorio_cenarios_mes (  
+anomes bigint,  
+escritorio varchar,  
+cenario varchar,  
+  
+emitidos_sim double,  
+taxa_pgto_sim double,  
+ticket_sim double,  
+share_parceiro_sim double,  
+  
+boletos_pagos_sim double,  
+caixa_sim double,  
+eficiencia_sim double,  
+  
+impacto_caixa double,  
+impacto_eficiencia_pp double,  
+  
+alavanca_principal varchar,  
+txt_cenario varchar  
+)  
+WITH (  
+table_type = 'ICEBERG',  
+format = 'PARQUET',  
+location = 's3://lakehouse/mart/cobranca_escritorio_cenarios_mes/'  
+);  
+```  
+  
+## Por que Iceberg aqui faz sentido  
+  
+Porque essa mart é:  
+  
+- reutilizável  
+- histórica  
+- boa para QuickSight  
+- boa para refresh controlado  
+- boa para auditoria  
+- boa para comparação entre cenários  
+  
+---  
+  
+# 2️⃣ Entrada mínima necessária da mart base  
+  
+A simulação depende de uma mart base mensal confiável por escritório.  
+  
+## Campos mínimos  
+  
+```text  
+anomes  
+escritorio  
+  
+emitidos_atual  
+taxa_pgto_atual  
+ticket_atual  
+share_parceiro_atual  
+  
+emitidos_p50  
+emitidos_p75  
+taxa_pgto_p50  
+taxa_pgto_p75  
+ticket_p50  
+ticket_p75  
+eficiencia_p50  
+eficiencia_p75  
+  
+caixa_atual  
+carteira_atual  
+  
+principal_driver_macro  
+principal_driver_boletos  
+driver_canal  
+```  
+  
+Essa mart base é o “motor de referência” da simulação.  
+  
+---  
+  
+# 3️⃣ Cenários oficiais recomendados  
+  
+Comece com poucos cenários, claros e defensáveis.  
+  
+## Cenários-base  
+  
+```text  
+ATUAL  
+RECUPERAR_EMISSAO_P50  
+RECUPERAR_CONVERSAO_P50  
+RECUPERAR_TICKET_P50  
+ALCANCAR_P50  
+ALCANCAR_P75  
+CORRIGIR_PRINCIPAL_ALAVANCA  
+AUMENTAR_SHARE_PARCEIRO_5PP  
+```  
+  
+## Leitura prática  
+  
+Esses cenários respondem perguntas fortes:  
+  
+```text  
+Se eu recuperar só emissão, quanto volta?  
+Se eu recuperar só conversão, quanto volta?  
+Se eu recuperar só ticket, quanto volta?  
+Se eu corrigir a principal alavanca, qual o ganho provável?  
+```  
+  
+## Evolução posterior  
+  
+Depois adicione:  
+  
+```text  
+RECUPERAR_25_GAP_P50  
+RECUPERAR_50_GAP_P50  
+RECUPERAR_75_GAP_P50  
+ALCANCAR_P25  
+```  
+  
+Esses cenários intermediários costumam ser mais críveis para gestão do que ir direto ao p75.  
+  
+---  
+  
+# 4️⃣ Fórmulas estruturais da simulação  
+  
+## Fórmula-base  
+  
+```text  
+boletos_pagos_sim = emitidos_sim × taxa_pgto_sim  
+caixa_sim = boletos_pagos_sim × ticket_sim  
+eficiencia_sim = caixa_sim / carteira_atual  
+```  
+  
+## Impactos  
+  
+```text  
+impacto_caixa = caixa_sim - caixa_atual  
+impacto_eficiencia_pp = (eficiencia_sim - eficiencia_atual) × 100  
+```  
+  
+## Interpretação  
+  
+A simulação funciona bem porque é explicável:  
+  
+- emissão = quantidade gerada  
+- conversão = taxa de pagamento  
+- ticket = valor médio convertido  
+- eficiência = caixa / carteira  
+  
+Ou seja: a simulação não é “mágica”; ela é decomposição operacional.  
+  
+---  
+  
+# 5️⃣ Como descobrir a alavanca principal  
+  
+Regra recomendada:  
+  
+```sql  
+CASE  
+WHEN principal_driver_boletos = 'emissao' THEN 'emitidos'  
+WHEN principal_driver_boletos = 'conversao' THEN 'taxa_pgto'  
+WHEN principal_driver_macro = 'ticket' THEN 'ticket'  
+ELSE 'misto'  
+END AS alavanca_principal  
+```  
+  
+## Leitura prática  
+  
+Isso transforma diagnóstico em ação.  
+  
+Em vez de:  
+  
+> desempenho abaixo do benchmark  
+  
+você passa a ter:  
+  
+> principal alavanca a corrigir = emissão  
+  
+ou:  
+  
+> maior oportunidade = conversão  
+  
+---  
+  
+# 6️⃣ SQL conceitual da carga da mart de cenários  
+  
+A lógica da carga deve seguir esta sequência:  
+  
+```text  
+base  
+↓  
+cenarios  
+↓  
+calculado  
+↓  
+final  
+```  
+  
+## Estrutura mental  
+  
+### `base`  
+Traz os números atuais + benchmarks + drivers.  
+  
+### `cenarios`  
+Gera uma linha para cada hipótese operacional.  
+  
+### `calculado`  
+Aplica as fórmulas estruturais.  
+  
+### `final`  
+Gera a narrativa curta do cenário.  
+  
+---  
+  
+# 7️⃣ QuickSight — ordem certa de implementação  
+  
+## Fase 1  
+Implemente primeiro:  
+  
+- mart de cenários  
+- aba guiada  
+- texto automático  
+- cards atual vs simulado  
+  
+## Fase 2  
+Depois adicione:  
+  
+- modo livre  
+- sliders  
+- cenários parciais  
+  
+Essa ordem gera valor rápido sem transformar o painel em caos cedo demais.  
+  
+---  
+  
+# 8️⃣ Campos calculados do QuickSight  
+  
+## Parâmetros  
+  
+```text  
+p_delta_emissao  
+p_delta_conversao  
+p_delta_ticket  
+p_modo_simulacao  
+p_cenario  
+```  
+  
+## Campos guiados  
+  
+```text  
+emitidos_sim_guiado  
+taxa_pgto_sim_guiado  
+ticket_sim_guiado  
+```  
+  
+## Campos livres  
+  
+```text  
+emitidos_sim_livre  
+taxa_pgto_sim_livre  
+ticket_sim_livre  
+```  
+  
+## Escolha final  
+  
+```text  
+emitidos_sim_final  
+taxa_pgto_sim_final  
+ticket_sim_final  
+```  
+  
+## Resultado  
+  
+```text  
+boletos_pagos_sim  
+caixa_sim  
+eficiencia_sim  
+impacto_caixa_sim  
+impacto_eficiencia_sim_pp  
+```  
+  
+## Textos  
+  
+```text  
+txt_simulacao_curta  
+txt_simulacao_completa  
+```  
+  
+## Regra importante  
+  
+O dashboard não deve carregar a lógica principal do negócio.  
+  
+A melhor prática aqui é:  
+  
+```text  
+Athena pensa.  
+QuickSight mostra.  
+```  
+  
+---  
+  
+# 9️⃣ Layout recomendado da aba no QuickSight  
+  
+## Nome da aba  
+  
+```text  
+Simulação e Potencial  
+```  
+  
+## Bloco 1 — filtros e controles  
+Lado esquerdo:  
+  
+- filtro de mês  
+- filtro de escritório  
+- filtro de fila / segmento  
+- seletor `Modo de simulação`  
+- seletor `Cenário`  
+- sliders de emissão / conversão / ticket  
+  
+## Bloco 2 — KPIs  
+Topo da página:  
+  
+- Caixa atual  
+- Caixa simulado  
+- Impacto em caixa  
+- Eficiência atual  
+- Eficiência simulada  
+- Impacto em pp  
+  
+## Bloco 3 — texto explicativo  
+Centro superior:  
+  
+- `txt_insight_completo`  
+- `txt_cenario` ou `txt_simulacao_recomendada`  
+  
+## Bloco 4 — comparação visual  
+Barras com:  
+  
+- Atual  
+- Simulado  
+- P50  
+- P75  
+  
+Métricas:  
+  
+- eficiência  
+- caixa  
+  
+## Bloco 5 — alavancas  
+Tabela ou barras:  
+  
+- emissão atual vs simulada  
+- conversão atual vs simulada  
+- ticket atual vs simulado  
+  
+## Bloco 6 — potencial e ação  
+Tabela com:  
+  
+- alavanca prioritária  
+- next_best_action  
+- potencial_emissao_p50  
+- potencial_conversao_p50  
+- potencial_ticket_p50  
+- potencial_total_p75  
+  
+---  
+  
+# 🔟 Como usar isso em reunião  
+  
+Fluxo ideal:  
+  
+```text  
+1. gerente lê o diagnóstico  
+2. painel mostra a principal alavanca  
+3. gerente troca para “Corrigir principal alavanca”  
+4. vê impacto em caixa e eficiência  
+5. compara com p50/p75  
+6. sai com uma ação  
+```  
+  
+Isso é o que transforma painel em ferramenta de decisão.  
+  
+---  
+  
+# 1️⃣1️⃣ O próximo salto: além de diagnóstico e simulação  
+  
+Depois do bloco descritivo/prescritivo, entram 4 níveis de altíssimo ROI:  
+  
+1. **Previsão**  
+2. **Priorização**  
+3. **Confiabilidade**  
+4. **Execução**  
+  
+---  
+  
+# 1️⃣2️⃣ Previsão simples  
+  
+## O que é  
+  
+Projetar:  
+  
+- caixa esperado  
+- regul esperado  
+- eficiência esperada  
+  
+sem depender de ML pesado.  
+  
+## Por que tem ROI absurdo  
+  
+Porque você sai de:  
+  
+```text  
+fechou mal  
+```  
+  
+e entra em:  
+  
+```text  
+se nada mudar, vai fechar mal  
+```  
+  
+## Fórmula mental  
+  
+```text  
+caixa_esperado =  
+emitidos_ate_hoje  
+× taxa_pgto_media  
+× ticket_medio  
++ pipeline_estimado  
+```  
+  
+---  
+  
+# 1️⃣3️⃣ Gap vs plano  
+  
+Não compare só contra mês anterior.  
+  
+Compare também contra:  
+  
+- esperado  
+- meta  
+- pacing histórico  
+- benchmark  
+  
+## Exemplo  
+  
+```text  
+O escritório está -R$ 800k vs esperado para o período.  
+```  
+  
+Isso vira gestão real.  
+  
+---  
+  
+# 1️⃣4️⃣ Detecção de desvio precoce  
+  
+Não espere o fechamento.  
+  
+Use curva esperada por dia útil.  
+  
+## Exemplo  
+  
+```text  
+No 8º dia útil, o escritório já está 18% abaixo do pacing esperado.  
+```  
+  
+Isso vira:  
+  
+- alerta  
+- prioridade  
+- ação antecipada  
+  
+---  
+  
+# 1️⃣5️⃣ Tempo até meta  
+  
+## Ideia  
+  
+```text  
+dias_para_meta = (meta - realizado) / ritmo_diario  
+```  
+  
+## Leitura  
+  
+```text  
+Nesse ritmo, não bate a meta no mês.  
+```  
+  
+Muito forte para liderança.  
+  
+---  
+  
+# 1️⃣6️⃣ Elasticidade  
+  
+## Pergunta  
+  
+Quanto 1% de melhoria em cada alavanca gera?  
+  
+## Exemplo  
+  
+```text  
++1% emissão → +R$ 120k  
++1% conversão → +R$ 180k  
++1% ticket → +R$ 80k  
+```  
+  
+## Valor  
+  
+Você para de discutir no achismo.  
+  
+---  
+  
+# 1️⃣7️⃣ Sensibilidade automática  
+  
+Elasticidade medida vira leitura pronta.  
+  
+## Exemplo  
+  
+```text  
+Conversão é 1,8x mais relevante que emissão neste escritório.  
+```  
+  
+Isso simplifica muito o dashboard e a tomada de decisão.  
+  
+---  
+  
+# 1️⃣8️⃣ Confiabilidade da análise  
+  
+Nem toda leitura merece o mesmo grau de confiança.  
+  
+## Fatores de confiança  
+  
+- estágio do mês  
+- volatilidade histórica  
+- volume acumulado  
+- estabilidade do escritório  
+- dados faltantes  
+- clipping aplicado  
+  
+## Exemplo de classificação  
+  
+```text  
+Até 5º DU → baixa  
+6º ao 10º DU → média  
+11º ao 15º DU → média-alta  
+16º DU+ → alta  
+```  
+  
+## Texto sugerido  
+  
+```text  
+Projeção ainda com confiança baixa, pois o mês está em estágio inicial e a estimativa está fortemente ancorada na curva histórica.  
+```  
+  
+---  
+  
+# 1️⃣9️⃣ Coortes de desempenho  
+  
+Separar grupos comparáveis ao longo do tempo.  
+  
+## Exemplos  
+  
+- contratos novos vs antigos  
+- acordos recentes vs antigos  
+- carteira nova no escritório vs carteira madura  
+- novas emissões vs emissões antigas  
+  
+## Exemplo de insight  
+  
+```text  
+A piora veio quase toda da coorte de novos acordos.  
+```  
+  
+---  
+  
+# 2️⃣0️⃣ Tempo de resposta operacional  
+  
+## Medidas úteis  
+  
+- emissão → pagamento  
+- atraso → ação  
+- emissão → primeiro pagamento  
+- problema detectado → ação executada  
+  
+## Valor  
+  
+Às vezes o problema não é falta de volume.  
+  
+É atraso operacional.  
+  
+---  
+  
+# 2️⃣1️⃣ Taxa de execução  
+  
+Você sugeriu uma ação.  
+  
+Agora precisa medir se ela foi feita.  
+  
+## Estrutura mínima  
+  
+```text  
+data  
+escritorio  
+recomendacao  
+responsavel  
+status  
+fl_executada  
+```  
+  
+## Valor  
+  
+Fecha o ciclo entre:  
+  
+```text  
+problema → recomendação → execução  
+```  
+  
+---  
+  
+# 2️⃣2️⃣ Impacto pós-ação  
+  
+Depois que a ação foi feita:  
+  
+- emissão subiu?  
+- conversão melhorou?  
+- caixa reagiu?  
+- eficiência reagiu?  
+  
+Isso transforma análise em aprendizado organizacional.  
+  
+---  
+  
+# 2️⃣3️⃣ Score de maturidade do escritório  
+  
+Nota sintética combinando:  
+  
+- eficiência  
+- tendência  
+- estabilidade  
+- execução  
+- benchmark  
+- consistência  
+  
+## Linguagem executiva  
+  
+```text  
+Líder  
+Forte  
+Atenção  
+Crítico  
+```  
+  
+Excelente para comitê e priorização.  
+  
+---  
+  
+# 2️⃣4️⃣ Explicabilidade automática  
+  
+A mart precisa devolver os principais drivers e sua contribuição.  
+  
+## Exemplo  
+  
+```text  
+70% da queda veio de emissão  
+20% de conversão  
+10% de ticket  
+```  
+  
+Isso elimina discussão improdutiva.  
+  
+---  
+  
+# 2️⃣5️⃣ Risco de piora  
+  
+Sem ML pesado, use proxies:  
+  
+- tendência negativa  
+- gap aumentando  
+- volatilidade alta  
+- emissão enfraquecendo  
+- conversão perdendo força  
+  
+## Exemplo  
+  
+```text  
+Risco alto de piora no fechamento se mantido o ritmo atual.  
+```  
+  
+---  
+  
+# 2️⃣6️⃣ Monitoramento contínuo  
+  
+Não basta dashboard passivo.  
+  
+Você precisa de:  
+  
+- regra  
+- gatilho  
+- alerta  
+- ação  
+  
+## Exemplos de alerta  
+  
+- queda > 1 pp  
+- gap vs mediana > 2 pp  
+- emissão caiu > 15%  
+- share do parceiro caiu > 5 pp  
+  
+---  
+  
+# 2️⃣7️⃣ Top causas recorrentes  
+  
+## Exemplo  
+  
+Nos últimos 6 meses:  
+  
+- emissão = 52% dos problemas  
+- conversão = 31%  
+- ticket = 17%  
+  
+Isso ajuda agenda macro, não só caso pontual.  
+  
+---  
+  
+# 2️⃣8️⃣ Decomposição temporal  
+  
+Abrir o mês em:  
+  
+- primeira semana vs segunda  
+- primeira quinzena vs segunda  
+- início vs fechamento  
+  
+## Valor  
+  
+Muitos problemas não são uniformes ao longo do mês.  
+  
+---  
+  
+# 2️⃣9️⃣ Custo da inação  
+  
+## Exemplo  
+  
+```text  
+Se nada mudar, a perda potencial até o fechamento é de R$ 1,4M.  
+```  
+  
+Isso gera urgência real.  
+  
+---  
+  
+# 3️⃣0️⃣ Comparação com melhor histórico  
+  
+## Exemplo  
+  
+```text  
+Esse escritório já operou a 10,5% de eficiência e hoje está em 6,9%.  
+```  
+  
+Isso derruba a desculpa estrutural:  
+  
+```text  
+“esse escritório é assim mesmo”  
+```  
+  
+---  
+  
+# 3️⃣1️⃣ Projeção mensal com guardrails  
+  
+Aqui entra o segundo grande motor do framework.  
+  
+## Objetivo  
+  
+Projetar:  
+  
+- regul final  
+- eficiência final  
+  
+sem deixar a projeção “explodir” nos primeiros dias.  
+  
+## Problema da projeção ingênua  
+  
+```text  
+projecao_final = realizado_ate_hoje / % esperado no dia  
+```  
+  
+Funciona mal no início do mês, porque qualquer desempenho muito forte cedo pode inflar absurdamente o fechamento.  
+  
+---  
+  
+# 3️⃣2️⃣ Fórmula estrutural da projeção  
+  
+O melhor desenho é projetar as peças separadamente.  
+  
+```text  
+REGUL = EMISSÃO × CONVERSÃO × TICKET  
+```  
+  
+Depois:  
+  
+```text  
+EFICIÊNCIA = REGUL / CARTEIRA  
+```  
+  
+## Vantagem  
+  
+Você passa a enxergar onde está o risco:  
+  
+- emissão?  
+- conversão?  
+- ticket?  
+  
+---  
+  
+# 3️⃣3️⃣ Mart recomendada de projeção diária  
+  
+## Nome sugerido  
+  
+```text  
+mart.cobranca_projecao_eficiencia_regul_diaria  
+```  
+  
+## Grão  
+  
+```text  
+1 linha = 1 data + 1 escritorio  
+```  
+  
+## Colunas recomendadas  
+  
+```text  
+data  
+anomes  
+escritorio  
+dia_util_mes  
+qt_dias_uteis_mes  
+  
+emitidos_acum  
+pagos_acum  
+regul_acum  
+  
+pct_emitidos_acum_exp  
+pct_conv_acum_exp  
+pct_regul_acum_exp  
+  
+emitidos_final_hist  
+conv_final_hist  
+ticket_final_hist  
+  
+proj_emitidos_realizado  
+proj_emitidos_final  
+  
+conv_observada_acum  
+conv_suavizada  
+conv_final_proj  
+  
+ticket_final_proj  
+  
+regul_final_proj  
+eficiencia_final_proj  
+  
+regul_proj_piso  
+regul_proj_central  
+regul_proj_teto  
+  
+eficiencia_proj_piso  
+eficiencia_proj_central  
+eficiencia_proj_teto  
+  
+peso_hist  
+peso_atual  
+k_conversao  
+  
+fl_clip_superior  
+fl_clip_inferior  
+nivel_confianca  
+  
+txt_projecao  
+```  
+  
+---  
+  
+# 3️⃣4️⃣ Mecanismos anti-estouro  
+  
+## 1. Blend por maturidade do mês  
+  
+```text  
+projecao_final =  
+peso_hist × expectativa_histórica  
++  
+peso_atual × projeção_pelo_realizado  
+```  
+  
+### Exemplo de pesos  
+  
+| Faixa | Peso histórico | Peso atual |  
+|---|---:|---:|  
+| até 5º DU | 85% | 15% |  
+| 6º a 8º DU | 75% | 25% |  
+| 9º a 10º DU | 65% | 35% |  
+| 11º a 13º DU | 50% | 50% |  
+| 14º a 16º DU | 35% | 65% |  
+| 17º DU+ | 20% | 80% |  
+  
+## 2. Clipping de agressividade  
+  
+Exemplo inicial:  
+  
+```text  
+proj_emitidos_final ≤ 1,20 × esperado_hist  
+proj_regul_final ≤ 1,18 × esperado_hist  
+```  
+  
+E também um piso:  
+  
+```text  
+≥ 0,80 × esperado_hist  
+```  
+  
+## 3. Shrinkage da conversão  
+  
+```text  
+conv_suavizada =  
+(pagos_acum + k × conv_final_hist)  
+/  
+(emitidos_acum + k)  
+```  
+  
+Isso evita que uma conversão muito alta no começo do mês “prometa” demais.  
+  
+## 4. Mediana e faixas  
+  
+Prefira:  
+  
+- p25  
+- p50  
+- p75  
+  
+em vez de média simples.  
+  
+## 5. Ponderação por recência  
+  
+Sugestão prática:  
+  
+```text  
+M-1 = 6  
+M-2 = 5  
+M-3 = 4  
+M-4 = 3  
+M-5 = 2  
+M-6 = 1  
+```  
+  
+Opcionalmente:  
+  
+- mesmo mês do ano anterior com peso adicional  
+  
+---  
+  
+# 3️⃣5️⃣ Como mostrar a projeção no QuickSight  
+  
+## Aba 1 — Projeção de fechamento  
+  
+### Cards  
+- Regul acumulado  
+- Regul projetado central  
+- Eficiência projetada central  
+- Gap vs esperado  
+- Nível de confiança  
+- Risco de fechamento  
+  
+### Linha  
+- % realizado acumulado  
+- % esperado acumulado  
+- faixa p25-p75  
+  
+### Tabela  
+- escritório  
+- dia útil  
+- emissão projetada  
+- conversão projetada  
+- regul projetado  
+- eficiência projetada  
+- confiança  
+  
+## Aba 2 — Decomposição da projeção  
+  
+### Visual 1  
+Atual vs esperado:  
+- emissão  
+- conversão  
+- ticket  
+  
+### Visual 2  
+Impacto marginal:  
+- quanto da projeção vem de emissão  
+- quanto vem de conversão  
+- quanto vem de ticket  
+  
+### Visual 3  
+Faixa de projeção:  
+- piso  
+- central  
+- teto  
+  
+---  
+  
+
+## Exemplo 1 — início do mês
+
+```text
+No 4º dia útil, o escritório apresenta regul acumulado acima do pacing histórico, mas a projeção ainda está em estágio inicial e permanece fortemente ancorada na curva histórica. O fechamento central estimado é de R$ X, com faixa provável entre R$ Y e R$ Z. A confiança da leitura ainda é baixa.
+````
+
+## Exemplo 2 — meio do mês
+
+```text
+No 11º dia útil, o escritório está R$ X abaixo do esperado para o período. A principal pressão da projeção vem de conversão abaixo da referência histórica, parcialmente compensada por ticket estável. O fechamento central estimado é de R$ Y, com risco moderado de encerrar abaixo do esperado.
+```
+
+## Exemplo 3 — fim do mês
+
+```text
+No 18º dia útil, a projeção já está mais aderente ao realizado e menos dependente da curva histórica. O escritório deve fechar em R$ X, equivalente a Y% de eficiência, salvo mudança relevante de emissão ou conversão nos últimos dias úteis.
+```
+
+## Campos de texto recomendados na mart
+
+```text
+txt_projecao_curta
+txt_projecao_completa
+txt_gap_esperado
+txt_confianca
+txt_risco_fechamento
+txt_principal_pressao
+```
+
+---
+
+# 3️⃣7️⃣ Previsão simples
+
+## O que é
+
+A previsão simples é a primeira camada realmente preditiva do framework.
+
+Ela responde:
+
+```text
+se nada mudar, onde esse escritório deve fechar?
+```
+
+Sem precisar de ML pesado.
+
+Isso é coerente com o que o material de engenharia de dados trata como tomada de decisão ao longo do ciclo, e com a ideia de sistemas analíticos construídos para servir consumo e ação, não só armazenamento.
+
+## Regra mental
+
+```text
+previsão = realizado até agora + restante esperado
+```
+
+ou, numa versão mais operacional:
+
+```text
+REGUL_FINAL_PROJ = EMISSÃO_FINAL_PROJ × CONVERSÃO_FINAL_PROJ × TICKET_FINAL_PROJ
+```
+
+## Por que dá ROI absurdo
+
+Porque muda a conversa de:
+
+```text
+“caiu”
+```
+
+para:
+
+```text
+“vai fechar abaixo do esperado se nada mudar”
+```
+
+## Estrutura mínima de campos
+
+```text
+regul_acum
+regul_final_proj
+eficiencia_acum
+eficiencia_final_proj
+delta_proj_vs_mes_anterior
+delta_proj_vs_esperado
+```
+
+## Interpretação executiva
+
+A previsão simples é a porta de entrada para gestão antecipada.
+
+Ela não substitui a simulação.  
+Ela complementa a simulação.
+
+A simulação responde:
+
+```text
+o que acontece se eu agir?
+```
+
+A previsão responde:
+
+```text
+o que acontece se eu não agir?
+```
+
+---
+
+# 3️⃣8️⃣ Gap vs esperado
+
+## O que é
+
+Comparar o realizado e a projeção não só contra o histórico bruto, mas contra um **esperado formal**.
+
+Esse esperado pode vir de:
+
+- meta
+    
+- pacing histórico
+    
+- benchmark p50
+    
+- benchmark ponderado por recência
+    
+- curva do mesmo período do ano anterior
+    
+- combinação de recência + sazonalidade
+    
+
+A recomendação de ponderar recência e corrigir sazonalidade com YoY já aparece no material complementar, e faz muito sentido no seu contexto de cobrança mensal com efeito calendário.
+
+## Campos recomendados
+
+```text
+regul_esperado_ate_hoje
+eficiencia_esperada_ate_hoje
+gap_regul_esperado
+gap_eficiencia_esperado_pp
+
+regul_final_esperado
+eficiencia_final_esperada
+gap_regul_final_proj
+gap_eficiencia_final_proj_pp
+```
+
+## Fórmulas
+
+```text
+gap_regul_esperado = regul_acum - regul_esperado_ate_hoje
+gap_eficiencia_esperado_pp = (eficiencia_acum - eficiencia_esperada_ate_hoje) × 100
+
+gap_regul_final_proj = regul_final_proj - regul_final_esperado
+gap_eficiencia_final_proj_pp = (eficiencia_final_proj - eficiencia_final_esperada) × 100
+```
+
+## Texto pronto
+
+```text
+O escritório está R$ X abaixo do esperado para o estágio atual do mês e deve fechar R$ Y abaixo do esperado caso o ritmo atual seja mantido.
+```
+
+## Leitura forte
+
+Gap vs esperado é melhor que mês contra mês quando:
+
+- o mês anterior já foi ruim
+    
+- o mês atual tem outro perfil de DU
+    
+- houve mudança de carteira
+    
+- houve redistribuição operacional
+    
+- o benchmarking mudou
+    
+
+---
+
+# 3️⃣9️⃣ Detecção de desvio precoce
+
+## O que é
+
+Detectar no começo do mês que o escritório saiu do padrão.
+
+## Estrutura
+
+Você precisa de duas curvas:
+
+```text
+curva_realizada_acumulada
+curva_esperada_acumulada
+```
+
+e um desvio relativo:
+
+```text
+desvio_pct = realizado_acum / esperado_acum - 1
+```
+
+## Campos recomendados
+
+```text
+pct_regul_acum_real
+pct_regul_acum_esperado
+pct_emitidos_acum_real
+pct_emitidos_acum_esperado
+pct_conv_acum_real
+pct_conv_acum_esperado
+
+desvio_regul_pct
+desvio_emitidos_pct
+desvio_conversao_pct
+```
+
+## Regra prática de alerta
+
+```text
+até 5º DU: alertar só se desvio > 20%
+6º ao 10º DU: alertar se desvio > 12%
+11º DU+: alertar se desvio > 8%
+```
+
+## Texto pronto
+
+```text
+No 8º dia útil, o escritório já acumula desvio negativo de 18% frente ao pacing esperado, com maior pressão vinda de conversão.
+```
+
+---
+
+# 4️⃣0️⃣ Elasticidade
+
+## O que é
+
+Elasticidade mede o quanto o resultado reage a mudanças marginais em cada alavanca.
+
+Exemplo:
+
+```text
++1% em emissão gera +R$ 120 mil
++1% em conversão gera +R$ 180 mil
++1% em ticket gera +R$ 80 mil
+```
+
+## Por que isso é forte
+
+Porque transforma “acho que” em “sei que”.
+
+Em vez de discutir genericamente:
+
+```text
+talvez o problema seja emissão
+```
+
+você passa a dizer:
+
+```text
+neste escritório, conversão é a alavanca com maior retorno marginal esperado
+```
+
+## Fórmulas simples
+
+Partindo de:
+
+```text
+REGUL = EMISSÃO × CONVERSÃO × TICKET
+```
+
+Então, aproximadamente:
+
+```text
+elasticidade_emissao_valor = 0.01 × emissao_final_proj × conv_final_proj × ticket_final_proj
+elasticidade_conversao_valor = emissao_final_proj × 0.01 × conv_final_proj × ticket_final_proj
+elasticidade_ticket_valor = emissao_final_proj × conv_final_proj × 0.01 × ticket_final_proj
+```
+
+## Campos recomendados
+
+```text
+elas_emissao_r1pct
+elas_conversao_r1pct
+elas_ticket_r1pct
+```
+
+## Uso no QuickSight
+
+- tabela por escritório
+    
+- ranking da maior elasticidade
+    
+- cartão “retorno por 1% de melhoria”
+    
+- coluna auxiliar para priorização
+    
+
+---
+
+# 4️⃣1️⃣ Sensibilidade automática
+
+## O que é
+
+Elasticidade calculada vira **leitura pronta**.
+
+## Campos recomendados
+
+```text
+sens_emissao
+sens_conversao
+sens_ticket
+alavanca_mais_sensivel
+fator_relevancia_1_vs_2
+```
+
+## Regra sugerida
+
+```sql
+CASE
+    WHEN elas_conversao_r1pct >= greatest(elas_emissao_r1pct, elas_ticket_r1pct)
+        THEN 'conversao'
+    WHEN elas_emissao_r1pct >= greatest(elas_conversao_r1pct, elas_ticket_r1pct)
+        THEN 'emissao'
+    ELSE 'ticket'
+END AS alavanca_mais_sensivel
+```
+
+## Texto pronto
+
+```text
+Conversão é 1,8x mais relevante que emissão para recuperar regul neste escritório.
+```
+
+## Diferença importante
+
+```text
+Elasticidade = medida
+Sensibilidade automática = interpretação operacional da medida
+```
+
+---
+
+# 4️⃣2️⃣ Custo da inação
+
+## O que é
+
+Quanto se perde se nada mudar até o fechamento.
+
+Essa é uma das peças mais fortes para gerar urgência executiva.
+
+## Fórmula-base
+
+```text
+custo_inação = regul_final_esperado - regul_final_proj
+```
+
+ou, em eficiência:
+
+```text
+custo_inação_pp = (eficiencia_final_esperada - eficiencia_final_proj) × 100
+```
+
+## Campos recomendados
+
+```text
+custo_inacao_regul
+custo_inacao_eficiencia_pp
+custo_inacao_classificacao
+```
+
+## Semáforo sugerido
+
+```text
+baixo    → até R$ 100k
+médio    → R$ 100k a R$ 500k
+alto     → R$ 500k a R$ 1M
+crítico  → acima de R$ 1M
+```
+
+## Texto pronto
+
+```text
+Se nada mudar, a perda potencial até o fechamento é de R$ X, equivalente a Y pp de eficiência.
+```
+
+## Uso no painel
+
+- card de urgência
+    
+- ordenação de fila de ação
+    
+- eixo do quadrante impacto × facilidade
+    
+- abertura de reunião
+    
+
+---
+
+# 4️⃣3️⃣ Risco de piora
+
+## O que é
+
+Uma métrica sintética que responde:
+
+```text
+qual a chance de o cenário continuar se deteriorando?
+```
+
+Sem ML pesado, isso pode ser feito por score heurístico.
+
+## Componentes sugeridos
+
+```text
+1. tendência recente negativa
+2. gap vs esperado crescente
+3. volatilidade histórica alta
+4. conversão enfraquecendo
+5. emissão desacelerando
+6. pouca maturidade do mês
+```
+
+## Exemplo de score
+
+```text
+score_risco =
+  0.25 × score_tendencia
++ 0.20 × score_gap
++ 0.20 × score_volatilidade
++ 0.15 × score_conversao
++ 0.10 × score_emissao
++ 0.10 × score_maturidade_inversa
+```
+
+## Classificação
+
+```text
+0.00–0.29  → baixo
+0.30–0.54  → moderado
+0.55–0.74  → alto
+0.75+      → crítico
+```
+
+## Texto pronto
+
+```text
+O escritório apresenta risco alto de piora no fechamento, puxado por conversão enfraquecida, gap crescente e baixa maturidade do mês.
+```
+
+---
+
+# 4️⃣4️⃣ Confiabilidade da análise
+
+## O que é
+
+Nem toda leitura merece o mesmo peso.
+
+A própria estrutura de projeção com pesos por maturidade e shrinkage já parte dessa lógica: o começo do mês é mais frágil; o fim do mês, mais confiável.
+
+## Componentes sugeridos
+
+```text
+estagio_mes
+volume_acumulado
+estabilidade_historica
+dados_faltantes
+clip_aplicado
+descolamento_vs_hist
+```
+
+## Score simples
+
+```text
+score_confiabilidade =
+  0.30 × score_maturidade
++ 0.25 × score_volume
++ 0.20 × score_estabilidade
++ 0.15 × score_integridade_dado
++ 0.10 × score_baixo_clip
+```
+
+## Faixas
+
+```text
+0.00–0.29  → baixa
+0.30–0.54  → média
+0.55–0.74  → média-alta
+0.75+      → alta
+```
+
+## Texto pronto
+
+```text
+A leitura atual tem confiança média, pois o mês já ganhou tração, mas a projeção ainda depende parcialmente da curva histórica e houve clipping na estimativa central.
+```
+
+---
+
+# 4️⃣5️⃣ Coortes
+
+## O que são
+
+Separações estruturais de grupos comparáveis ao longo do tempo.
+
+No seu contexto, isso é especialmente útil para evitar uma leitura “misturada”.
+
+## Exemplos fortes
+
+```text
+coorte_antiguidade_contrato
+coorte_recencia_acordo
+coorte_carteira_nova_vs_madura
+coorte_faixa_atraso
+coorte_canal
+coorte_tipo_negociacao
+```
+
+## Por que isso importa
+
+Às vezes o escritório parece pior como um todo, mas o problema está concentrado em uma submassa específica.
+
+## Exemplo de insight
+
+```text
+A piora veio quase toda da coorte de novos acordos, enquanto a carteira madura permaneceu estável.
+```
+
+## Recomendação de modelagem
+
+Não misture coortes heterogêneas na mesma linha sem deixá-las explícitas.  
+Se a análise passa a depender delas de forma recorrente, suba isso para mart oficial.
+
+Isso conversa com a disciplina dimensional: processo de negócio, granularidade e fatos coerentes com o grão declarado.
+
+---
+
+# 4️⃣6️⃣ Decomposição temporal
+
+## O que é
+
+Quebrar a leitura ao longo do tempo dentro do mês.
+
+## Aberturas recomendadas
+
+```text
+1ª semana vs 2ª semana
+1ª quinzena vs 2ª quinzena
+início do mês vs fechamento
+DU 1–5 vs 6–10 vs 11–15 vs 16+
+```
+
+## Por que é forte
+
+Porque vários problemas não são lineares.
+
+Exemplos:
+
+- emite bem no começo e perde força depois
+    
+- converte mal cedo e acelera no fechamento
+    
+- ticket despenca só no fim
+    
+- parceiro entra atrasado operacionalmente
+    
+
+## Campos recomendados
+
+```text
+regul_semana_1
+regul_semana_2
+regul_quinzena_1
+regul_quinzena_2
+
+conv_du_1_5
+conv_du_6_10
+conv_du_11_15
+conv_du_16mais
+```
+
+## Exemplo de insight
+
+```text
+A deterioração não foi homogênea: o escritório sustentou bom ritmo até o 8º DU, mas perdeu conversão de forma relevante na segunda quinzena.
+```
+
+---
+
+# 4️⃣7️⃣ Score de maturidade do escritório
+
+## O que é
+
+Uma nota sintética que resume qualidade operacional, não só resultado pontual.
+
+## Componentes sugeridos
+
+```text
+eficiencia_relativa
+tendencia
+estabilidade
+execucao
+confiabilidade
+historico_recente
+```
+
+## Exemplo de score
+
+```text
+score_maturidade =
+  0.25 × score_eficiencia
++ 0.20 × score_tendencia
++ 0.20 × score_estabilidade
++ 0.15 × score_execucao
++ 0.10 × score_confiabilidade
++ 0.10 × score_benchmark_historico
+```
+
+## Classes sugeridas
+
+```text
+85+   → Líder
+70–84 → Forte
+50–69 → Atenção
+<50   → Crítico
+```
+
+## Campo de saída
+
+```text
+score_maturidade_escritorio
+classe_maturidade_escritorio
+```
+
+## Texto pronto
+
+```text
+O escritório está classificado como Atenção: desempenho abaixo do benchmark, volatilidade acima do desejado e baixa taxa de execução das ações recomendadas.
+```
+
+---
+
+# 4️⃣8️⃣ Execução
+
+## O que é
+
+Fechar o ciclo entre:
+
+```text
+problema → recomendação → ação
+```
+
+## Tabela mínima sugerida
+
+```sql
+CREATE TABLE ctrl.cobranca_execucao_acoes (
+    data_recomendacao date,
+    anomes integer,
+    escritorio varchar,
+    recomendacao varchar,
+    categoria_acao varchar,
+    responsavel varchar,
+    prazo date,
+    status varchar,
+    fl_executada boolean,
+    dt_execucao_acao date,
+    observacao varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    location = 's3://lakehouse/ctrl/cobranca_execucao_acoes/'
+);
+```
+
+## Campos úteis adicionais
+
+```text
+origem_recomendacao
+cenario_origem
+alavanca_alvo
+gravidade
+custo_inacao_associado
+```
+
+## Métricas derivadas
+
+```text
+taxa_execucao = ações executadas / ações recomendadas
+tempo_medio_execucao
+backlog_aberto
+ações_vencidas
+```
+
+## Texto pronto
+
+```text
+Das 12 ações recomendadas no período, 5 foram executadas, resultando em taxa de execução de 41,7%.
+```
+
+---
+
+# 4️⃣9️⃣ Impacto pós-ação
+
+## O que é
+
+Medir o antes e depois da ação executada.
+
+## Janela sugerida
+
+```text
+baseline = 5 DUs antes da ação
+efeito   = 5 a 10 DUs depois da ação
+```
+
+## Campos recomendados
+
+```text
+regul_pre_acao
+regul_pos_acao
+conv_pre_acao
+conv_pos_acao
+ticket_pre_acao
+ticket_pos_acao
+eficiencia_pre_acao
+eficiencia_pos_acao
+
+delta_regul_pos_acao
+delta_conv_pos_acao
+delta_ticket_pos_acao
+delta_eficiencia_pos_acao_pp
+```
+
+## Cuidados
+
+- não confundir correlação com causalidade
+    
+- controlar efeito calendário
+    
+- controlar redistribuição de carteira
+    
+- controlar choque de mix
+    
+
+## Texto pronto
+
+```text
+Após a execução da ação focada em conversão, a taxa observada subiu X pp e o regul médio diário aumentou R$ Y na janela pós-ação.
+```
+
+---
+
+# 5️⃣0️⃣ Causas recorrentes
+
+## O que é
+
+Sair da visão caso a caso e enxergar padrão estrutural.
+
+## Métrica-base
+
+Conte em quantos casos cada driver apareceu como principal causa.
+
+## Campos recomendados
+
+```text
+periodo_analise
+driver_principal
+qtd_ocorrencias
+perc_ocorrencias
+impacto_total_associado
+```
+
+## Exemplo
+
+```text
+Nos últimos 6 meses, emissão respondeu por 52% das quedas relevantes, conversão por 31% e ticket por 17%.
+```
+
+## Valor prático
+
+Isso muda a agenda da liderança:
+
+- sai da reação
+    
+- entra em revisão macro de processo
+    
+- calibra atuação sobre parceiro
+    
+- orienta onde investir energia
+    
+
+---
+
+# 5️⃣1️⃣ Topologia final do sistema
+
+A partir daqui, o framework completo deixa de ser um painel solto e vira um sistema analítico composto por marts e controles conectados.
+
+## Marts recomendadas
+
+```text
+1. mart.cobranca_escritorio_mes_base
+2. mart.cobranca_escritorio_cenarios_mes
+3. mart.cobranca_projecao_eficiencia_regul_diaria
+4. mart.cobranca_causa_raiz_mes
+5. mart.cobranca_priorizacao_escritorio
+6. ctrl.cobranca_execucao_acoes
+7. mart.cobranca_impacto_pos_acao
+8. mart.cobranca_causas_recorrentes
+9. mart.cobranca_maturidade_escritorio
+```
+
+## Papel de cada uma
+
+### `cobranca_escritorio_mes_base`
+
+Base oficial de indicadores e benchmarks.
+
+### `cobranca_escritorio_cenarios_mes`
+
+Motor oficial de simulação.
+
+### `cobranca_projecao_eficiencia_regul_diaria`
+
+Motor oficial de previsão e risco.
+
+### `cobranca_causa_raiz_mes`
+
+Motor de explicação e narrativa.
+
+### `cobranca_priorizacao_escritorio`
+
+Ranking de ataque com impacto, facilidade, elasticidade e custo da inação.
+
+### `cobranca_impacto_pos_acao`
+
+Aprendizado operacional.
+
+### `cobranca_causas_recorrentes`
+
+Agenda macro de melhoria.
+
+### `cobranca_maturidade_escritorio`
+
+Linguagem executiva consolidada.
+
+---
+
+# 5️⃣2️⃣ Priorização
+
+## O que é
+
+Transformar tudo isso em fila objetiva de ataque.
+
+## Estrutura recomendada
+
+```text
+prioridade = impacto_potencial × facilidade × confiabilidade
+```
+
+com ajuste por urgência:
+
+```text
+prioridade_ajustada =
+(impacto_potencial × facilidade × confiabilidade)
++ peso_custo_inacao
++ peso_risco_piora
+```
+
+## Campos recomendados
+
+```text
+impacto_potencial
+facilidade
+confiabilidade
+custo_inacao_regul
+score_risco_piora
+score_prioridade
+faixa_prioridade
+```
+
+## Buckets úteis
+
+```text
+Quick Win
+Aposta Estrutural
+Monitorar
+Baixa Prioridade
+```
+
+## Exemplo de insight
+
+```text
+O escritório A não é o de maior potencial bruto, mas combina alto ganho capturável, baixo esforço e custo elevado de inação, tornando-se a prioridade número 1.
+```
+
+---
+
+# 5️⃣3️⃣ Recomendação de implementação em ondas
+
+## Onda 1 — valor rápido
+
+Implemente primeiro:
+
+```text
+1. mart base mensal
+2. mart de cenários
+3. projeção simples
+4. gap vs esperado
+5. textos automáticos
+6. cards atual vs simulado/projetado
+```
+
+## Onda 2 — gestão de verdade
+
+Depois:
+
+```text
+7. elasticidade e sensibilidade
+8. risco de piora
+9. custo da inação
+10. priorização
+11. score de maturidade
+```
+
+## Onda 3 — ciclo fechado
+
+Por fim:
+
+```text
+12. execução de ações
+13. impacto pós-ação
+14. causas recorrentes
+15. coortes
+16. decomposição temporal
+```
+
+Essa ordem segue bem a lógica de arquitetura modular e evolução em camadas, em vez de tentar resolver tudo de uma vez. O material de analytics engineering reforça bastante modularização, reuso, testes e progressão controlada dos modelos.
+
+---
+
+# 5️⃣4️⃣ Orquestração recomendada
+
+## Papel do Athena
+
+No seu stack, o Athena é muito adequado para:
+
+- consultar S3 in-place
+    
+- usar Glue Data Catalog
+    
+- materializar com CTAS/INSERT
+    
+- consultar Iceberg
+    
+- servir consumo analítico e BI, inclusive QuickSight.
+    
+
+## Papel do Step Functions
+
+O Step Functions é o orquestrador natural para:
+
+- rodar cargas em sequência
+    
+- executar cenários diários
+    
+- disparar projeção
+    
+- registrar testes
+    
+- disparar alertas
+    
+- manter refresh organizado
+    
+
+A integração otimizada com Athena suporta `StartQueryExecution` no padrão `.sync`, além de `GetQueryResults`, o que encaixa muito bem no seu desenho de “Athena pensa, Step Functions orquestra”.
+
+## Fluxo sugerido
+
+```text
+EventBridge
+  ↓
+Step Functions
+  ↓
+Athena SQL
+  ↓
+Iceberg marts
+  ↓
+QuickSight
+  ↓
+alertas / acompanhamento
+```
+
+---
+
+# 5️⃣5️⃣ Observações de modelagem que não podem ser ignoradas
+
+## 1. Grão não é detalhe
+
+Kimball e Adamson batem exatamente no ponto que conversa com o seu problema: quando fatos têm timings ou granularidades diferentes, misturar tudo numa única tabela atrapalha a análise; o correto é separar processos/fatos coerentes com seus grãos. Isso é especialmente importante no seu caso de emissão, conversão e pagamento.
+
+## 2. Simulação precisa ser explicável
+
+Se o gerente não entende a conta, ele não confia nela.
+
+Por isso:
+
+```text
+caixa = emitidos × conversão × ticket
+eficiência = caixa / carteira
+```
+
+continua sendo um desenho excelente.
+
+## 3. QuickSight não deve carregar regra crítica
+
+A melhor prática continua sendo:
+
+```text
+Athena pensa
+QuickSight mostra
+```
+
+## 4. Mart oficial vale mais que query solta
+
+Porque traz:
+
+- reuso
+    
+- histórico
+    
+- governança
+    
+- auditabilidade
+    
+- comparabilidade
+    
+
+## 5. Use Iceberg quando o dado precisar ser estável e confiável
+
+A documentação do Athena recomenda Iceberg para transações atômicas em cenários de materialização de tabelas.
+
+---
+
+# 5️⃣6️⃣ Frases prontas para comitê
+
+## Projeção
+
+```text
+Se o ritmo atual for mantido, o escritório deve fechar em R$ X, abaixo do esperado em R$ Y, com confiança Z.
+```
+
+## Diagnóstico
+
+```text
+A principal pressão do mês vem de conversão abaixo do pacing esperado, e não de ticket.
+```
+
+## Simulação
+
+```text
+Se a principal alavanca for corrigida até o patamar p50, o ganho potencial estimado é de R$ X e Y pp de eficiência.
+```
+
+## Priorização
+
+```text
+Apesar de não ser o maior gap absoluto, este escritório combina alto potencial capturável, alta sensibilidade em conversão e elevado custo da inação.
+```
+
+## Execução
+
+```text
+A recomendação foi emitida, mas ainda não executada; o ganho potencial segue aberto.
+```
+
+## Aprendizado
+
+```text
+Nos últimos meses, a causa mais recorrente de deterioração foi emissão, mas os maiores ganhos marginais vieram de ações em conversão.
+```
+
+---
+
+# 5️⃣7️⃣ Fechamento conceitual
+
+O framework completo passa a responder, ao mesmo tempo:
+
+```text
+o que aconteceu?
+por que aconteceu?
+o que acontece se eu agir?
+o que acontece se eu não agir?
+onde devo agir primeiro?
+quão confiável é essa leitura?
+a ação foi feita?
+funcionou?
+o que está se repetindo?
+```
+
+Essa é a diferença entre:
+
+```text
+um MIS que descreve
+```
+
+e
+
+```text
+um sistema analítico que direciona decisão
+```
+
+---
+
+# 5️⃣8️⃣ Resumo executivo do que implementar primeiro
+
+Se a prioridade for ROI mais rápido, faça nesta ordem:
+
+```text
+1. previsão simples
+2. gap vs esperado
+3. elasticidade / sensibilidade
+4. custo da inação
+5. score de maturidade
+6. execução e impacto pós-ação
+7. causas recorrentes
+8. decomposição temporal
+9. coortes
+10. risco de piora
+```
+
+Essa ordem é muito boa porque coloca primeiro aquilo que muda comportamento de gestão mais rápido, e deixa para depois o que exige mais maturidade operacional.
+
+---
+
+# 5️⃣9️⃣ Próximo passo natural
+
+Depois desta nota, o ideal é quebrar em 6 notas filhas:
+
+```text
+[[SQL — Mart de Cenários de Cobrança]]
+[[SQL — Mart de Projeção Diária com Guardrails]]
+[[SQL — Mart de Priorização por Escritório]]
+[[SQL — Controle de Execução e Impacto Pós-Ação]]
+[[QuickSight — Simulação e Potencial]]
+[[QuickSight — Projeção, Risco e Priorização]]
+```
+
+```
+
+Se quiser, eu posso agora converter essa continuação em uma **nota Obsidian final consolidada**, já sem repetições e com estrutura única de índice, ou quebrar em **notas filhas com SQL físico**.
+```
