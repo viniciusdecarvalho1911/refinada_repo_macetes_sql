@@ -1,0 +1,424 @@
+Perfeito. Vamos montar um **motor de e-mail automático em SQL**, no seu padrão:
+
+```text
+GRÃO → MÉTRICA → DECOMPOSIÇÃO → MATERIALIZAÇÃO → NARRATIVA → DECISÃO
+```
+
+Isso encaixa exatamente no framework que você já consolidou: narrativa deve nascer no SQL, não no BI, e a lógica recorrente deve virar tabela Iceberg controlada por SQL e orquestrada por Step Functions.
+
+# Estrutura do e-mail detalhado
+
+Para e-mail mais completo, eu usaria 7 blocos:
+
+```text
+1. resumo executivo
+2. leitura guiada
+3. decomposição
+4. benchmark / onde aconteceu
+5. risco da leitura / projeção
+6. recomendação
+7. fechamento
+```
+
+A ideia é o destinatário conseguir ler em camadas: primeiro o resumo, depois o racional, depois a ação. Isso conversa com sua lógica de “headline, driver, mediana, diagnóstico e ação”.
+
+# O que a mart final precisa ter
+
+O caminho mais estável é:
+
+- uma mart analítica base com números e drivers
+    
+- uma mart de narrativa/e-mail com textos prontos
+    
+- consumo no QuickSight e/ou Step Functions
+    
+
+Seu próprio material já recomenda Gold/Mart como fonte oficial e QuickSight apenas como consumo.
+
+Campos mínimos que eu colocaria na mart base:
+
+```sql
+anomes
+escritorio
+
+eficiencia_atual
+eficiencia_anterior
+delta_eficiencia_pp
+
+caixa_atual
+caixa_anterior
+delta_caixa
+
+impacto_du_pp
+impacto_volume
+impacto_ticket
+principal_driver_macro
+
+volume_atual
+volume_anterior
+ticket_atual
+ticket_anterior
+
+emitidos_atual
+emitidos_anterior
+taxa_pgto_atual
+taxa_pgto_anterior
+
+gap_p50
+delta_gap_p50
+cluster_performance
+tendencia_relativa
+
+projecao_central
+projecao_piso
+projecao_teto
+confianca_projecao
+
+next_best_action
+```
+
+# SQL do motor de e-mail
+
+Abaixo está um template completo para Athena. A ideia é gerar uma linha por `anomes + escritorio`, com todos os blocos textuais prontos.
+
+## 1) Base
+
+```sql
+WITH base AS (
+    SELECT
+        anomes,
+        escritorio,
+
+        eficiencia_atual,
+        eficiencia_anterior,
+        (eficiencia_atual - eficiencia_anterior) * 100 AS delta_eficiencia_pp,
+
+        caixa_atual,
+        caixa_anterior,
+        caixa_atual - caixa_anterior AS delta_caixa,
+
+        impacto_du_pp,
+        impacto_volume,
+        impacto_ticket,
+        principal_driver_macro,
+
+        volume_atual,
+        volume_anterior,
+        ticket_atual,
+        ticket_anterior,
+
+        emitidos_atual,
+        emitidos_anterior,
+        taxa_pgto_atual,
+        taxa_pgto_anterior,
+
+        gap_p50,
+        delta_gap_p50,
+        cluster_performance,
+        tendencia_relativa,
+
+        regul_proj_piso      AS projecao_piso,
+        regul_proj_central   AS projecao_central,
+        regul_proj_teto      AS projecao_teto,
+        nivel_confianca      AS confianca_projecao,
+
+        next_best_action
+    FROM mart.cobranca_escritorio_mes
+)
+```
+
+## 2) Blocos textuais
+
+```sql
+, blocos AS (
+    SELECT
+        *,
+
+        -- 1. resumo executivo
+        concat(
+            'Resumo executivo: a eficiência do escritório ',
+            escritorio,
+            ' ',
+            CASE
+                WHEN delta_eficiencia_pp < 0 THEN 'caiu '
+                WHEN delta_eficiencia_pp > 0 THEN 'subiu '
+                ELSE 'permaneceu estável em '
+            END,
+            cast(round(abs(delta_eficiencia_pp), 1) AS varchar),
+            ' pp (',
+            cast(round(eficiencia_anterior * 100, 1) AS varchar),
+            '% → ',
+            cast(round(eficiencia_atual * 100, 1) AS varchar),
+            '%).'
+        ) AS txt_resumo_exec,
+
+        -- 2. leitura guiada
+        CASE
+            WHEN principal_driver_macro = 'volume' THEN
+                concat(
+                    'A leitura do mês indica que o principal movimento veio de volume, ',
+                    'com variação de ',
+                    cast(round(volume_anterior, 0) AS varchar),
+                    ' para ',
+                    cast(round(volume_atual, 0) AS varchar),
+                    '.'
+                )
+            WHEN principal_driver_macro = 'ticket' THEN
+                concat(
+                    'A leitura do mês indica que o principal movimento veio de ticket, ',
+                    'com variação de ',
+                    cast(round(ticket_anterior, 2) AS varchar),
+                    ' para ',
+                    cast(round(ticket_atual, 2) AS varchar),
+                    '.'
+                )
+            ELSE
+                'A leitura do mês indica combinação de volume e ticket, sem dominância clara de uma única alavanca.'
+        END AS txt_leitura_guiada,
+
+        -- 3. decomposição
+        concat(
+            'Decomposição: impacto de volume = ',
+            cast(round(impacto_volume, 0) AS varchar),
+            '; impacto de ticket = ',
+            cast(round(impacto_ticket, 0) AS varchar),
+            '; efeito calendário = ',
+            cast(round(impacto_du_pp, 1) AS varchar),
+            ' pp.'
+        ) AS txt_decomposicao,
+
+        -- 4. benchmark
+        CASE
+            WHEN cluster_performance = 'lider' AND tendencia_relativa = 'melhorando' THEN
+                'Benchmark: o escritório está entre os líderes e ampliando vantagem frente ao mercado.'
+            WHEN cluster_performance = 'lider' AND tendencia_relativa = 'piorando' THEN
+                'Benchmark: o escritório ainda está entre os líderes, mas perdeu vantagem relativa.'
+            WHEN cluster_performance = 'critico' AND tendencia_relativa = 'piorando' THEN
+                'Benchmark: o escritório está em nível crítico e segue deteriorando frente ao mercado.'
+            WHEN gap_p50 < 0 THEN
+                concat(
+                    'Benchmark: o escritório está abaixo da mediana, com gap atual de ',
+                    cast(round(gap_p50, 1) AS varchar),
+                    ' pp.'
+                )
+            ELSE
+                concat(
+                    'Benchmark: o escritório está acima da mediana, com gap atual de ',
+                    cast(round(gap_p50, 1) AS varchar),
+                    ' pp.'
+                )
+        END AS txt_benchmark,
+
+        -- 5. risco / projeção
+        concat(
+            'Projeção: fechamento central estimado em ',
+            cast(round(projecao_central, 0) AS varchar),
+            ', com faixa provável entre ',
+            cast(round(projecao_piso, 0) AS varchar),
+            ' e ',
+            cast(round(projecao_teto, 0) AS varchar),
+            '. Nível de confiança: ',
+            confianca_projecao,
+            '.'
+        ) AS txt_projecao,
+
+        -- 6. recomendação
+        concat(
+            'Ação sugerida: ',
+            next_best_action,
+            '.'
+        ) AS txt_acao
+    FROM base
+)
+```
+
+## 3) Corpo do e-mail
+
+```sql
+, email_final AS (
+    SELECT
+        anomes,
+        escritorio,
+
+        concat(
+            txt_resumo_exec, ' ',
+            txt_leitura_guiada, ' ',
+            txt_decomposicao, ' ',
+            txt_benchmark, ' ',
+            txt_projecao, ' ',
+            txt_acao
+        ) AS email_corpo_texto_corrido,
+
+        concat(
+            'Pessoal,', chr(10), chr(10),
+            txt_resumo_exec, chr(10), chr(10),
+            txt_leitura_guiada, chr(10), chr(10),
+            txt_decomposicao, chr(10), chr(10),
+            txt_benchmark, chr(10), chr(10),
+            txt_projecao, chr(10), chr(10),
+            txt_acao, chr(10), chr(10),
+            'Abs,'
+        ) AS email_corpo_formatado,
+
+        concat(
+            '[COBRANÇA] ',
+            escritorio,
+            ' — ',
+            CASE
+                WHEN delta_eficiencia_pp < 0 THEN 'queda'
+                WHEN delta_eficiencia_pp > 0 THEN 'melhora'
+                ELSE 'estabilidade'
+            END,
+            ' de ',
+            cast(round(abs(delta_eficiencia_pp), 1) AS varchar),
+            ' pp'
+        ) AS email_assunto
+    FROM blocos
+)
+
+SELECT *
+FROM email_final;
+```
+
+# Como materializar isso
+
+Para iterar rápido, você pode começar com uma view. Para consumo estável, QuickSight e automação, eu materializaria em Iceberg via CTAS, porque Athena documenta CTAS como mecanismo nativo para criar tabela a partir de query, e recomenda Iceberg para transações atômicas.
+
+```sql
+CREATE TABLE mart.cobranca_email_automatico
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    location = 's3://lakehouse/mart/cobranca_email_automatico/'
+) AS
+SELECT *
+FROM email_final;
+```
+
+Athena também documenta propriedades de Iceberg com `table_type='ICEBERG'`, `format='parquet'` e compressão, então esse padrão está totalmente alinhado ao stack que você está montando.
+
+# Como orquestrar no Step Functions
+
+Seu próprio framework já consolidou a regra certa:
+
+> Athena pensa; Step Functions orquestra.
+
+E o guia do Step Functions mostra exatamente o padrão de rodar queries Athena de forma síncrona e até em sequência/paralelo.
+
+Fluxo recomendado:
+
+```text
+1. calcular mart base
+2. materializar mart de narrativa/email
+3. ler a linha do escritório/mês
+4. enviar e-mail
+5. registrar envio
+```
+
+Skeleton conceitual:
+
+```json
+{
+  "StartAt": "GerarEmailSQL",
+  "States": {
+    "GerarEmailSQL": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "QueryString.$": "$.sql_gerar_email",
+        "WorkGroup.$": "$.workgroup",
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.output_location"
+        },
+        "QueryExecutionContext": {
+          "Database": "mart"
+        }
+      },
+      "Next": "LerEmail"
+    },
+    "LerEmail": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:getQueryResults",
+      "Parameters": {
+        "QueryExecutionId.$": "$.QueryExecution.QueryExecutionId"
+      },
+      "Next": "EnviarEmail"
+    },
+    "EnviarEmail": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:enviar_email"
+    }
+  }
+}
+```
+
+# Como deixar o e-mail realmente bom
+
+O truque não é colocar “mais texto”. É colocar **blocos certos**:
+
+- **Resumo executivo**: 1 parágrafo curto
+    
+- **Leitura guiada**: o que aconteceu
+    
+- **Decomposição**: por que aconteceu
+    
+- **Benchmark**: quão ruim/bom isso é
+    
+- **Projeção**: isso tende a continuar?
+    
+- **Ação**: o que fazer amanhã
+    
+
+Isso fica bem coerente com o teu padrão de escrita em parágrafos curtos separados por linha em branco. Para e-mail detalhado, essa é a melhor forma.
+
+# Como usar no QuickSight também
+
+Você já tem a mesma lógica para dashboard: headline, ranking, waterfall, diagnóstico e ação. O próprio template reforça que headline e narrativa principal devem nascer no SQL, e QuickSight só alterna entre texto simples/completo se quiser.
+
+Então a mesma mart pode servir para:
+
+- e-mail
+    
+- QuickSight
+    
+- PPT
+    
+- Teams
+    
+
+Isso também conversa com sua lógica de “blocos reutilizáveis indexados” para transformar comunicação em ativo reutilizável.
+
+# Regra prática final
+
+Eu seguiria esta convenção:
+
+```text
+mart.cobranca_email_automatico
+1 linha = 1 anomes + 1 escritorio + 1 tipo_email
+```
+
+Campos:
+
+```sql
+email_assunto
+email_corpo_formatado
+email_corpo_texto_corrido
+txt_resumo_exec
+txt_leitura_guiada
+txt_decomposicao
+txt_benchmark
+txt_projecao
+txt_acao
+```
+
+Assim você não fica preso a um único formato de saída.
+
+Se quiser, no próximo passo eu monto a **versão 2 desse SQL**, já com:
+
+- abertura por **fila**
+    
+- benchmark **p25/p50/p75**
+    
+- bloco de **top causadores**
+    
+- e uma versão do corpo no formato exato de e-mail corporativo.
