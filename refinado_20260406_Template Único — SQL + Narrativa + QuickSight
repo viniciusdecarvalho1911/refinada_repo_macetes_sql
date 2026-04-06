@@ -1,0 +1,944 @@
+
+# 🎯 Objetivo
+
+Este template existe para te ajudar a responder, de forma simples e guiada:
+
+- o que aconteceu?
+- onde aconteceu?
+- por que aconteceu?
+- o quanto cada fator explica?
+- isso foi calendário ou piora real?
+- como mostrar isso no QuickSight?
+- como transformar isso em texto executivo?
+
+A estrutura segue a lógica do seu playbook:
+
+```text
+DEMANDA → DADO → ANÁLISE → INSIGHT → AÇÃO → COMUNICAÇÃO
+````
+
+e também:
+
+```text
+GRÃO → MÉTRICA → DECOMPOSIÇÃO → NARRATIVA → DECISÃO
+```
+
+Essas duas sequências são o coração do seu framework de causa raiz.
+
+---
+
+# 🧠 Como pensar antes do SQL
+
+Antes de abrir o Athena, responda estas 5 perguntas:
+
+## 1. Qual métrica quero explicar?
+
+Exemplo:
+
+- eficiência
+    
+- caixa
+    
+- volume pago
+    
+- ticket médio
+    
+
+## 2. Qual comparação quero fazer?
+
+Exemplo:
+
+- mês atual vs mês anterior
+    
+- escritório vs mediana
+    
+- fila vs mediana da fila
+    
+- atual vs ajustado por dias úteis
+    
+
+## 3. Qual é o grão?
+
+Escreva literalmente:
+
+```text
+1 linha = 1 mês + 1 escritório
+```
+
+ou
+
+```text
+1 linha = 1 mês + 1 escritório + 1 fila + 1 faixa
+```
+
+Isso é obrigatório. O seu material reforça que análise boa começa pelo grão, e Kimball trata a definição do grão como contrato do modelo.
+
+## 4. Quais fatores podem explicar a variação?
+
+Exemplo:
+
+- volume
+    
+- ticket
+    
+- dias úteis
+    
+- mix
+    
+- posicionamento relativo vs mediana
+    
+
+## 5. Qual decisão depende disso?
+
+Exemplo:
+
+- revisar estratégia do escritório
+    
+- investigar fila específica
+    
+- calibrar meta
+    
+- destacar benchmark
+    
+
+---
+
+# 🏗️ Arquitetura simplificada
+
+Use este fluxo:
+
+```text
+bronze_fonte
+   ↓
+silver_padronizado
+   ↓
+silver_integrado
+   ↓
+gold / mart
+   ↓
+QuickSight
+```
+
+Esse é o fluxo oficial que você consolidou, com separação entre estrutura, integração e verdade de negócio.
+
+---
+
+# 📦 O que este template entrega
+
+Este template gera uma mart final com:
+
+## Números
+
+- eficiência atual e anterior
+    
+- eficiência ajustada por DU
+    
+- delta
+    
+- impacto de DU
+    
+- impacto de volume
+    
+- impacto de ticket
+    
+- gap para mediana
+    
+- mudança do gap
+    
+
+## Textos
+
+- `txt_headline`
+    
+- `txt_du`
+    
+- `txt_driver`
+    
+- `txt_relativo_mediana`
+    
+- `txt_diagnostico`
+    
+- `txt_insight_simples`
+    
+- `txt_insight_completo`
+    
+
+## Uso no QuickSight
+
+- cartão simples
+    
+- tabela com narrativa
+    
+- ranking
+    
+- waterfall
+    
+- drill-down
+    
+
+---
+
+# 🧱 Estrutura mínima da mart final
+
+A mart final precisa ter, no mínimo, estas colunas. O seu playbook já lista essa família de métricas e campos de texto como base da análise.
+
+```sql
+anomes_atual
+anomes_anterior
+
+nivel_analise
+escritorio
+fila
+faixa_atraso
+
+carteira_atual
+carteira_anterior
+
+caixa_atual
+caixa_anterior
+
+volume_atual
+volume_anterior
+
+ticket_atual
+ticket_anterior
+
+du_atual
+du_anterior
+
+eficiencia_real_atual
+eficiencia_real_anterior
+eficiencia_ajustada_du_atual
+
+delta_eficiencia_real_pp
+delta_eficiencia_ajustada_du_pp
+impacto_du_pp
+
+impacto_volume
+impacto_ticket
+principal_driver_caixa
+
+mediana_eficiencia_atual
+mediana_eficiencia_anterior
+gap_mediana_atual
+gap_mediana_anterior
+delta_gap_mediana
+
+txt_headline
+txt_du
+txt_driver
+txt_relativo_mediana
+txt_diagnostico
+txt_insight_simples
+txt_insight_completo
+```
+
+---
+
+# 🧪 Template único de SQL
+
+> A ideia aqui é:
+> 
+> 1. pegar a base mensal
+>     
+> 2. comparar atual vs anterior
+>     
+> 3. calcular eficiência, DU, volume, ticket
+>     
+> 4. calcular mediana por nível
+>     
+> 5. gerar textos em blocos
+>     
+> 6. devolver uma linha pronta para QuickSight
+>     
+
+```sql
+WITH parametros AS (
+
+    -- =========================================================
+    -- 1) PARÂMETROS DO PERÍODO
+    --    ajuste aqui o mês atual e o anterior
+    -- =========================================================
+    SELECT
+        202603 AS anomes_atual,
+        202602 AS anomes_anterior
+),
+
+base AS (
+
+    -- =========================================================
+    -- 2) BASE ANALÍTICA
+    --    1 linha = 1 mês + 1 escritório
+    --
+    --    Troque esta origem pela sua view/tabela oficial.
+    -- =========================================================
+    SELECT
+        b.anomes,
+        COALESCE(CAST(b.escritorio AS varchar), 'N/A') AS escritorio,
+
+        SUM(b.vl_carteira) AS carteira,
+        SUM(b.vl_pagamento) AS caixa,
+        COUNT(*) AS volume,
+        SUM(b.vl_pagamento) / NULLIF(COUNT(*), 0) AS ticket_medio,
+        MAX(b.qt_dias_uteis) AS du
+
+    FROM gold.cobranca_base_analise_mes b
+    JOIN parametros p
+      ON b.anomes IN (p.anomes_atual, p.anomes_anterior)
+
+    GROUP BY 1,2
+),
+
+comparacao AS (
+
+    -- =========================================================
+    -- 3) JUNTA MÊS ATUAL COM MÊS ANTERIOR
+    -- =========================================================
+    SELECT
+        a.escritorio,
+        a.anomes AS anomes_atual,
+        b.anomes AS anomes_anterior,
+
+        a.carteira AS carteira_atual,
+        b.carteira AS carteira_anterior,
+
+        a.caixa AS caixa_atual,
+        b.caixa AS caixa_anterior,
+
+        a.volume AS volume_atual,
+        b.volume AS volume_anterior,
+
+        a.ticket_medio AS ticket_atual,
+        b.ticket_medio AS ticket_anterior,
+
+        a.du AS du_atual,
+        b.du AS du_anterior
+
+    FROM base a
+    JOIN parametros p
+      ON a.anomes = p.anomes_atual
+
+    LEFT JOIN base b
+      ON a.escritorio = b.escritorio
+     AND b.anomes = p.anomes_anterior
+),
+
+metricas AS (
+
+    -- =========================================================
+    -- 4) CÁLCULOS PRINCIPAIS
+    -- =========================================================
+    SELECT
+        *,
+
+        caixa_atual / NULLIF(carteira_atual, 0) AS eficiencia_real_atual,
+        caixa_anterior / NULLIF(carteira_anterior, 0) AS eficiencia_real_anterior,
+
+        (caixa_atual * (CAST(du_anterior AS double) / NULLIF(CAST(du_atual AS double),0)))
+            / NULLIF(carteira_atual, 0) AS eficiencia_ajustada_du_atual,
+
+        (caixa_atual - caixa_anterior) AS delta_caixa,
+
+        (volume_atual - volume_anterior) * ticket_anterior AS impacto_volume,
+        (ticket_atual - ticket_anterior) * volume_atual AS impacto_ticket
+
+    FROM comparacao
+),
+
+decomposicao AS (
+
+    -- =========================================================
+    -- 5) DELTAS EM PP
+    -- =========================================================
+    SELECT
+        *,
+
+        (eficiencia_real_atual - eficiencia_real_anterior) * 100 AS delta_eficiencia_real_pp,
+
+        (eficiencia_ajustada_du_atual - eficiencia_real_anterior) * 100 AS delta_eficiencia_ajustada_du_pp,
+
+        (
+            (eficiencia_real_atual - eficiencia_real_anterior)
+            - (eficiencia_ajustada_du_atual - eficiencia_real_anterior)
+        ) * 100 AS impacto_du_pp
+
+    FROM metricas
+),
+
+classificado AS (
+
+    -- =========================================================
+    -- 6) CLASSIFICA O DRIVER PRINCIPAL
+    -- =========================================================
+    SELECT
+        *,
+
+        CASE
+            WHEN ABS(impacto_volume) >= ABS(impacto_ticket) THEN 'volume'
+            ELSE 'ticket'
+        END AS principal_driver_caixa
+
+    FROM decomposicao
+),
+
+com_mediana AS (
+
+    -- =========================================================
+    -- 7) COMPARAÇÃO RELATIVA VS MERCADO
+    --    mediana do nível escritório no período
+    -- =========================================================
+    SELECT
+        *,
+        approx_percentile(eficiencia_real_atual, 0.5) OVER () AS mediana_eficiencia_atual,
+        approx_percentile(eficiencia_real_anterior, 0.5) OVER () AS mediana_eficiencia_anterior
+    FROM classificado
+),
+
+relativo AS (
+
+    -- =========================================================
+    -- 8) GAP PARA MEDIANA
+    -- =========================================================
+    SELECT
+        *,
+
+        (eficiencia_real_atual - mediana_eficiencia_atual) * 100 AS gap_mediana_atual,
+        (eficiencia_real_anterior - mediana_eficiencia_anterior) * 100 AS gap_mediana_anterior,
+
+        (
+            (eficiencia_real_atual - mediana_eficiencia_atual)
+            - (eficiencia_real_anterior - mediana_eficiencia_anterior)
+        ) * 100 AS delta_gap_mediana
+
+    FROM com_mediana
+),
+
+textos AS (
+
+    -- =========================================================
+    -- 9) BLOCOS DE TEXTO
+    --    Não monte tudo em um concat gigante logo de cara.
+    --    Primeiro monte os blocos.
+    -- =========================================================
+    SELECT
+        *,
+
+        -- ---------------------------------------------
+        -- 9.1 Headline
+        -- ---------------------------------------------
+        CONCAT(
+            'A eficiência do escritório ',
+            COALESCE(escritorio, 'N/A'),
+            ' ',
+            CASE
+                WHEN delta_eficiencia_real_pp < 0 THEN 'caiu '
+                WHEN delta_eficiencia_real_pp > 0 THEN 'subiu '
+                ELSE 'ficou estável '
+            END,
+            CAST(ROUND(ABS(delta_eficiencia_real_pp), 1) AS varchar),
+            ' pp no mês, de ',
+            CAST(ROUND(eficiencia_real_anterior * 100, 1) AS varchar),
+            '% para ',
+            CAST(ROUND(eficiencia_real_atual * 100, 1) AS varchar),
+            '%.'
+        ) AS txt_headline,
+
+        -- ---------------------------------------------
+        -- 9.2 Dias úteis
+        -- ---------------------------------------------
+        CASE
+            WHEN ABS(impacto_du_pp) >= ABS(delta_eficiencia_real_pp) * 0.6 THEN
+                CONCAT(
+                    'A maior parte da variação é explicada por calendário. Ajustando por dias úteis, a variação seria de ',
+                    CAST(ROUND(delta_eficiencia_ajustada_du_pp, 1) AS varchar),
+                    ' pp.'
+                )
+
+            WHEN ABS(impacto_du_pp) >= ABS(delta_eficiencia_real_pp) * 0.3 THEN
+                CONCAT(
+                    'Mesmo após ajuste por dias úteis, a variação permanece em ',
+                    CAST(ROUND(ABS(delta_eficiencia_ajustada_du_pp), 1) AS varchar),
+                    ' pp, indicando que o efeito de calendário explica apenas parte da variação.'
+                )
+
+            ELSE
+                'O efeito de dias úteis não é relevante.'
+        END AS txt_du,
+
+        -- ---------------------------------------------
+        -- 9.3 Driver
+        -- ---------------------------------------------
+        CASE
+            WHEN principal_driver_caixa = 'volume' THEN
+                CONCAT(
+                    'A principal pressão veio da redução de volume, que variou de ',
+                    CAST(ROUND(volume_anterior, 0) AS varchar),
+                    ' para ',
+                    CAST(ROUND(volume_atual, 0) AS varchar),
+                    '.'
+                )
+
+            WHEN principal_driver_caixa = 'ticket' THEN
+                CONCAT(
+                    'A principal pressão veio do ticket médio, que variou de ',
+                    CAST(ROUND(ticket_anterior, 2) AS varchar),
+                    ' para ',
+                    CAST(ROUND(ticket_atual, 2) AS varchar),
+                    '.'
+                )
+
+            ELSE
+                'A variação foi explicada por múltiplos fatores.'
+        END AS txt_driver,
+
+        -- ---------------------------------------------
+        -- 9.4 Relativo à mediana
+        -- ---------------------------------------------
+        CASE
+
+            WHEN eficiencia_real_atual < eficiencia_real_anterior
+             AND delta_gap_mediana < 0
+             AND gap_mediana_atual < 0 THEN
+                CONCAT(
+                    'Além da queda absoluta, o escritório também piorou em relação ao mercado, passando de ',
+                    CAST(ROUND(gap_mediana_anterior, 1) AS varchar),
+                    ' pp para ',
+                    CAST(ROUND(gap_mediana_atual, 1) AS varchar),
+                    ' pp em relação à mediana, ficando abaixo dela.'
+                )
+
+            WHEN eficiencia_real_atual < eficiencia_real_anterior
+             AND gap_mediana_atual >= 0 THEN
+                CONCAT(
+                    'Apesar da queda, o escritório permanece acima da mediana do mercado, com gap de ',
+                    CAST(ROUND(gap_mediana_atual, 1) AS varchar),
+                    ' pp.'
+                )
+
+            WHEN eficiencia_real_atual > eficiencia_real_anterior
+             AND delta_gap_mediana > 0
+             AND gap_mediana_atual > 0 THEN
+                CONCAT(
+                    'O escritório também melhorou sua posição relativa, passando de ',
+                    CAST(ROUND(gap_mediana_anterior, 1) AS varchar),
+                    ' pp para ',
+                    CAST(ROUND(gap_mediana_atual, 1) AS varchar),
+                    ' pp acima da mediana.'
+                )
+
+            WHEN eficiencia_real_atual > eficiencia_real_anterior
+             AND gap_mediana_atual < 0 THEN
+                CONCAT(
+                    'Apesar da melhora, o escritório ainda permanece abaixo da mediana, com gap de ',
+                    CAST(ROUND(gap_mediana_atual, 1) AS varchar),
+                    ' pp.'
+                )
+
+            ELSE
+                'O escritório manteve posição relativamente estável em relação à mediana.'
+        END AS txt_relativo_mediana,
+
+        -- ---------------------------------------------
+        -- 9.5 Diagnóstico
+        -- ---------------------------------------------
+        CASE
+
+            WHEN delta_eficiencia_real_pp < 0
+             AND ABS(impacto_du_pp) >= ABS(delta_eficiencia_real_pp) * 0.6 THEN
+                'A leitura é de piora predominantemente explicada por calendário.'
+
+            WHEN delta_eficiencia_real_pp < 0
+             AND principal_driver_caixa = 'volume' THEN
+                'A leitura é de deterioração de execução operacional.'
+
+            WHEN delta_eficiencia_real_pp < 0
+             AND principal_driver_caixa = 'ticket' THEN
+                'A leitura é de deterioração de qualidade de arrecadação.'
+
+            WHEN delta_eficiencia_real_pp > 0
+             AND ABS(impacto_du_pp) >= ABS(delta_eficiencia_real_pp) * 0.6 THEN
+                'A leitura é de melhora predominantemente explicada por calendário.'
+
+            WHEN delta_eficiencia_real_pp > 0
+             AND principal_driver_caixa = 'volume' THEN
+                'A leitura é de ganho de tração operacional.'
+
+            WHEN delta_eficiencia_real_pp > 0
+             AND principal_driver_caixa = 'ticket' THEN
+                'A leitura é de melhora de qualidade de arrecadação.'
+
+            ELSE
+                'A leitura é de estabilidade relativa, sem variação material.'
+        END AS txt_diagnostico
+
+    FROM relativo
+),
+
+final AS (
+
+    -- =========================================================
+    -- 10) TEXTO FINAL
+    -- =========================================================
+    SELECT
+        *,
+
+        CONCAT(
+            txt_headline,
+            ' ',
+            txt_driver
+        ) AS txt_insight_simples,
+
+        CONCAT(
+            txt_headline,
+            ' ',
+            txt_du,
+            ' ',
+            txt_driver,
+            ' ',
+            txt_relativo_mediana,
+            ' ',
+            txt_diagnostico
+        ) AS txt_insight_completo
+
+    FROM textos
+)
+
+SELECT *
+FROM final;
+```
+
+---
+
+# 🪜 Como entender esse SQL, passo a passo
+
+## `parametros`
+
+É onde você escolhe o mês atual e o mês anterior.
+
+## `base`
+
+É a sua base agregada no grão certo.  
+Aqui você decide o que uma linha representa.
+
+## `comparacao`
+
+É onde o SQL junta atual vs anterior.
+
+## `metricas`
+
+É onde nascem os cálculos principais:
+
+- eficiência
+    
+- caixa
+    
+- volume
+    
+- ticket
+    
+- ajuste por DU
+    
+
+## `decomposicao`
+
+Aqui você responde:
+
+- quanto caiu?
+    
+- quanto é DU?
+    
+- quanto é real?
+    
+
+## `classificado`
+
+Aqui você decide se o driver principal foi:
+
+- volume
+    
+- ticket
+    
+
+## `com_mediana` / `relativo`
+
+Aqui você sai da análise isolada e entra na análise relativa:
+
+- está acima ou abaixo da mediana?
+    
+- melhorou ou piorou vs mercado?
+    
+
+## `textos`
+
+Aqui o SQL vira narrativa.
+
+## `final`
+
+Aqui você monta duas versões:
+
+- simples
+    
+- completa
+    
+
+Esse padrão conversa diretamente com a ideia do seu framework de transformar lógica recorrente em produto analítico materializado, com narrativa pronta e ação clara.
+
+---
+
+# 🧾 Como ficam os textos na prática
+
+## Exemplo de `txt_insight_simples`
+
+> A eficiência do escritório Sul caiu 2,8 pp no mês, de 9,1% para 6,9%. A principal pressão veio da redução de volume, que variou de 12,3 mil para 9,8 mil.
+
+## Exemplo de `txt_insight_completo`
+
+> A eficiência do escritório Sul caiu 2,8 pp no mês, de 9,1% para 6,9%. Mesmo após ajuste por dias úteis, a variação permanece em 1,9 pp, indicando que o efeito de calendário explica apenas parte da variação. A principal pressão veio da redução de volume, que variou de 12,3 mil para 9,8 mil. Além da queda absoluta, o escritório também piorou em relação ao mercado, passando de 1,2 pp para -0,8 pp em relação à mediana, ficando abaixo dela. A leitura é de deterioração de execução operacional.
+
+---
+
+# 🧊 Como materializar isso no Athena
+
+Athena permite criar tabelas e views para consumo analítico, e recomenda particionamento e formatos colunares como Parquet/ORC para melhorar performance e custo.
+
+## Opção 1 — criar view
+
+Use quando quiser iterar mais rápido:
+
+```sql
+CREATE OR REPLACE VIEW mart.vw_cobranca_narrativa_escritorio AS
+<cole aqui o SQL acima>;
+```
+
+## Opção 2 — criar tabela Iceberg via CTAS
+
+Use quando quiser performance, histórico e consumo estável no QuickSight:
+
+```sql
+CREATE TABLE mart.cobranca_narrativa_escritorio
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    location = 's3://lakehouse/mart/cobranca_narrativa_escritorio/'
+) AS
+<cole aqui o SQL acima>;
+```
+
+Athena documenta CTAS como mecanismo nativo para criar tabelas a partir de query, e seu framework recomenda materializar a lógica recorrente em tabela Iceberg controlada por SQL.
+
+---
+
+# 📊 Como usar no QuickSight
+
+Athena integra com QuickSight para visualização, então a ideia é deixar o Athena “pensar” e o QuickSight “mostrar”.
+
+## Página 1 — resumo
+
+Use:
+
+- `txt_insight_simples`
+    
+- `delta_eficiencia_real_pp`
+    
+- `gap_mediana_atual`
+    
+
+## Página 2 — tabela explicativa
+
+Colunas:
+
+- `escritorio`
+    
+- `eficiencia_real_anterior`
+    
+- `eficiencia_real_atual`
+    
+- `delta_eficiencia_real_pp`
+    
+- `txt_insight_completo`
+    
+
+## Página 3 — ranking
+
+Ordene por:
+
+- pior delta
+    
+- maior gap negativo
+    
+- maior perda de caixa
+    
+
+## Página 4 — waterfall
+
+Use outra mart longa, se quiser detalhar:
+
+- eficiência anterior
+    
+- efeito DU
+    
+- efeito operacional
+    
+- eficiência atual
+    
+
+Seu checklist de QuickSight já pedia exatamente isso: headline, ranking, waterfall, diagnóstico, ação e drill-down funcional.
+
+---
+
+# 🎛️ Campo calculado simples no QuickSight
+
+Se você quiser alternar entre texto curto e texto completo:
+
+```text
+ifelse(
+  ${p_modo_texto} = 'simples',
+  {txt_insight_simples},
+  {txt_insight_completo}
+)
+```
+
+## Parâmetro recomendado
+
+`p_modo_texto`
+
+Valores:
+
+- `simples`
+    
+- `completo`
+    
+
+---
+
+# ✅ Checklist para saber se ficou bom
+
+Use este checklist antes de mostrar para alguém. Ele está totalmente alinhado ao seu playbook de cobrança.
+
+-  Declarei o grão explicitamente?
+    
+-  Estou comparando períodos corretos?
+    
+-  O delta está certo?
+    
+-  O papel de DU foi explicado?
+    
+-  O driver principal foi quantificado?
+    
+-  A comparação com a mediana está coerente?
+    
+-  O texto responde “o que aconteceu”?
+    
+-  O texto responde “por que aconteceu”?
+    
+-  O texto responde “o que isso significa”?
+    
+-  O painel mostra algo acionável?
+    
+
+---
+
+# ⚠️ Erros comuns
+
+## 1. Fazer tudo no QuickSight
+
+Errado. Regra de negócio e narrativa principal devem nascer no SQL, não no BI. O seu material é explícito sobre evitar regra de negócio no dashboard e sobre deixar Gold/Mart como fonte oficial.
+
+## 2. Misturar grãos
+
+Exemplo ruim:
+
+- uma parte da query em contrato
+    
+- outra em escritório
+    
+- outra em mês
+    
+
+Isso explode join e distorce média.
+
+## 3. Não mostrar antes → depois
+
+Falar “caiu por volume” é fraco.  
+Melhor:
+
+> “o volume caiu de X para Y”
+
+## 4. Diagnóstico fixo
+
+Nunca use sempre a mesma frase final.  
+Diagnóstico deve depender dos dados.
+
+---
+
+# 🧠 Regra final para decorar
+
+```text
+O que aconteceu?
+→ headline
+
+Por que aconteceu?
+→ DU + driver
+
+Como estamos vs mercado?
+→ mediana
+
+O que isso significa?
+→ diagnóstico
+
+Como mostrar?
+→ QuickSight
+```
+
+---
+
+# 🚀 Próximo passo recomendado
+
+Depois de implantar este template no nível escritório, faça 3 evoluções:
+
+## Evolução 1 — fila
+
+Troque o grão para:
+
+```text
+1 linha = 1 mês + 1 escritório + 1 fila
+```
+
+## Evolução 2 — faixa
+
+Troque o grão para:
+
+```text
+1 linha = 1 mês + 1 escritório + 1 faixa_atraso
+```
+
+## Evolução 3 — benchmark mais forte
+
+Adicione:
+
+- p25
+    
+- p50
+    
+- p75
+    
+- top quartil
+    
+- ranking
+    
+
+Isso te leva de comparação simples com mediana para benchmark executivo real.
+
+---
+
+```
+
+Se você quiser, no próximo passo eu posso transformar isso em uma **segunda nota complementar**, já no padrão Obsidian, com:
+
+- `01_base.sql`
+- `02_mart_narrativa.sql`
+- `03_campos_quicksight.md`
+- `04_checklist_validacao.md`
+
+e deixar tudo modular para colar no seu vault.
+```
