@@ -1,0 +1,451 @@
+---
+title: Framework — Materialized Views Simuladas com Athena + Iceberg + Step Functions + EventBridge  
+tags:
+- dominio/engenharia_dados
+- tipo/framework
+- tema/athena
+- tema/iceberg
+- tema/step_functions
+- tema/eventbridge
+- tema/materialized_view
+- tema/scd2  
+    status: oficial
+---
+
+# 🎯 Objetivo
+
+Construir um sistema que simule **materialized views no Athena**, com:
+
+- atualização incremental baseada em partições
+    
+- detecção de mudança via `$file_modified_time`
+    
+- histórico SCD2 (válido/inválido)
+    
+- execução contínua (quase tempo real)
+    
+- custo próximo de zero fora do horário de execução
+    
+- múltiplas “MVs falsas” rodando no mesmo orquestrador
+    
+
+---
+
+# 🧠 Modelo mental
+
+```text
+Tabela origem (particionada)
+↓
+Detecção de mudança por partição (metadado)
+↓
+Filtro de partições candidatas
+↓
+MERGE SCD2 na MV
+↓
+EventBridge + Step Functions (loop controlado)
+```
+
+---
+
+# 🧱 Estrutura da MV (Iceberg)
+
+## Grão
+
+```text
+atributo1
+atributo2
+atributo3
+particao_tabela_origem
+data_particao_execucao
+fl_valido (true/false)
+```
+
+## Particionamento
+
+```text
+PARTITIONED BY (fl_valido)
+```
+
+---
+
+# 🔄 Lógica de atualização
+
+## Regras
+
+```text
+Atualizar partição se:
+max($file_modified_time) > data_particao_execucao
+```
+
+```text
+Inserir partição se:
+não existe na MV
+```
+
+---
+
+# 🧠 Estratégia SCD2
+
+## Ao invés de UPDATE:
+
+```text
+INVALIDA o registro antigo
+INSERE um novo registro válido
+```
+
+---
+
+# 💻 SQL base (MERGE SCD2)
+
+```sql
+MERGE INTO mv_db.mv_falsa t
+USING (
+
+    WITH particoes_origem AS (
+        SELECT
+            cast(particao_tabela_origem as varchar) AS particao_tabela_origem,
+            max("$file_modified_time") AS data_max_atualizacao
+        FROM origem_db.tabela_origem
+        GROUP BY 1
+    ),
+
+    particoes_mv AS (
+        SELECT
+            particao_tabela_origem,
+            max(data_particao_execucao) AS data_ultima_execucao
+        FROM mv_db.mv_falsa
+        WHERE fl_valido = true
+        GROUP BY 1
+    ),
+
+    particoes_candidatas AS (
+        SELECT
+            o.particao_tabela_origem,
+            o.data_max_atualizacao,
+            coalesce(m.data_ultima_execucao, timestamp '1900-01-01') AS data_ultima_execucao
+        FROM particoes_origem o
+        LEFT JOIN particoes_mv m
+            ON o.particao_tabela_origem = m.particao_tabela_origem
+        WHERE o.data_max_atualizacao > coalesce(m.data_ultima_execucao, timestamp '1900-01-01')
+    ),
+
+    source AS (
+        SELECT
+            s.atributo1,
+            s.atributo2,
+            s.atributo3,
+            cast(s.particao_tabela_origem as varchar) AS particao_tabela_origem,
+            current_timestamp AS data_particao_execucao,
+            true AS fl_valido
+        FROM origem_db.tabela_origem s
+        INNER JOIN particoes_candidatas p
+            ON cast(s.particao_tabela_origem as varchar) = p.particao_tabela_origem
+    )
+
+    SELECT * FROM source
+
+) s
+
+ON t.particao_tabela_origem = s.particao_tabela_origem
+AND t.fl_valido = true
+
+WHEN MATCHED THEN
+    UPDATE SET
+        fl_valido = false
+
+WHEN NOT MATCHED THEN
+    INSERT (
+        atributo1,
+        atributo2,
+        atributo3,
+        particao_tabela_origem,
+        data_particao_execucao,
+        fl_valido
+    )
+    VALUES (
+        s.atributo1,
+        s.atributo2,
+        s.atributo3,
+        s.particao_tabela_origem,
+        s.data_particao_execucao,
+        s.fl_valido
+    );
+```
+
+---
+
+# ⚙️ Orquestração
+
+## EventBridge
+
+```text
+Dispara a cada 15 minutos
+```
+
+---
+
+## Step Functions
+
+```text
+[Start]
+   ↓
+[Task: Precheck SQL]
+   ↓
+[Task: Merge SQL]
+   ↓
+[End]
+```
+
+---
+
+# 🔍 Precheck (custo quase zero)
+
+## SQL
+
+```sql
+SELECT
+    CASE
+        WHEN date_format(current_timestamp, '%H:%i') IN ('00:00','06:00','12:00','18:00')
+        THEN true
+        ELSE false
+    END AS fl_executar;
+```
+
+---
+
+# 🚨 Insight crítico
+
+```text
+NUNCA coloque o controle de horário dentro do MERGE
+```
+
+Porque:
+
+- pode gerar scan mesmo quando não executa
+    
+- não há garantia de short-circuit no Athena
+    
+
+---
+
+# 💰 Estratégia de custo
+
+## Melhor abordagem
+
+```text
+Query 1 → decide executar (sem ler tabela)
+Query 2 → executa MERGE (só quando necessário)
+```
+
+---
+
+## Por quê?
+
+```text
+MERGE não usa query result reuse
+```
+
+Logo:
+
+```text
+cada execução custa scan real
+```
+
+---
+
+# ⚠️ Anti-pattern
+
+```text
+MERGE com WHERE current_timestamp dentro
+```
+
+👉 pode escanear tabela inteira mesmo sem resultado
+
+---
+
+# 🧠 Otimizações importantes
+
+## 1. Sempre filtrar partição
+
+```sql
+WHERE particao_tabela_origem = ...
+```
+
+---
+
+## 2. Descobrir partições antes
+
+```text
+primeiro decide quais partições mudaram
+depois lê a tabela grande
+```
+
+---
+
+## 3. Usar EXPLAIN
+
+```sql
+EXPLAIN ANALYZE
+```
+
+👉 validar se houve pruning real
+
+---
+
+# 🔁 Múltiplas MVs falsas
+
+## Estratégia
+
+```text
+1 Step Function
+N queries parametrizadas
+```
+
+---
+
+## Como diferenciar
+
+Via input:
+
+```json
+{
+  "mv_nome": "mv_pagamentos",
+  "horarios_execucao": ["00:00","12:00"]
+}
+```
+
+---
+
+## SQL usa o input
+
+```sql
+WHERE date_format(current_timestamp, '%H:%i') IN (${horarios_execucao})
+```
+
+---
+
+# 🧠 Alternativa
+
+## Vários EventBridge
+
+```text
+cada MV com seu próprio cron
+```
+
+---
+
+# 🆚 Qual escolher?
+
+## Uma Step Function só
+
+✔ mais centralizado  
+✔ mais reutilizável  
+❌ mais complexidade de controle
+
+---
+
+## Várias Step Functions
+
+✔ mais simples  
+✔ isolado por MV  
+❌ mais recursos
+
+---
+
+# 🔄 Looping no Step Functions
+
+## NÃO recomendado
+
+```text
+loop infinito com Wait
+```
+
+---
+
+## Melhor prática
+
+```text
+EventBridge faz o loop
+Step Functions executa uma vez
+```
+
+---
+
+# ⏱️ Wait — limites
+
+```text
+máximo técnico: 99.999.999 segundos (~3 anos)
+```
+
+Mas:
+
+```text
+Standard → máx 1 ano
+Express → máx ~5 min
+```
+
+---
+
+# 🎯 Regra de ouro
+
+```text
+Step Functions = execução
+EventBridge = tempo
+```
+
+---
+
+# 🧠 Arquitetura final
+
+```text
+EventBridge (15 min)
+↓
+Step Functions
+    ↓
+    Precheck (0 scan)
+    ↓
+    Merge SCD2 (scan otimizado por partição)
+↓
+Iceberg MV (histórico)
+```
+
+---
+
+# 🚀 Resultado
+
+Você constrói:
+
+- MV incremental
+    
+- histórico completo (SCD2)
+    
+- custo controlado
+    
+- atualização quase em tempo real
+    
+- arquitetura escalável
+    
+
+---
+
+# 🧩 Expansões possíveis
+
+- score de qualidade da MV
+    
+- auditoria de execução
+    
+- detecção de anomalias
+    
+- integração com QuickSight
+    
+- versionamento via Iceberg snapshots
+    
+
+---
+
+# 🧠 Frase final
+
+```text
+Materialized view no Athena não é feature.
+É arquitetura.
+```
