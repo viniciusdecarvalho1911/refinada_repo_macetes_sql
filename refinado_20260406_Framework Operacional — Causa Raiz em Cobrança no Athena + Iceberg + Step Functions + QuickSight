@@ -1,0 +1,1808 @@
+
+# 🎯 Objetivo
+
+Este playbook existe para ensinar, do zero e de forma operacional, como sair de uma pergunta de negócio como:
+
+> “Por que a eficiência caiu?”
+>  
+> “A piora veio de volume, ticket, mix, dias úteis ou composição?”
+>  
+> “Como transformar isso em SQL, tabela analítica, narrativa automática e dashboard no QuickSight?”
+
+e chegar até um sistema completo:
+
+```text
+PERGUNTA DE NEGÓCIO
+    ↓
+MODELO ANALÍTICO
+    ↓
+SQL COM DECOMPOSIÇÃO
+    ↓
+MART EM ICEBERG
+    ↓
+TEXTO PARAMETRIZADO
+    ↓
+QUICKSIGHT
+    ↓
+INSIGHT + AÇÃO
+````
+
+A ideia central é esta:
+
+> **Você não entrega só uma query. Você entrega um sistema de decisão.**
+
+---
+
+# 🧠 Ideia-mãe do framework
+
+No seu contexto, a forma correta de pensar é:
+
+```text
+GRÃO → MÉTRICA → DECOMPOSIÇÃO → MATERIALIZAÇÃO → NARRATIVA → DECISÃO
+```
+
+Ou, numa versão mais executiva:
+
+```text
+CLAREZA → INSIGHT → AÇÃO
+```
+
+O material de apoio converge muito para isso.
+
+Pelo lado de modelagem dimensional, Kimball insiste que o primeiro passo é escolher o processo de negócio, depois declarar o grão, depois identificar dimensões e fatos; além disso, a declaração de grão é um contrato de design, e fatos/dimensões precisam ser coerentes com esse grão.
+
+Pelo lado de arquitetura, o seu material consolida um fluxo oficial `bronze → silver_padronizado → silver_integrado → gold`, com naming padronizado e separação de responsabilidades entre estrutura, integração e verdade de negócio.
+
+Pelo lado de plataforma, Athena consulta direto no S3 com SQL, integra com Glue Data Catalog e com QuickSight para visualização. Já o Step Functions serve bem como orquestrador, inclusive com integração direta com Athena e uso de `startQueryExecution.sync`.
+
+---
+
+# 1. 🧱 O que você está realmente construindo
+
+Você não está construindo “um dashboard”.
+
+Você está construindo 4 coisas ao mesmo tempo:
+
+## 1.1 Um modelo mental
+
+A pergunta não é só “quanto caiu”.
+
+A pergunta passa a ser:
+
+```text
+quanto caiu?
+onde caiu?
+o que explica?
+quanto cada fator explica?
+o que é calendário?
+o que é piora real?
+qual recorte priorizar?
+qual ação sugerir?
+```
+
+## 1.2 Um modelo de dados
+
+Esse modelo precisa respeitar o que Kimball chama de processo + grão + dimensões + fatos.
+
+No seu caso, o processo pode ser algo como:
+
+```text
+pagamentos / eficiência de cobrança / performance de escritório
+```
+
+E o grão precisa ser declarado com brutal clareza.
+
+Exemplo:
+
+```text
+1 linha = 1 combinação de mês + recorte analítico + conjunto de métricas comparáveis
+```
+
+ou, numa mart mais detalhada:
+
+```text
+1 linha = 1 mês + 1 escritório + 1 fila + 1 faixa + 1 segmento + 1 produto + 1 tipo_carteira
+```
+
+## 1.3 Um motor de explicação
+
+O SQL não vai só calcular números.
+
+Ele vai devolver:
+
+- métrica atual
+    
+- métrica anterior
+    
+- delta
+    
+- decomposição
+    
+- driver principal
+    
+- relevância de DU
+    
+- texto pronto
+    
+- ação sugerida
+    
+
+## 1.4 Um produto analítico
+
+Seu próprio material bate nessa tecla: quando você materializa bem, você define a fonte oficial, reduz discussão, controla a lógica e transforma a query em produto.
+
+Frase para guardar:
+
+> **Query responde pergunta. Tabela materializada vira produto.**
+
+---
+
+# 2. 🏗️ Arquitetura alvo
+
+A arquitetura recomendada, alinhada com seus textos, é esta:
+
+```text
+tabela_bronze_fonte_*
+    ↓
+view_silver_padronizado_*
+    ↓
+view_silver_integrado_*
+    ↓
+iceberg_gold_fato_* / iceberg_gold_dimensao_*
+    ↓
+tabela_gold_agregado_* (quando fizer sentido)
+    ↓
+view_gold_mart_* ou iceberg_mart_*
+    ↓
+QuickSight
+```
+
+O seu padrão oficial de naming também reforça isso:
+
+```text
+<materializacao>_<camada>_<tipo_logico>_<dominio>_<entidade>[_<contexto>]
+```
+
+Exemplos oficiais do seu material:
+
+```text
+tabela_bronze_fonte_sap_boletos
+view_silver_padronizado_cobranca_boletos
+view_silver_integrado_cobranca_pagamentos_conciliados
+iceberg_gold_fato_pagadoria
+view_gold_mart_cobranca_pagadoria_quicksight
+```
+
+---
+
+# 3. 📌 O que cada camada faz neste caso
+
+# 3.1 Bronze
+
+Camada de entrada.
+
+Aqui mora o dado mais cru, próximo da origem.
+
+Não deveria conter regra de negócio. O papel dela é preservar a origem. Isso está em linha com o seu padrão de arquitetura.
+
+Exemplo:
+
+```text
+tabela_bronze_fonte_sap_boletos
+tabela_bronze_fonte_legado_debito_conta
+tabela_bronze_fonte_backoffice_fluxo_apartado
+```
+
+## 3.2 Silver padronizado
+
+Aqui nasce o contrato técnico do dado.
+
+Segundo seus templates oficiais, essa camada deve:
+
+- expor partição física com `p_*`
+    
+- criar colunas temporais canônicas
+    
+- padronizar chaves
+    
+- ajustar tipos
+    
+- incluir colunas técnicas
+    
+- gerar hashes úteis
+    
+- preservar pruning usando a partição física original
+    
+
+Ou seja, aqui você responde:
+
+```text
+“como ler a fonte sem quebrar?”
+```
+
+Não é aqui que você decide verdade de negócio. O próprio texto de heurísticas é explícito: regra de estrutura fica no silver padronizado; regra de negócio não deveria ficar aqui.
+
+## 3.3 Silver integrado
+
+Aqui você transforma dado em informação reutilizável.
+
+Segundo seu material, é a camada de:
+
+- joins
+    
+- enriquecimento
+    
+- deduplicação
+    
+- fallback entre fontes
+    
+- elegibilidade técnica
+    
+- consolidação entre fontes padronizadas
+    
+
+Pergunta respondida aqui:
+
+```text
+“como unir os dados?”
+“qual fonte ganha?”
+“como consolidar tecnicamente?”
+```
+
+## 3.4 Gold
+
+Aqui mora a verdade oficial de negócio.
+
+O texto de heurísticas fala isso de forma muito clara: se responde “o que é verdade para o negócio?” ou “qual número será defendido?”, isso é Gold.
+
+É aqui que devem nascer coisas como:
+
+- `vl_caixa`
+    
+- `vl_regul`
+    
+- `eficiencia`
+    
+- `% atingimento`
+    
+- classificação oficial
+    
+- status gerencial
+    
+
+## 3.5 Mart
+
+Aqui você produz consumo final.
+
+No seu stack, a recomendação recorrente é:
+
+- Gold em Iceberg para tabela oficial por domínio
+    
+- Mart em Iceberg para consumo executivo / QuickSight
+    
+- Step Functions só orquestra
+    
+- Athena concentra a lógica SQL e a materialização
+    
+
+---
+
+# 4. 🧮 O raciocínio analítico que vai guiar tudo
+
+Seu playbook de causa raiz resume bem a lógica:
+
+```text
+SEPARAR → MEDIR → COMPARAR → SOMAR → EXPLICAR
+```
+
+e também:
+
+```text
+GRÃO → QUEBRA → CAUSA
+```
+
+Isso significa que uma análise forte de cobrança precisa, no mínimo, passar por estas perguntas:
+
+## 4.1 O que aconteceu?
+
+Exemplo:
+
+```text
+Eficiência caiu 1,7 pp no mês.
+```
+
+## 4.2 Onde está concentrado?
+
+Exemplo:
+
+```text
+A piora está concentrada no escritório X, fila Y, faixa Z.
+```
+
+## 4.3 O que explica?
+
+Exemplo:
+
+```text
+A maior parte veio de queda de volume, não de ticket.
+```
+
+## 4.4 Quanto cada fator explica?
+
+Exemplo:
+
+```text
+0,5 pp vêm de ressegmentação
+1,2 pp vêm de piora intra-segmento
+```
+
+## 4.5 O efeito calendário é relevante?
+
+Exemplo:
+
+```text
+Parte da queda se explica por dias úteis, mas sobra componente real.
+```
+
+## 4.6 O que fazer?
+
+Exemplo:
+
+```text
+Revisar mix de carteira, estratégia operacional e alocação no recorte crítico.
+```
+
+---
+
+# 5. 🧱 O desenho da mart principal
+
+A mart principal precisa ser o “motor analítico”.
+
+Ela deve conter tanto número quanto explicação.
+
+Nome sugerido:
+
+```text
+iceberg_mart_cobranca_causa_raiz_mes
+```
+
+ou, se quiser manter o padrão que você já vinha construindo:
+
+```text
+mart.cobranca_causa_raiz_drill_mes_v2
+```
+
+## 5.1 Grão recomendado
+
+O grão mais útil para este problema é:
+
+```text
+1 linha = 1 anomes_atual
+       + 1 anomes_anterior
+       + 1 nivel_analise
+       + 1 combinação de recortes
+```
+
+Recortes possíveis:
+
+- escritório
+    
+- fila
+    
+- faixa_atraso
+    
+- cluster
+    
+- segmento
+    
+- produto
+    
+- tipo_carteira
+    
+
+## 5.2 Colunas mínimas
+
+### Chaves/contexto
+
+```text
+nivel_analise
+escritorio
+fila
+faixa_atraso
+cluster
+segmento
+produto
+tipo_carteira
+anomes_atual
+anomes_anterior
+```
+
+### Métricas base
+
+```text
+carteira_atual
+carteira_anterior
+caixa_atual
+caixa_anterior
+volume_atual
+volume_anterior
+ticket_atual
+ticket_anterior
+du_atual
+du_anterior
+```
+
+### Derivadas
+
+```text
+eficiencia_real_atual
+eficiencia_real_anterior
+eficiencia_ajustada_du_atual
+delta_eficiencia_real_pp
+delta_eficiencia_ajustada_du_pp
+impacto_du_pp
+delta_caixa
+delta_volume
+delta_ticket
+impacto_volume
+impacto_ticket
+principal_driver_caixa
+relevancia_du
+```
+
+### Priorização
+
+```text
+ranking_piora_nivel
+ranking_impacto_caixa_nivel
+fl_top_causador
+fl_top_causador_caixa
+```
+
+### Narrativa
+
+```text
+txt_contexto
+txt_driver
+txt_insight_exec
+txt_insight_simples
+txt_diagnostico
+next_best_action
+```
+
+Seu material mais recente vai exatamente nessa linha ao sugerir `txt_diagnostico`, `next_best_action`, ranking, headline e diagnóstico plugáveis no QuickSight.
+
+---
+
+# 6. 🔍 As decomposições principais que a mart deve suportar
+
+# 6.1 Volume vs ticket
+
+Esse é o primeiro bloco clássico.
+
+Modelo conceitual:
+
+```text
+CAIXA = VOLUME × TICKET
+```
+
+Decomposição:
+
+```text
+impacto_volume = (volume_atual - volume_anterior) × ticket_anterior
+impacto_ticket = (ticket_atual - ticket_anterior) × volume_atual
+```
+
+Essa decomposição casa com sua própria nota-base e é excelente para iniciar causa raiz.
+
+## Quando usar
+
+Use quando o problema for:
+
+- caixa
+    
+- recebimento
+    
+- arrecadação
+    
+- eficiência baseada em caixa/carteira
+    
+
+## Leitura executiva
+
+Exemplo:
+
+> A queda de caixa foi puxada principalmente pela redução de volume, parcialmente compensada por melhora de ticket, resultando em piora líquida no período.
+
+---
+
+# 6.2 Efeito dias úteis
+
+Esse é o segundo bloco essencial.
+
+Modelo conceitual:
+
+```text
+eficiencia = caixa / carteira
+```
+
+Ajuste simples por DU:
+
+```text
+caixa_ajustada_du = caixa_atual × (du_anterior / du_atual)
+eficiencia_ajustada_du_atual = caixa_ajustada_du / carteira_atual
+impacto_du_pp = delta_eficiencia_real_pp - delta_eficiencia_ajustada_du_pp
+```
+
+## Quando usar
+
+Use quando comparação de meses possa ser contaminada por calendário.
+
+## Leitura executiva
+
+Seu playbook já sugere a frase ideal:
+
+> Eficiência caiu X pp. Ajustando por dias úteis, a variação seria Y pp. Parte relevante da piora é explicada por calendário, mas persiste componente real associado ao driver principal.
+
+---
+
+# 6.3 Efeito mix / composição
+
+Esse bloco entra quando a distribuição entre segmentos mudou.
+
+Exemplo:
+
+- mais peso em faixas ruins
+    
+- mais peso em determinado segmento
+    
+- mudança de mix de produto
+    
+- mudança de tipo de carteira
+    
+
+Uma aproximação prática é:
+
+```text
+impacto_mix ≈ (share_atual - share_anterior) × métrica_base_anterior
+```
+
+Pode ser share de carteira, share de volume ou share de caixa, dependendo do caso.
+
+## Leitura executiva
+
+Exemplo:
+
+> Parte da piora decorre de ressegmentação, que aumentou o peso de grupos estruturalmente piores, enquanto o restante veio de piora real dentro dos próprios grupos.
+
+---
+
+# 6.4 Performance intra-bucket
+
+Depois de separar composição, você separa o comportamento dentro do bucket.
+
+Exemplo em segmento:
+
+```text
+impacto_volume_intra = (volume_atual - volume_anterior) × ticket_anterior
+impacto_ticket_intra = (ticket_atual - ticket_anterior) × volume_atual
+```
+
+## Leitura executiva
+
+Exemplo:
+
+> O segmento X piorou 1,7 pp. Cerca de 0,5 pp vêm de ressegmentação e 1,2 pp de piora intra-segmento, principalmente via volume.
+
+Esse é exatamente o tipo de frase que você queria produzir.
+
+---
+
+# 7. 🧠 Regra de ouro de modelagem: grão antes de tudo
+
+Esse ponto é crítico.
+
+Kimball trata a declaração do grão como a etapa pivotal do design dimensional, um contrato vinculante; fatos e dimensões precisam respeitar esse contrato, e grãos diferentes não devem ser misturados na mesma fact table.
+
+Seu SQL só será confiável se você declarar o grão com antecedência.
+
+## Regra prática
+
+Antes de escrever qualquer query, escreva isso em texto puro:
+
+```text
+Grão desta consulta:
+1 linha = ...
+```
+
+Exemplos:
+
+```text
+1 linha = 1 contrato + produto + dia
+1 linha = 1 mês + escritório
+1 linha = 1 mês + escritório + fila + faixa
+```
+
+Se você não fizer isso, o risco é exatamente o que seu próprio playbook alerta:
+
+```text
+GRÃO → JOIN → EXPLOSÃO
+```
+
+---
+
+# 8. 🧱 Framework completo de implementação
+
+Agora vem o passo a passo operacional.
+
+---
+
+# ETAPA A — Definir a pergunta de negócio
+
+Escreva primeiro:
+
+```text
+Qual métrica quero explicar?
+Qual período comparo?
+Qual decisão depende disso?
+```
+
+Exemplo:
+
+```text
+Quero explicar a queda de eficiência de cobrança de 202603 vs 202602,
+separando efeito calendário, volume, ticket e composição,
+com drill por escritório, fila, faixa, segmento e produto.
+```
+
+---
+
+# ETAPA B — Definir o processo e o grão
+
+Com base em Kimball:
+
+1. escolher processo
+    
+2. declarar grão
+    
+3. identificar dimensões
+    
+4. identificar fatos
+    
+
+Exemplo:
+
+```text
+Processo: performance mensal de cobrança
+Grão: 1 linha por mês + recorte analítico
+Dimensões: escritório, fila, faixa, segmento, produto, tipo_carteira
+Fatos: caixa, carteira, volume, ticket, dias úteis
+```
+
+---
+
+# ETAPA C — Padronizar fontes no silver_padronizado
+
+Aqui você cria views do tipo:
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_boletos AS
+SELECT
+    dt_ref AS p_dt_ref,
+    cast(substr(cast(dt_ref as varchar), 1, 6) as integer) AS mes_ref_yyyymm,
+    dt_ref AS dt_ref_yyyymmdd,
+    cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as date) AS dt_ref_date,
+    cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as timestamp) AS ts_ref,
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+    boleto,
+    vl_pago,
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao
+FROM workspace_db.tabela_bronze_fonte_sap_boletos;
+```
+
+Esse padrão está alinhado com seus templates oficiais de `view_silver_padronizado`, incluindo partição física exposta, colunas temporais canônicas e hashes.
+
+---
+
+# ETAPA D — Consolidar no silver_integrado
+
+Aqui você junta fontes, resolve conflitos e cria informação reutilizável.
+
+Pergunta respondida:
+
+```text
+como unir?
+qual fonte ganha?
+como deduplicar?
+```
+
+Exemplo estrutural:
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados AS
+WITH boletos AS (
+    SELECT * FROM workspace_db.view_silver_padronizado_cobranca_boletos
+),
+debito AS (
+    SELECT * FROM workspace_db.view_silver_padronizado_cobranca_debito_conta
+),
+backoffice AS (
+    SELECT * FROM workspace_db.view_silver_padronizado_cobranca_fluxo_apartado
+),
+empilhado AS (
+    SELECT * FROM boletos
+    UNION ALL
+    SELECT * FROM debito
+    UNION ALL
+    SELECT * FROM backoffice
+),
+priorizado AS (
+    SELECT
+        *,
+        row_number() OVER (
+            PARTITION BY contrato, produto, dt_ref_yyyymmdd, vl_pago
+            ORDER BY case
+                when origem_pagamento = 'BOLETO' then 1
+                when origem_pagamento = 'DEBITO_CONTA' then 2
+                else 3
+            end
+        ) AS rn
+    FROM empilhado
+)
+SELECT *
+FROM priorizado
+WHERE rn = 1;
+```
+
+O seu material de pagamentos consolidados vai exatamente nessa direção de múltiplas fontes → padronizado → integrado → fato → agregado → mart.
+
+---
+
+# ETAPA E — Criar a base mensal analítica
+
+Agora você produz a base que servirá de insumo para a mart de causa raiz.
+
+Exemplo conceitual:
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_base_analise_mes AS
+SELECT
+    mes_ref_yyyymm AS anomes,
+    escritorio,
+    fila,
+    faixa_atraso,
+    cluster,
+    segmento,
+    produto,
+    tipo_carteira,
+    SUM(vl_carteira) AS vl_carteira,
+    SUM(vl_pagamento) AS vl_pagamento,
+    COUNT(*) AS qt_eventos,
+    MAX(qt_dias_uteis) AS qt_dias_uteis
+FROM workspace_db.alguma_base_consolidada
+GROUP BY 1,2,3,4,5,6,7,8;
+```
+
+---
+
+# ETAPA F — Criar a mart principal com decomposição e texto
+
+A ideia aqui é ter **número + narrativa** no mesmo SQL.
+
+## Estrutura conceitual da query
+
+```sql
+WITH parametros AS (
+    SELECT
+        202603 AS anomes_atual,
+        202602 AS anomes_anterior
+),
+
+base AS (
+    SELECT
+        anomes,
+        coalesce(cast(escritorio as varchar), 'TODOS')      AS escritorio,
+        coalesce(cast(fila as varchar), 'TODAS')            AS fila,
+        coalesce(cast(faixa_atraso as varchar), 'TODAS')    AS faixa_atraso,
+        coalesce(cast(cluster as varchar), 'TODOS')         AS cluster,
+        coalesce(cast(segmento as varchar), 'TODOS')        AS segmento,
+        coalesce(cast(produto as varchar), 'TODOS')         AS produto,
+        coalesce(cast(tipo_carteira as varchar), 'TODAS')   AS tipo_carteira,
+        sum(vl_carteira) AS carteira,
+        sum(vl_pagamento) AS caixa,
+        count(*) AS volume,
+        sum(vl_pagamento) / nullif(count(*),0) AS ticket_medio,
+        max(qt_dias_uteis) AS du
+    FROM workspace_db.view_gold_base_analise_mes
+    WHERE anomes IN (202602, 202603)
+    GROUP BY 1,2,3,4,5,6,7,8
+),
+
+nivel_escritorio AS (
+    SELECT
+        anomes,
+        'ESCRITORIO' AS nivel_analise,
+        escritorio,
+        'TODAS' AS fila,
+        'TODAS' AS faixa_atraso,
+        'TODOS' AS cluster,
+        'TODOS' AS segmento,
+        'TODOS' AS produto,
+        'TODAS' AS tipo_carteira,
+        sum(carteira) AS carteira,
+        sum(caixa) AS caixa,
+        sum(volume) AS volume,
+        sum(caixa) / nullif(sum(volume),0) AS ticket_medio,
+        max(du) AS du
+    FROM base
+    GROUP BY 1,2,3,4,5,6,7,8,9
+),
+
+nivel_escritorio_fila_faixa AS (
+    SELECT
+        anomes,
+        'ESCRITORIO_FILA_FAIXA' AS nivel_analise,
+        escritorio,
+        fila,
+        faixa_atraso,
+        'TODOS' AS cluster,
+        'TODOS' AS segmento,
+        'TODOS' AS produto,
+        'TODAS' AS tipo_carteira,
+        sum(carteira) AS carteira,
+        sum(caixa) AS caixa,
+        sum(volume) AS volume,
+        sum(caixa) / nullif(sum(volume),0) AS ticket_medio,
+        max(du) AS du
+    FROM base
+    GROUP BY 1,2,3,4,5,6,7,8,9
+),
+
+empilhado AS (
+    SELECT * FROM nivel_escritorio
+    UNION ALL
+    SELECT * FROM nivel_escritorio_fila_faixa
+),
+
+comparacao AS (
+    SELECT
+        a.nivel_analise,
+        a.escritorio,
+        a.fila,
+        a.faixa_atraso,
+        a.cluster,
+        a.segmento,
+        a.produto,
+        a.tipo_carteira,
+        a.anomes AS anomes_atual,
+        b.anomes AS anomes_anterior,
+        a.carteira AS carteira_atual,
+        b.carteira AS carteira_anterior,
+        a.caixa AS caixa_atual,
+        b.caixa AS caixa_anterior,
+        a.volume AS volume_atual,
+        b.volume AS volume_anterior,
+        a.ticket_medio AS ticket_atual,
+        b.ticket_medio AS ticket_anterior,
+        a.du AS du_atual,
+        b.du AS du_anterior
+    FROM empilhado a
+    LEFT JOIN empilhado b
+      ON a.nivel_analise = b.nivel_analise
+     AND a.escritorio = b.escritorio
+     AND a.fila = b.fila
+     AND a.faixa_atraso = b.faixa_atraso
+     AND a.cluster = b.cluster
+     AND a.segmento = b.segmento
+     AND a.produto = b.produto
+     AND a.tipo_carteira = b.tipo_carteira
+     AND b.anomes = 202602
+    WHERE a.anomes = 202603
+),
+
+metricas AS (
+    SELECT
+        *,
+        caixa_atual / nullif(carteira_atual,0) AS eficiencia_real_atual,
+        caixa_anterior / nullif(carteira_anterior,0) AS eficiencia_real_anterior,
+        (caixa_atual * (cast(du_anterior as double) / nullif(cast(du_atual as double),0)))
+            / nullif(carteira_atual,0) AS eficiencia_ajustada_du_atual
+    FROM comparacao
+),
+
+decomposicao AS (
+    SELECT
+        *,
+        (eficiencia_real_atual - eficiencia_real_anterior) * 100 AS delta_eficiencia_real_pp,
+        (eficiencia_ajustada_du_atual - eficiencia_real_anterior) * 100 AS delta_eficiencia_ajustada_du_pp,
+        ((eficiencia_real_atual - eficiencia_real_anterior)
+          - (eficiencia_ajustada_du_atual - eficiencia_real_anterior)) * 100 AS impacto_du_pp,
+        caixa_atual - caixa_anterior AS delta_caixa,
+        (volume_atual - volume_anterior) * ticket_anterior AS impacto_volume,
+        (ticket_atual - ticket_anterior) * volume_atual AS impacto_ticket
+    FROM metricas
+),
+
+classificado AS (
+    SELECT
+        *,
+        CASE
+            WHEN abs(impacto_volume) >= abs(impacto_ticket) THEN 'volume'
+            ELSE 'ticket'
+        END AS principal_driver_caixa,
+        CASE
+            WHEN abs(impacto_du_pp) >= 0.5 THEN 'relevante'
+            ELSE 'nao_relevante'
+        END AS relevancia_du
+    FROM decomposicao
+),
+
+final AS (
+    SELECT
+        *,
+        concat(
+            'Eficiência ',
+            CASE
+                WHEN delta_eficiencia_real_pp < 0 THEN 'caiu '
+                WHEN delta_eficiencia_real_pp > 0 THEN 'subiu '
+                ELSE 'ficou estável '
+            END,
+            cast(round(abs(delta_eficiencia_real_pp),1) AS varchar),
+            ' pp. Ajustando por dias úteis, a variação seria de ',
+            cast(round(delta_eficiencia_ajustada_du_pp,1) AS varchar),
+            ' pp. ',
+            CASE
+                WHEN relevancia_du = 'relevante'
+                    THEN concat('Parte relevante da variação é explicada por DUs (',
+                                cast(round(abs(impacto_du_pp),1) AS varchar),
+                                ' pp). ')
+                ELSE 'O efeito de DUs não é relevante. '
+            END,
+            'Principal driver do caixa: ',
+            CASE
+                WHEN principal_driver_caixa = 'volume' AND impacto_volume < 0 THEN 'queda de volume'
+                WHEN principal_driver_caixa = 'volume' AND impacto_volume > 0 THEN 'alta de volume'
+                WHEN principal_driver_caixa = 'ticket' AND impacto_ticket < 0 THEN 'queda de ticket médio'
+                WHEN principal_driver_caixa = 'ticket' AND impacto_ticket > 0 THEN 'alta de ticket médio'
+                ELSE 'variação mista'
+            END,
+            '.'
+        ) AS txt_insight_exec
+    FROM classificado
+)
+
+SELECT * FROM final;
+```
+
+## O que esse SQL já resolve
+
+Ele já entrega:
+
+- comparação atual vs anterior
+    
+- eficiência real
+    
+- eficiência ajustada por DU
+    
+- impacto de DU
+    
+- impacto volume
+    
+- impacto ticket
+    
+- driver principal
+    
+- narrativa textual pronta
+    
+
+Esse é o coração do seu objetivo: **ter no mesmo SQL o texto descritivo parametrizado de explicação**.
+
+---
+
+# 9. 🧠 Como construir ótimos parágrafos analíticos direto no SQL
+
+A melhor forma é separar a narrativa em peças menores.
+
+Não monte tudo num `concat` gigante de primeira.
+
+Faça assim:
+
+## 9.1 Crie blocos textuais
+
+```sql
+CASE
+    WHEN delta_eficiencia_real_pp < 0 THEN 'piorou'
+    WHEN delta_eficiencia_real_pp > 0 THEN 'melhorou'
+    ELSE 'ficou estável'
+END AS txt_direcao_total
+```
+
+```sql
+CASE
+    WHEN impacto_intra_eff_pp < 0 THEN 'piora intra-segmento'
+    WHEN impacto_intra_eff_pp > 0 THEN 'melhora intra-segmento'
+    ELSE 'estabilidade intra-segmento'
+END AS txt_direcao_intra
+```
+
+```sql
+CASE
+    WHEN principal_driver_intra = 'volume' THEN 'volume'
+    WHEN principal_driver_intra = 'ticket' THEN 'ticket médio'
+    ELSE 'fatores mistos'
+END AS txt_driver
+```
+
+## 9.2 Monte a frase final a partir deles
+
+```sql
+concat(
+    'O segmento ', segmento, ' ',
+    txt_direcao_total, ' ',
+    cast(round(abs(delta_eficiencia_pp),1) as varchar),
+    ' pp. Cerca de ',
+    cast(round(abs(impacto_ress_eff_pp),1) as varchar),
+    ' pp vêm de ressegmentação e ',
+    cast(round(abs(impacto_intra_eff_pp),1) as varchar),
+    ' pp de ', txt_direcao_intra,
+    ', principalmente via ', txt_driver, '.'
+) AS txt_insight_segmento
+```
+
+## 9.3 Exemplos de bons parágrafos
+
+### Exemplo 1 — volume
+
+> A queda de caixa foi puxada principalmente pela redução de volume, parcialmente compensada por melhora de ticket, resultando em piora líquida no período.
+
+### Exemplo 2 — DU
+
+> Eficiência caiu 1,7 pp. Ajustando por dias úteis, a variação seria de 1,1 pp. Parte da piora é explicada por calendário, mas persiste componente real relevante.
+
+### Exemplo 3 — concentração
+
+> A piora está concentrada no escritório X, fila Y, faixa Z, indicando foco prioritário nesse recorte.
+
+### Exemplo 4 — conclusão executiva completa
+
+> Eficiência caiu 1,7 pp no período. A deterioração foi explicada principalmente por redução de caixa, com maior peso de volume que de ticket. A piora ficou concentrada no escritório X, fila Y, faixa Z. Ajustando por dias úteis, parte da variação se reduz, mas persiste piora real. Recomenda-se revisar estratégia, mix de carteira e atuação operacional nesse recorte.
+
+---
+
+# 10. 📊 Waterfall: a mart que mostra a explicação
+
+Seu material é muito feliz nessa heurística:
+
+> **mart principal pensa; mart waterfall mostra.**
+
+## Estrutura recomendada
+
+Nome:
+
+```text
+mart.cobranca_waterfall_drill_mes
+```
+
+Colunas:
+
+```text
+nivel_analise
+escritorio
+fila
+faixa_atraso
+cluster
+segmento
+produto
+tipo_carteira
+anomes_atual
+anomes_anterior
+tipo_waterfall
+ordem
+etapa
+valor
+grupo_driver
+```
+
+## Dois waterfalls principais
+
+### Caixa
+
+```text
+Caixa anterior
+→ Impacto volume
+→ Impacto ticket
+→ Caixa atual
+```
+
+### Eficiência
+
+```text
+Eficiência anterior
+→ Efeito dias úteis
+→ Efeito operacional
+→ Eficiência atual
+```
+
+## SQL conceitual
+
+```sql
+WITH base AS (
+    SELECT * FROM mart.cobranca_causa_raiz_drill_mes_v2
+),
+
+waterfall_eficiencia AS (
+    SELECT ..., 'EFICIENCIA' AS tipo_waterfall, 1 AS ordem, 'Eficiência anterior' AS etapa, eficiencia_real_anterior * 100 AS valor, 'BASE' AS grupo_driver FROM base
+    UNION ALL
+    SELECT ..., 'EFICIENCIA', 2, 'Efeito dias úteis', impacto_du_pp, 'DIAS_UTEIS' FROM base
+    UNION ALL
+    SELECT ..., 'EFICIENCIA', 3, 'Efeito operacional', (delta_eficiencia_real_pp - impacto_du_pp), 'OPERACIONAL' FROM base
+    UNION ALL
+    SELECT ..., 'EFICIENCIA', 4, 'Eficiência atual', eficiencia_real_atual * 100, 'BASE' FROM base
+),
+
+waterfall_caixa AS (
+    SELECT ..., 'CAIXA' AS tipo_waterfall, 1 AS ordem, 'Caixa anterior' AS etapa, caixa_anterior AS valor, 'BASE' AS grupo_driver FROM base
+    UNION ALL
+    SELECT ..., 'CAIXA', 2, 'Impacto volume', impacto_volume, 'VOLUME' FROM base
+    UNION ALL
+    SELECT ..., 'CAIXA', 3, 'Impacto ticket', impacto_ticket, 'TICKET' FROM base
+    UNION ALL
+    SELECT ..., 'CAIXA', 4, 'Caixa atual', caixa_atual, 'BASE' FROM base
+)
+
+SELECT * FROM waterfall_eficiencia
+UNION ALL
+SELECT * FROM waterfall_caixa;
+```
+
+---
+
+# 11. 🧊 Materialização no Athena com Iceberg
+
+No seu ambiente, isso é peça central.
+
+Seu material deixa explícito:
+
+- Gold em Iceberg para a tabela oficial
+    
+- Mart em Iceberg para consumo executivo
+    
+- materialização via SQL
+    
+- Step Functions orquestrando
+    
+- nada de depender de Glue materialized view
+    
+
+Além disso, Athena suporta criação de tabelas Iceberg por CTAS e operações como `MERGE INTO`; para o seu material, `MERGE INTO` é transacional apenas para Iceberg no engine version 3.
+
+## 11.1 CTAS inicial
+
+```sql
+CREATE TABLE mart_db.cobranca_causa_raiz_drill_mes_v2
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    location = 's3://lakehouse/mart/cobranca_causa_raiz_drill_mes_v2/'
+) AS
+SELECT ...
+```
+
+## 11.2 MERGE incremental
+
+```sql
+MERGE INTO mart_db.cobranca_causa_raiz_drill_mes_v2 t
+USING mart_db.stg_cobranca_causa_raiz_drill_mes_v2 s
+ON  t.nivel_analise  = s.nivel_analise
+AND t.escritorio     = s.escritorio
+AND t.fila           = s.fila
+AND t.faixa_atraso   = s.faixa_atraso
+AND t.cluster        = s.cluster
+AND t.segmento       = s.segmento
+AND t.produto        = s.produto
+AND t.tipo_carteira  = s.tipo_carteira
+AND t.anomes_atual   = s.anomes_atual
+WHEN MATCHED THEN UPDATE SET
+    delta_eficiencia_real_pp = s.delta_eficiencia_real_pp,
+    txt_insight_exec = s.txt_insight_exec
+WHEN NOT MATCHED THEN INSERT (...)
+VALUES (...);
+```
+
+## Quando usar CTAS vs MERGE
+
+Use CTAS para bootstrap e criação inicial. O seu material inclusive recomenda CTAS como ótima forma de criar e carregar rápido em Iceberg.
+
+Use MERGE quando houver:
+
+- correção tardia
+    
+- reprocessamento por chave
+    
+- atualização pontual
+    
+- SCD2
+    
+- fatos com late-arriving data
+    
+
+---
+
+# 12. ⚙️ Orquestração no Step Functions
+
+A melhor recomendação dos seus próprios textos é esta:
+
+> **Step Functions deve ser burro e estável. Athena pensa; Step Functions orquestra.**
+
+## Fluxo recomendado
+
+```text
+1. Registrar início
+2. Calcular assinatura da origem
+3. Ler estado anterior
+4. Decidir em SQL se executa
+5. Se sim:
+   5.1 materializar staging
+   5.2 aplicar MERGE / DELETE+INSERT
+   5.3 atualizar estado
+6. Registrar fim
+```
+
+## Por que isso é bom
+
+Porque o decisório fica no SQL, não hardcoded na máquina de estados. Isso conversa muito com a sua preferência operacional e com os snippets do framework que você já vinha consolidando.
+
+## Skeleton conceitual
+
+```json
+{
+  "StartAt": "CalcularDecisao",
+  "States": {
+    "CalcularDecisao": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "QueryString.$": "$.sql_decisao",
+        "WorkGroup.$": "$.workgroup",
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.output_location"
+        },
+        "QueryExecutionContext": {
+          "Database": "ctrl_db"
+        }
+      },
+      "Next": "LerResultadoDecisao"
+    },
+    "LerResultadoDecisao": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:getQueryResults",
+      "Parameters": {
+        "QueryExecutionId.$": "$.QueryExecution.QueryExecutionId"
+      },
+      "Next": "ChoiceDeveExecutar"
+    },
+    "ChoiceDeveExecutar": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Rows[1].Data[6].VarCharValue",
+          "StringEquals": "true",
+          "Next": "MaterializarDestino"
+        }
+      ],
+      "Default": "FimSemExecucao"
+    },
+    "MaterializarDestino": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "QueryString.$": "$.sql_materializacao",
+        "WorkGroup.$": "$.workgroup",
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.output_location"
+        }
+      },
+      "Next": "RegistrarFim"
+    },
+    "FimSemExecucao": {
+      "Type": "Succeed"
+    },
+    "RegistrarFim": {
+      "Type": "Succeed"
+    }
+  }
+}
+```
+
+Esse padrão aparece nos seus próprios rascunhos operacionais e está alinhado à documentação do Step Functions para integração com Athena.
+
+---
+
+# 13. 🧪 Testes de dados
+
+Seu texto de testes + QuickSight traz uma filosofia muito boa para iniciantes:
+
+> todo teste deve devolver um número único, `qtd_erros`; `0 = passou`, `>0 = falhou`.
+
+## Exemplo de tabela de resultado
+
+```sql
+CREATE TABLE IF NOT EXISTS ctrl.tb_resultado_teste (
+    id_execucao      varchar,
+    nm_teste         varchar,
+    nm_modelo        varchar,
+    severidade       varchar,
+    qtd_erros        bigint,
+    fl_aprovado      boolean,
+    dt_execucao      timestamp
+)
+```
+
+## Exemplo de teste de duplicidade
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT
+        anomes_atual,
+        nivel_analise,
+        escritorio,
+        fila,
+        faixa_atraso,
+        cluster,
+        segmento,
+        produto,
+        tipo_carteira
+    FROM mart_db.cobranca_causa_raiz_drill_mes_v2
+    GROUP BY 1,2,3,4,5,6,7,8,9
+    HAVING count(*) > 1
+)
+```
+
+## Exemplo de teste de null crítico
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM mart_db.cobranca_causa_raiz_drill_mes_v2
+WHERE delta_eficiencia_real_pp IS NULL
+```
+
+## Exemplo de teste de reconciliação
+
+```sql
+SELECT
+    CASE
+        WHEN abs((caixa_anterior + impacto_volume + impacto_ticket) - caixa_atual) > 0.01
+            THEN 1
+        ELSE 0
+    END AS qtd_erros
+FROM mart_db.cobranca_causa_raiz_drill_mes_v2
+```
+
+---
+
+# 14. 📈 QuickSight: como transformar isso em experiência de uso
+
+Athena integra com QuickSight para visualização.
+
+Mas o segredo aqui não é “jogar a tabela no BI”.
+
+É desenhar a jornada.
+
+Seu próprio material resume muito bem o fluxo de uso do usuário:
+
+```text
+1. Lê headline
+2. Vê ranking
+3. Clica no pior
+4. Vê decomposição
+5. Vê diagnóstico
+6. Executa ação
+```
+
+## 14.1 Dataset principal
+
+Leve para o QuickSight:
+
+```text
+mart.cobranca_causa_raiz_drill_mes_v2
+mart.cobranca_waterfall_drill_mes
+```
+
+## 14.2 Campos-chave a exibir
+
+### Headline
+
+- `txt_insight_exec`
+    
+
+### Tabela de ranking
+
+- `nivel_analise`
+    
+- `escritorio`
+    
+- `fila`
+    
+- `faixa_atraso`
+    
+- `delta_eficiencia_real_pp`
+    
+- `delta_caixa`
+    
+- `fl_top_causador`
+    
+
+### Decomposição
+
+- waterfall de eficiência
+    
+- waterfall de caixa
+    
+
+### Diagnóstico
+
+- `txt_diagnostico`
+    
+- `next_best_action`
+    
+
+## 14.3 Parâmetros sugeridos
+
+Seu material recomenda ao menos:
+
+- `p_dimensao`
+    
+- `p_modo_texto`
+    
+
+Exemplo de campo calculado:
+
+```text
+ifelse(
+  ${p_modo_texto} = 'simples',
+  {txt_insight_simples},
+  {txt_insight_exec}
+)
+```
+
+## 14.4 Drill-down
+
+Estrutura recomendada:
+
+```text
+Escritório → Fila → Faixa → Cliente
+```
+
+ou, para outra visão:
+
+```text
+Escritório → Cluster → Segmento → Produto
+```
+
+Seu material trata drill como essencial.
+
+## 14.5 Layout recomendado
+
+### Página 1 — resumo executivo
+
+- headline principal
+    
+- top 3 problemas
+    
+- top 3 oportunidades
+    
+- destaque do principal driver
+    
+
+### Página 2 — ranking
+
+- tabela ordenada por piora
+    
+- tabela ordenada por impacto absoluto
+    
+
+### Página 3 — decomposição
+
+- waterfall de eficiência
+    
+- waterfall de caixa
+    
+
+### Página 4 — benchmark
+
+- posição relativa por escritório / fila / segmento
+    
+
+### Página 5 — plano de ação
+
+- tabela com `txt_diagnostico`
+    
+- `next_best_action`
+    
+- dono sugerido
+    
+
+Esse formato aparece explicitamente no seu material de layout mental.
+
+---
+
+# 15. 🧭 Como escrever excelentes análises
+
+O seu playbook de cobrança dá uma régua muito boa:
+
+## Fórmula curta
+
+```text
+O que aconteceu
+→ Onde está
+→ O que explica
+→ O que fazer
+```
+
+## Estrutura forte de parágrafo
+
+```text
+[Métrica] [direção] [magnitude].
+A variação ficou concentrada em [recorte].
+A principal explicação foi [driver], com impacto de [valor].
+Ajustando por [calendário/mix], [parte da queda some / persiste].
+Recomenda-se [ação].
+```
+
+## Exemplos prontos
+
+### Exemplo A
+
+> Eficiência caiu 1,7 pp no período. A piora ficou concentrada em dois escritórios, principalmente na fila Massificado e na faixa 60–90 dias. O principal driver foi queda de volume, com pouca compensação de ticket. Ajustando por dias úteis, parte da variação se reduz, mas permanece deterioração real. Recomenda-se revisar mix de carteira e atuação operacional nesses recortes.
+
+### Exemplo B
+
+> O segmento Varejo piorou 1,7 pp. Cerca de 0,5 pp vêm de ressegmentação e 1,2 pp de piora intra-segmento, principalmente via volume. O comportamento indica não apenas mudança de composição, mas piora real dentro do grupo. O foco deve ser a revisão da estratégia comercial e operacional para esse segmento.
+
+### Exemplo C
+
+> A faixa 90–120 ganhou peso no mix e pressionou a eficiência consolidada. Além disso, houve queda de ticket dentro da própria faixa. Isso sugere efeito combinado de composição e performance intra-faixa, tornando esse bucket prioritário para intervenção.
+
+---
+
+# 16. 🚨 Erros clássicos que quebram esse tipo de solução
+
+## Erro 1 — misturar grãos
+
+Kimball é explícito: grãos diferentes não devem ser misturados na mesma fact table.
+
+Se você mistura contrato-dia com escritório-mês, a análise nasce contaminada.
+
+## Erro 2 — deixar regra de negócio no BI
+
+O texto de heurísticas também é claro: regra oficial não deve morar no QuickSight.
+
+Campo calculado em dashboard serve para acabamento leve, não para verdade oficial.
+
+## Erro 3 — texto só no BI
+
+Frase simples até pode ser feita no QuickSight.
+
+Mas narrativa importante, reaproveitável e auditável deve nascer no SQL da mart.
+
+## Erro 4 — silver cheio de regra de negócio
+
+Silver padronizado é para estrutura.  
+Silver integrado é para integração.  
+Gold é para verdade oficial.
+
+## Erro 5 — Step Functions decidindo demais
+
+Se o fluxo de decisão estiver todo em `Choice`, você espalha lógica.  
+Melhor: Athena calcula boolean; Step Functions só lê.
+
+## Erro 6 — dashboard sem ação
+
+Seu próprio material bate forte nisso:
+
+> análise boa explica; análise forte direciona decisão.
+
+Então `txt_diagnostico` e `next_best_action` não são luxo.  
+São diferencial.
+
+---
+
+# 17. ✅ Checklist final de implementação
+
+## Bloco 1 — modelagem
+
+-  Defini o processo de negócio
+    
+-  Declarei o grão explicitamente
+    
+-  Separei dimensões e fatos coerentes com o grão
+    
+-  Evitei misturar granularidades
+    
+
+## Bloco 2 — arquitetura
+
+-  Bronze preserva origem
+    
+-  Silver padronizado cria contrato técnico
+    
+-  Silver integrado consolida e deduplica
+    
+-  Gold define regra oficial
+    
+-  Mart entrega consumo final
+    
+
+## Bloco 3 — SQL analítico
+
+-  Calculei métrica atual e anterior
+    
+-  Calculei delta
+    
+-  Decompus volume vs ticket
+    
+-  Separei efeito DU
+    
+-  Separei efeito mix quando aplicável
+    
+-  Marquei driver principal
+    
+-  Gerei texto pronto
+    
+
+## Bloco 4 — materialização
+
+-  Criei tabela Iceberg por CTAS ou CREATE TABLE
+    
+-  Defini estratégia de atualização
+    
+-  Decidi entre DELETE+INSERT e MERGE
+    
+-  Registrei execução e estado em ctrl
+    
+
+## Bloco 5 — qualidade
+
+-  Teste de duplicidade
+    
+-  Teste de null crítico
+    
+-  Teste de reconciliação
+    
+-  Teste de linha vazia
+    
+-  Teste de consistência da narrativa
+    
+
+## Bloco 6 — QuickSight
+
+-  Headline pronta
+    
+-  Ranking pronto
+    
+-  Waterfall pronto
+    
+-  Diagnóstico pronto
+    
+-  Ação pronta
+    
+-  Drill-down funcional
+    
+
+---
+
+# 18. 🧠 Regra final para internalizar
+
+Guarda esta sequência:
+
+```text
+GRÃO
+→ define o que a linha representa
+
+MÉTRICA
+→ define o que será explicado
+
+DECOMPOSIÇÃO
+→ define como a explicação será medida
+
+MATERIALIZAÇÃO
+→ define como isso vira produto
+
+NARRATIVA
+→ define como isso vira entendimento
+
+AÇÃO
+→ define como isso vira decisão
+```
+
+E guarda também esta frase-mãe, que resume muito bem o espírito do seu stack:
+
+> **No seu ambiente, materializar = transformar lógica recorrente em tabela Iceberg controlada por SQL e orquestrada por Step Functions.**
+
+---
+
+# 19. 📚 O que este framework herda dos materiais de apoio
+
+## Do Kimball
+
+- processo antes de tabela
+    
+- grão como contrato
+    
+- dimensões e fatos coerentes com o grão
+    
+- preferência por atomicidade e flexibilidade analítica
+    
+
+## Do seu framework de arquitetura
+
+- bronze → silver_padronizado → silver_integrado → gold
+    
+- naming padronizado
+    
+- separação entre estrutura, integração e negócio
+    
+
+## Do framework de analytics engineering
+
+- modularidade
+    
+- reutilização
+    
+- testes
+    
+- documentação
+    
+- modelo como produto
+    
+
+## Do Athena / Step Functions
+
+- Athena como motor SQL e Iceberg
+    
+- QuickSight como camada de consumo
+    
+- Step Functions como orquestrador estável
+    
+- CTAS / MERGE / execução síncrona com Athena
+    
+
+## Do seu playbook de cobrança
+
+- causa raiz = decomposição + impacto
+    
+- análise boa explica; análise forte direciona decisão
+    
+- comunicação final precisa ser curta, clara e acionável
+    
+
+---
+
+# 20. 🚀 Fechamento
+
+Se você implementar isso direito, o resultado não será “um painel bonito”.
+
+Será isto:
+
+```text
+uma base oficial
++ uma decomposição auditável
++ uma narrativa automática
++ uma priorização de causadores
++ uma recomendação de ação
++ uma experiência de drill
+```
+
+Ou seja:
+
+> **Você deixa de entregar visualização. Você passa a entregar sistema de decisão operacional.**
+
+```
+
+Se você quiser, no próximo passo eu transformo essa nota em uma **versão ainda mais prática**, com os blocos SQL já separados em arquivos lógicos tipo `01_base.sql`, `02_mart_principal.sql`, `03_waterfall.sql`, `04_testes.sql` e `05_campos_quicksight.md`.
+```
