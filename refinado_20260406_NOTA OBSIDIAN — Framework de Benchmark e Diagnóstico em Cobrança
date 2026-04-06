@@ -1,0 +1,551 @@
+[MET-010] — Framework de Benchmark Competitivo + Diagnóstico + Ação em Cobrança
+
+#dominio/cobranca
+#tipo/framework
+#tema/benchmark
+#impacto/alto
+#status/producao
+
+---
+
+# 🎯 Objetivo
+
+Expandir o framework de análise de cobrança para incluir:
+
+- benchmark competitivo estruturado
+- priorização baseada em impacto
+- diagnóstico automático
+- recomendação de ação
+- integração com QuickSight
+
+👉 Transformar análise em sistema de decisão
+
+---
+
+# 🧠 Ideia central
+
+Baseado no playbook:
+
+DEMANDA → DADO → ANÁLISE → INSIGHT → AÇÃO → COMUNICAÇÃO
+
+:contentReference[oaicite:5]{index=5}
+
+Agora evoluímos para:
+
+DIAGNÓSTICO → PRIORIDADE → AÇÃO → IMPACTO → MONITORAMENTO
+
+---
+
+# 🧱 1. Modelo mental do benchmark
+
+## Dois eixos principais
+
+### 📊 Posição (nível)
+
+Comparado com:
+
+- p25
+- p50 (mediana)
+- p75 (top quartil)
+
+### 📈 Tendência
+
+- melhorando vs mercado
+- piorando vs mercado
+- estável
+
+---
+
+# 🧩 2. Métricas base (mart)
+
+## 🎯 Métrica principal
+
+- eficiencia_atual
+- eficiencia_anterior
+
+## 📊 Benchmark
+
+- p25
+- p50
+- p75
+
+## 📉 Derivados
+
+gap_p50 = eficiencia_atual - p50  
+gap_p75 = eficiencia_atual - p75  
+
+gap_anterior = eficiencia_anterior - p50_anterior  
+
+delta_gap = gap_p50 - gap_anterior
+
+---
+
+# 🧠 3. Classificação (nível)
+
+```sql
+CASE
+    WHEN eficiencia_atual >= p75 THEN 'lider'
+    WHEN eficiencia_atual >= p50 THEN 'acima_media'
+    WHEN eficiencia_atual >= p25 THEN 'abaixo_media'
+    ELSE 'critico'
+END
+````
+
+---
+
+# 📈 4. Tendência
+
+```sql
+CASE
+    WHEN delta_gap > 0.5 THEN 'melhorando'
+    WHEN delta_gap < -0.5 THEN 'piorando'
+    ELSE 'estavel'
+END
+```
+
+---
+
+# 🧠 5. Leitura executiva
+
+👉 Aqui nasce a narrativa automática
+
+Exemplo:
+
+- líder + melhorando → ampliando vantagem
+    
+- abaixo + piorando → deteriorando
+    
+- crítico + melhorando → início de recuperação
+    
+
+---
+
+# 🧱 6. Conexão com arquitetura
+
+## 📌 Onde essa lógica deve viver
+
+Seguindo heurísticas:
+
+- cálculo de eficiência → gold (verdade de negócio)
+    
+- benchmark → gold/mart
+    
+- narrativa → mart (camada de consumo)
+    
+- classificação → mart
+    
+
+---
+
+# 🏗️ 7. Estrutura da mart recomendada
+
+Grão:
+
+1 linha = mês + escritório + recorte analítico
+
+Campos principais:
+
+## Resultado
+
+- eficiencia_atual
+    
+- delta_eficiencia
+    
+
+## Benchmark
+
+- p25, p50, p75
+    
+- gap_p50
+    
+- delta_gap
+    
+
+## Classificação
+
+- cluster_performance
+    
+- tendencia
+    
+
+## Impacto
+
+- delta_caixa
+    
+- impacto_potencial
+    
+
+## Ranking
+
+- rank
+    
+- percentil
+    
+
+## Narrativa
+
+- txt_benchmark
+    
+- txt_diagnostico
+    
+- txt_insight
+    
+
+👉 Isso segue o conceito de produto analítico do Analytics Engineering
+
+---
+
+# 🚀 8. Upgrade crítico: priorização (o que muda o jogo)
+
+## 🎯 Impacto potencial
+
+```sql
+impacto_potencial = (p75 - eficiencia_atual) * volume
+```
+
+👉 responde:
+
+"se esse escritório performasse como top quartil"
+
+---
+
+## 🔥 Ranking acionável
+
+Ordenar por:
+
+impacto_potencial DESC
+
+👉 NÃO é ranking de performance  
+👉 é ranking de onde agir
+
+---
+
+# 🔥 9. Pareto automático (top causadores)
+
+```sql
+sum(delta_caixa) over (
+  order by delta_caixa asc
+  rows between unbounded preceding and current row
+)
+```
+
+→ % acumulado
+
+👉 Insight:
+
+"3 escritórios explicam 62% da queda"
+
+---
+
+# 🧠 10. Simulação (what-if)
+
+## Exemplo
+
+```sql
+impacto_simulado = 
+(taxa_anterior - taxa_atual) * volume_atual
+```
+
+👉 vira decisão:
+
+"se voltar ao nível anterior → +R$ X"
+
+---
+
+# 🧠 11. Benchmark inteligente
+
+Não usar só mediana:
+
+Comparar com:
+
+- melhor do mesmo cluster
+    
+- melhor da fila
+    
+- melhor histórico
+    
+
+👉 evita desculpa estrutural
+
+---
+
+# 🧠 12. Score único (linguagem executiva)
+
+```text
+score = f(
+  eficiencia,
+  tendencia,
+  gap,
+  consistencia
+)
+```
+
+Classificação:
+
+- líder
+    
+- atenção
+    
+- crítico
+    
+
+---
+
+# 🧠 13. Consistência (diferencial forte)
+
+Medir:
+
+- volatilidade
+    
+- estabilidade
+    
+
+👉 impacto:
+
+confiança operacional
+
+---
+
+# 🧠 14. Funil de cobrança (estrutura real)
+
+Emitidos → Pagos → Ticket → Eficiência
+
+Separar:
+
+- geração
+    
+- conversão
+    
+- monetização
+    
+
+---
+
+# 🧠 15. Diagnóstico automático (biblioteca)
+
+Exemplo:
+
+- volume ↓ → tração
+    
+- ticket ↓ → qualidade
+    
+- conversão ↓ → efetividade
+    
+
+👉 Isso vira motor reutilizável (ver padrão de blocos )
+
+---
+
+# 🧠 16. Next best action (nível avançado)
+
+Cada linha deve responder:
+
+👉 o que fazer
+
+Ex:
+
+- aumentar emissão
+    
+- revisar conversão
+    
+- atuar em parceiro
+    
+
+---
+
+# 📊 17. QuickSight — estrutura recomendada
+
+## 🔝 Seção 1 — Executivo
+
+- eficiência
+    
+- delta
+    
+- gap vs p50
+    
+- score
+    
+- potencial
+    
+
+- texto automático
+    
+
+---
+
+## 🔥 Seção 2 — Priorização
+
+Tabela:
+
+- escritório
+    
+- score
+    
+- gap
+    
+- impacto_potencial
+    
+
+Ordenado por impacto
+
+---
+
+## 📉 Seção 3 — Decomposição
+
+Waterfall:
+
+- volume
+    
+- ticket
+    
+- mix
+    
+- calendário
+    
+
+---
+
+## 📦 Seção 4 — Funil
+
+Emitidos → Pagos → Caixa
+
+---
+
+## 📈 Seção 5 — Benchmark
+
+Scatter:
+
+x = volume  
+y = eficiência
+
+---
+
+## 🧠 Seção 6 — Diagnóstico
+
+Tabela com textos automáticos
+
+---
+
+## 🎯 Seção 7 — Ação
+
+Campo:
+
+next_best_action
+
+---
+
+# 🧠 18. Fluxo de uso do analista
+
+1. lê headline
+    
+2. vê ranking
+    
+3. clica no pior
+    
+4. vê decomposição
+    
+5. lê diagnóstico
+    
+6. executa ação
+    
+
+---
+
+# ❌ Erros comuns
+
+- só mostrar ranking
+    
+- não priorizar impacto
+    
+- não separar mix vs performance
+    
+- não sugerir ação
+    
+- depender de dashboard para lógica
+    
+
+---
+
+# ✅ Boas práticas
+
+- tudo materializado na mart
+    
+- SQL com narrativa
+    
+- benchmark sempre presente
+    
+- texto automático sempre disponível
+    
+- ação explícita
+    
+
+---
+
+# 🚀 Próximos passos
+
+- implementar score completo
+    
+- criar tabela de regras parametrizadas
+    
+- automatizar Step Functions para geração
+    
+- criar camada de testes de dados
+    
+- evoluir para alerta automático
+    
+
+---
+
+# 🧠 Frase-chave
+
+"Você não entrega análise. Você entrega decisão."
+
+```
+
+---
+
+# 🧠 Leitura como consultor (o que você acabou de construir)
+
+Isso aqui não é só uma nota — é:
+
+### 1. Um **sistema operacional de análise**
+Alinhado com seu framework:
+
+> GRÃO → MÉTRICA → DECOMPOSIÇÃO → NARRATIVA → DECISÃO :contentReference[oaicite:9]{index=9}  
+
+---
+
+### 2. Um **produto analítico (Analytics Engineering)**
+Você saiu de SQL → para produto reutilizável :contentReference[oaicite:10]{index=10}  
+
+---
+
+### 3. Um **framework plugável no seu lakehouse**
+Compatível com:
+
+- bronze → silver → gold → mart :contentReference[oaicite:11]{index=11}  
+
+---
+
+# 🚀 Modo Mentor — onde evoluir agora
+
+Se quiser ir pro próximo nível (top 1% mesmo):
+
+1. Criar **score com pesos reais**
+2. Criar **tabela de regras (parametrização)**
+3. Implementar **alerta automático (anomalia)**
+4. Conectar com **Step Functions (diagnóstico automático)**
+5. Criar **camada de testes (data quality)**
+
+---
+
+Se quiser, no próximo passo eu posso:
+
+👉 transformar isso em:
+- SQL real completo da mart  
+- modelo físico (Athena + Iceberg)  
+- layout desenhado do QuickSight  
+- ou motor de texto automático plugável  
+
+Só falar 👍
+```
