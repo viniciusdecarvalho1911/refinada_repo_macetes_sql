@@ -1,0 +1,1182 @@
+
+# 🎯 Framework de Simulação — implantação prática
+
+## Objetivo
+
+Construir um **framework de simulação de cobrança** que permita:
+
+- comparar cenário atual vs cenários-alvo
+- simular recuperação de emissão, conversão, ticket e share
+- projetar impacto em caixa e eficiência
+- exibir tudo no QuickSight com narrativa pronta
+- evoluir depois para previsão, risco, priorização e execução
+
+A lógica central é esta:
+
+```text
+PERGUNTA DE NEGÓCIO
+    ↓
+GRÃO
+    ↓
+MODELO ANALÍTICO
+    ↓
+MART DE CENÁRIOS
+    ↓
+TEXTO + VISUAL
+    ↓
+DECISÃO
+````
+
+O material-base converge fortemente nessa direção: o framework de cobrança enfatiza que você não entrega só uma query; você entrega um **sistema de decisão**, orientado por `GRÃO → MÉTRICA → DECOMPOSIÇÃO → MATERIALIZAÇÃO → NARRATIVA → DECISÃO`.
+
+---
+
+# 🧠 Ideia-mãe
+
+## O que você está realmente construindo
+
+Você não está construindo apenas:
+
+- uma mart
+    
+- um painel
+    
+- alguns campos calculados
+    
+
+Você está construindo, ao mesmo tempo:
+
+1. um **modelo de dados confiável**
+    
+2. um **motor de cenários**
+    
+3. uma **camada de explicação**
+    
+4. uma **ferramenta operacional de decisão**
+    
+
+O próprio framework operacional reforça isso: quando a lógica recorrente sai da query solta e vira tabela Iceberg controlada por SQL e orquestrada por Step Functions, ela vira produto.
+
+---
+
+# 📐 Regra de ouro antes de qualquer SQL
+
+## Declare o grão explicitamente
+
+Antes de escrever qualquer query, escreva em texto puro:
+
+```text
+Grão desta tabela:
+1 linha = 1 mês + 1 escritório + 1 cenário
+```
+
+Isso é obrigatório.
+
+Kimball trata a declaração do grão como contrato do modelo. O seu próprio material reforça que, sem isso, o risco vira:
+
+```text
+GRÃO → JOIN → EXPLOSÃO
+```
+
+## Grão desta mart de simulação
+
+```text
+1 linha = 1 anomes + 1 escritorio + 1 cenario
+```
+
+Esse grão é bom porque:
+
+- é simples
+    
+- é explicável para gestão
+    
+- é ótimo para QuickSight
+    
+- permite comparação oficial entre cenários
+    
+- evita misturar granularidades
+    
+
+---
+
+# 🏗️ Arquitetura recomendada
+
+O fluxo oficial do seu ecossistema já está muito bem consolidado:
+
+```text
+bronze_fonte
+   ↓
+silver_padronizado
+   ↓
+silver_integrado
+   ↓
+gold
+   ↓
+mart
+   ↓
+QuickSight
+```
+
+Esse padrão aparece repetidamente no seu material: bronze preserva origem, silver padronizado cria contrato técnico, silver integrado consolida e deduplica, gold define a verdade de negócio e mart entrega consumo final.
+
+## Naming recomendado
+
+Seguindo seu padrão oficial:
+
+```text
+<materializacao>_<camada>_<tipo_logico>_<dominio>_<entidade>[_<contexto>]
+```
+
+Exemplo do framework de simulação:
+
+```text
+view_silver_padronizado_cobranca_<fonte>
+view_silver_integrado_cobranca_base_simulacao
+iceberg_gold_fato_cobranca_escritorio_mes
+iceberg_gold_mart_cobranca_escritorio_cenarios_mes
+view_gold_mart_cobranca_escritorio_cenarios_quicksight
+```
+
+O padrão de naming e a separação das camadas estão explicitamente definidos no seu material de arquitetura.
+
+---
+
+# 🧱 Onde cada tipo de regra deve viver
+
+Essa parte é crítica para não transformar a simulação em caos.
+
+## Silver padronizado
+
+Use quando a regra responde:
+
+```text
+como ler a fonte sem quebrar?
+```
+
+Exemplos:
+
+- cast
+    
+- parsing de data
+    
+- padronização de colunas
+    
+- colunas temporais canônicas
+    
+- partição física `p_*`
+    
+
+## Silver integrado
+
+Use quando a regra responde:
+
+```text
+como unir os dados?
+qual fonte ganha?
+como deduplicar?
+```
+
+Exemplos:
+
+- enriquecimento
+    
+- deduplicação
+    
+- fallback entre fontes
+    
+- consolidação técnica
+    
+
+## Gold / Mart
+
+Use quando a regra responde:
+
+```text
+qual número será defendido?
+o que é verdade para o negócio?
+```
+
+Exemplos:
+
+- eficiência
+    
+- caixa
+    
+- ticket
+    
+- texto oficial
+    
+- cenários oficiais
+    
+
+## Regras exploratórias de simulação
+
+Se ainda são hipóteses, podem viver provisoriamente em query analítica ou QuickSight.  
+Se virarem recorrentes, devem subir para mart oficial.
+
+Essa régua está muito clara no seu material de heurísticas.
+
+---
+
+# 🧩 Desenho conceitual do framework de simulação
+
+## Entrada necessária
+
+Você precisa de uma mart base por escritório/mês com pelo menos:
+
+```text
+anomes
+escritorio
+
+emitidos_atual
+taxa_pgto_atual
+ticket_atual
+share_parceiro_atual
+
+emitidos_p50
+emitidos_p75
+taxa_pgto_p50
+taxa_pgto_p75
+ticket_p50
+ticket_p75
+eficiencia_p50
+eficiencia_p75
+
+caixa_atual
+carteira_atual
+
+principal_driver_macro
+principal_driver_boletos
+driver_canal
+```
+
+## Saída desejada
+
+Uma mart de cenários com:
+
+```text
+anomes
+escritorio
+cenario
+
+emitidos_sim
+taxa_pgto_sim
+ticket_sim
+share_parceiro_sim
+
+boletos_pagos_sim
+caixa_sim
+eficiencia_sim
+
+impacto_caixa
+impacto_eficiencia_pp
+
+alavanca_principal
+txt_cenario
+```
+
+---
+
+# 🧭 Cenários oficiais recomendados
+
+Comece com um conjunto pequeno, claro e defendível.
+
+## Cenários-base
+
+```text
+ATUAL
+RECUPERAR_EMISSAO_P50
+RECUPERAR_CONVERSAO_P50
+RECUPERAR_TICKET_P50
+ALCANCAR_P50
+ALCANCAR_P75
+CORRIGIR_PRINCIPAL_ALAVANCA
+AUMENTAR_SHARE_PARCEIRO_5PP
+```
+
+## Por que esses cenários funcionam bem
+
+Eles cobrem 4 perguntas operacionais muito fortes:
+
+```text
+1. Se eu recuperar só emissão, quanto volta?
+2. Se eu recuperar só conversão, quanto volta?
+3. Se eu recuperar só ticket, quanto volta?
+4. Se eu atacar a principal alavanca, qual o ganho provável?
+```
+
+## Evolução posterior
+
+Depois, adicione cenários mais críveis:
+
+```text
+RECUPERAR_25_GAP_P50
+RECUPERAR_50_GAP_P50
+RECUPERAR_75_GAP_P50
+ALCANCAR_P25
+```
+
+Esses cenários parciais costumam ser melhores para gestão do que saltos muito agressivos para p75.
+
+---
+
+# 🧮 Fórmulas centrais do simulador
+
+## Fórmula estrutural
+
+A lógica-base da simulação é:
+
+```text
+boletos_pagos_sim = emitidos_sim × taxa_pgto_sim
+caixa_sim         = boletos_pagos_sim × ticket_sim
+eficiencia_sim    = caixa_sim / carteira_atual
+```
+
+## Impactos
+
+```text
+impacto_caixa = caixa_sim - caixa_atual
+impacto_eficiencia_pp = (eficiencia_sim - eficiencia_atual) * 100
+```
+
+## Exemplo rápido
+
+Suponha:
+
+```text
+emitidos_atual = 10.000
+taxa_pgto_atual = 0,20
+ticket_atual = 500
+carteira_atual = 25.000.000
+```
+
+Então:
+
+```text
+boletos_pagos_atual = 10.000 × 0,20 = 2.000
+caixa_atual = 2.000 × 500 = 1.000.000
+eficiencia_atual = 1.000.000 / 25.000.000 = 4,0%
+```
+
+Se no cenário `RECUPERAR_CONVERSAO_P50` a taxa_pgto virar 0,24:
+
+```text
+boletos_pagos_sim = 10.000 × 0,24 = 2.400
+caixa_sim = 2.400 × 500 = 1.200.000
+eficiencia_sim = 1.200.000 / 25.000.000 = 4,8%
+impacto_caixa = +200.000
+impacto_eficiencia_pp = +0,8 pp
+```
+
+---
+
+# 🧠 Como descobrir a alavanca principal
+
+Você já trouxe uma regra boa e simples:
+
+```sql
+CASE
+    WHEN principal_driver_boletos = 'emissao' THEN 'emitidos'
+    WHEN principal_driver_boletos = 'conversao' THEN 'taxa_pgto'
+    WHEN principal_driver_macro = 'ticket' THEN 'ticket'
+    ELSE 'misto'
+END AS alavanca_principal
+```
+
+## Leitura prática
+
+Isso transforma diagnóstico em ação.
+
+Em vez de o gerente receber só:
+
+> desempenho abaixo do benchmark
+
+ele passa a receber:
+
+> a principal alavanca a corrigir é emissão
+
+ou
+
+> a maior oportunidade está em conversão
+
+Esse tipo de campo conversa diretamente com o princípio do seu playbook:
+
+> análise boa explica; análise forte direciona decisão.
+
+---
+
+# 🧊 Materialização recomendada no Athena
+
+## Tabela oficial da mart
+
+```sql
+CREATE TABLE mart.cobranca_escritorio_cenarios_mes (
+    anomes bigint,
+    escritorio varchar,
+    cenario varchar,
+
+    emitidos_sim double,
+    taxa_pgto_sim double,
+    ticket_sim double,
+    share_parceiro_sim double,
+
+    boletos_pagos_sim double,
+    caixa_sim double,
+    eficiencia_sim double,
+
+    impacto_caixa double,
+    impacto_eficiencia_pp double,
+
+    alavanca_principal varchar,
+    txt_cenario varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    location = 's3://lakehouse/mart/cobranca_escritorio_cenarios_mes/'
+);
+```
+
+## Por que Iceberg aqui faz sentido
+
+Porque a mart de cenários é:
+
+- reutilizável
+    
+- consultada com frequência
+    
+- boa para QuickSight
+    
+- boa para histórico
+    
+- boa para refresh controlado
+    
+
+Athena documenta CTAS e `INSERT INTO` como mecanismos nativos para ETL, incluindo criação inicial por CTAS e cargas incrementais posteriores por `INSERT INTO`.
+
+## Estratégia prática
+
+### Opção 1 — CTAS inicial
+
+Boa para primeiro bootstrap.
+
+### Opção 2 — DELETE + INSERT por mês
+
+Boa quando o volume é moderado e você quer simplicidade.
+
+### Opção 3 — MERGE INTO
+
+Boa quando quiser granularidade de atualização mais fina e controle transacional.
+
+No seu stack, a recomendação recorrente é: materializar lógica recorrente em Iceberg e deixar o Step Functions orquestrar.
+
+---
+
+# ⚙️ Sequência de implantação — passo a passo
+
+# Etapa 1 — validar a mart base
+
+Antes da simulação, confirme se a mart `cobranca_escritorio_mes` existe e está boa.
+
+## Checklist
+
+- 1 linha = 1 mês + 1 escritório
+    
+- sem duplicidade por chave
+    
+- `caixa_atual` coerente
+    
+- `carteira_atual` coerente
+    
+- benchmarks p50/p75 coerentes
+    
+- `principal_driver_*` preenchidos
+    
+
+## Erro comum
+
+Querer começar pela simulação sem ter uma base confiável.
+
+---
+
+# Etapa 2 — criar a mart de cenários no Athena
+
+Implemente a lógica de:
+
+- base
+    
+- cenários
+    
+- calculado
+    
+- final
+    
+
+## Estrutura recomendada
+
+```text
+WITH base AS (...)
+, cenarios AS (...)
+, calculado AS (...)
+, final AS (...)
+SELECT * FROM final
+```
+
+## Dica de design
+
+Não comece com 40 cenários.
+
+Comece com 8.
+
+---
+
+# Etapa 3 — publicar visão para consumo BI
+
+Depois da tabela Iceberg, publique uma view final para QuickSight.
+
+Exemplo:
+
+```sql
+CREATE OR REPLACE VIEW mart.view_gold_mart_cobranca_escritorio_cenarios_quicksight AS
+SELECT
+    anomes,
+    escritorio,
+    cenario,
+    emitidos_sim,
+    taxa_pgto_sim,
+    ticket_sim,
+    share_parceiro_sim,
+    boletos_pagos_sim,
+    caixa_sim,
+    eficiencia_sim,
+    impacto_caixa,
+    impacto_eficiencia_pp,
+    alavanca_principal,
+    txt_cenario
+FROM mart.cobranca_escritorio_cenarios_mes;
+```
+
+## Por que fazer isso
+
+Porque permite:
+
+- esconder colunas técnicas
+    
+- estabilizar schema
+    
+- organizar naming
+    
+- facilitar consumo no BI
+    
+
+---
+
+# Etapa 4 — montar o QuickSight em duas fases
+
+## Fase 1 — guiado
+
+Implemente primeiro o modo guiado com cenários oficiais.
+
+Controles:
+
+- mês
+    
+- escritório
+    
+- fila/segmento, se necessário
+    
+- seletor de cenário
+    
+
+Blocos:
+
+- KPI atual vs simulado
+    
+- texto explicativo
+    
+- comparação com p50/p75
+    
+- alavanca prioritária
+    
+
+## Fase 2 — livre
+
+Depois adicione:
+
+- slider de emissão
+    
+- slider de conversão
+    
+- slider de ticket
+    
+- parâmetro de modo `Livre` vs `Guiado`
+    
+
+Essa ordem está muito alinhada com a recomendação prática do seu próprio framework: primeiro mart de cenários + aba guiada + texto automático + cards; depois modo livre e sliders.
+
+---
+
+# 📊 Layout recomendado da aba no QuickSight
+
+## Nome da aba
+
+```text
+Simulação e Potencial
+```
+
+## Bloco 1 — filtros e controles
+
+Lado esquerdo:
+
+- filtro de mês
+    
+- filtro de escritório
+    
+- filtro de fila / segmento
+    
+- seletor `Modo de simulação`
+    
+- seletor `Cenário`
+    
+- sliders de emissão / conversão / ticket
+    
+
+## Bloco 2 — KPIs
+
+No topo:
+
+- Caixa atual
+    
+- Caixa simulado
+    
+- Impacto em caixa
+    
+- Eficiência atual
+    
+- Eficiência simulada
+    
+- Impacto em pp
+    
+
+## Bloco 3 — texto explicativo
+
+Centro superior:
+
+- `txt_insight_completo`
+    
+- `txt_cenario` ou `txt_simulacao_recomendada`
+    
+
+## Bloco 4 — comparação visual
+
+Barras:
+
+- Atual
+    
+- Simulado
+    
+- P50
+    
+- P75
+    
+
+Métricas:
+
+- eficiência
+    
+- caixa
+    
+
+## Bloco 5 — alavancas
+
+Tabela ou barras com:
+
+- emissão atual vs simulada
+    
+- conversão atual vs simulada
+    
+- ticket atual vs simulado
+    
+
+## Bloco 6 — potencial e ação
+
+Tabela com:
+
+- alavanca prioritária
+    
+- next_best_action
+    
+- potencial_emissao_p50
+    
+- potencial_conversao_p50
+    
+- potencial_ticket_p50
+    
+- potencial_total_p75
+    
+
+O template de SQL + Narrativa + QuickSight reforça exatamente essa lógica de deixar Athena pensar e QuickSight mostrar.
+
+---
+
+# 🧪 Campos calculados no QuickSight — ordem correta
+
+## Parâmetros
+
+```text
+p_delta_emissao
+p_delta_conversao
+p_delta_ticket
+p_modo_simulacao
+p_cenario
+```
+
+## Campos guiados
+
+```text
+emitidos_sim_guiado
+taxa_pgto_sim_guiado
+ticket_sim_guiado
+```
+
+## Campos livres
+
+```text
+emitidos_sim_livre
+taxa_pgto_sim_livre
+ticket_sim_livre
+```
+
+## Escolha final
+
+```text
+emitidos_sim_final
+taxa_pgto_sim_final
+ticket_sim_final
+```
+
+## Resultado
+
+```text
+boletos_pagos_sim
+caixa_sim
+eficiencia_sim
+impacto_caixa_sim
+impacto_eficiencia_sim_pp
+```
+
+## Texto
+
+```text
+txt_simulacao_curta
+txt_simulacao_completa
+```
+
+## Regra importante
+
+Evite jogar a regra principal no BI.
+
+O seu próprio material insiste nisso: regra de negócio e narrativa principal devem nascer no SQL, não no dashboard.
+
+---
+
+# 🔮 Evolução forte: curva de expectativa por dias úteis
+
+Essa é uma das evoluções com maior ROI.
+
+## O que adicionar
+
+Além do cenário estático de benchmark, inclua uma camada de pacing:
+
+```text
+No 8º dia útil, quanto esse escritório normalmente deveria ter entregue?
+```
+
+## Estruturas recomendadas
+
+```text
+mart.cobranca_escritorio_dia
+mart.cobranca_escritorio_curva_mes
+mart.cobranca_curva_expectativa_dia_util
+mart.cobranca_previsao_diaria
+```
+
+## Lógica
+
+1. consolidar histórico diário por escritório
+    
+2. calcular % acumulado por dia útil em cada mês
+    
+3. ponderar meses anteriores
+    
+4. gerar curva esperada
+    
+5. projetar fechamento do mês corrente
+    
+
+## Ponderação sugerida
+
+```text
+M-1 = peso 6
+M-2 = peso 5
+M-3 = peso 4
+M-4 = peso 3
+M-5 = peso 2
+M-6 = peso 1
+```
+
+Opcionalmente:
+
+- incluir o mesmo mês do ano anterior
+    
+- guardar p25 / p50 / p75
+    
+
+Essa lógica está muito alinhada ao seu material sobre curva de expectativa por dia útil, sazonalidade e projeção de fechamento. O ponto forte é comparar por **dia útil**, não por dia corrido.
+
+## Como isso entra no simulador
+
+Você passa a ter dois tipos de leitura:
+
+### Cenário estrutural
+
+```text
+Se recuperar conversão ao p50, fecha em X.
+```
+
+### Cenário temporal
+
+```text
+No ritmo atual e na curva esperada de DU, deve fechar em Y.
+```
+
+Isso é muito forte em reunião, porque separa:
+
+- problema estrutural
+    
+- problema de pacing
+    
+- problema de calendário
+    
+
+---
+
+# 🎯 Evolução forte: elasticidade
+
+Depois da mart de cenários, a próxima camada de alto ROI é elasticidade.
+
+## Fórmulas simples
+
+```text
+elasticidade_emissao   = ticket_atual * taxa_pgto_atual
+elasticidade_conversao = ticket_atual * emitidos_atual
+elasticidade_ticket    = volume_atual
+```
+
+## Leitura operacional
+
+```text
++1% emissão gera quanto de caixa?
++1% conversão gera quanto de caixa?
++1% ticket gera quanto de caixa?
+```
+
+## Uso
+
+Isso ajuda a responder:
+
+> qual alavanca dá mais retorno marginal nesse escritório?
+
+Essa linha de evolução está muito alinhada ao roadmap do seu material, especialmente na camada de priorização e potencial.
+
+---
+
+# 🤖 Orquestração com Step Functions
+
+## Papel correto do Step Functions
+
+O Step Functions deve:
+
+- orquestrar
+    
+- registrar execução
+    
+- chamar Athena
+    
+- decidir pouco
+    
+
+O framework operacional é explícito: um erro comum é o Step Functions decidir demais. Melhor deixar o Athena calcular booleanos e o Step Functions apenas ler.
+
+## Fluxo sugerido
+
+```text
+1. Atualizar mart base mensal
+2. Atualizar mart de cenários
+3. Atualizar mart de curva de expectativa
+4. Atualizar mart de previsão diária
+5. Rodar testes
+6. Publicar/atualizar consumo QuickSight
+```
+
+## Integração com Athena
+
+Step Functions integra com Athena e suporta execução síncrona com `.sync`, o que casa muito bem com o seu padrão operacional. O seu material cita explicitamente o uso de `startQueryExecution.sync`, e o Developer Guide mostra integração nativa com Athena e casos como “Start an Athena query” e execução de queries em sequência/paralelo.
+
+---
+
+# ✅ Testes mínimos que o framework precisa ter
+
+Crie pelo menos estes testes:
+
+## Testes de estrutura
+
+- duplicidade por `anomes + escritorio + cenario`
+    
+- null em colunas-chave
+    
+- cenário inválido
+    
+
+## Testes de consistência
+
+- `boletos_pagos_sim = emitidos_sim * taxa_pgto_sim`
+    
+- `caixa_sim = boletos_pagos_sim * ticket_sim`
+    
+- `eficiencia_sim = caixa_sim / carteira_atual`
+    
+
+## Testes de negócio
+
+- impacto do cenário `ATUAL` deve ser zero ou muito próximo de zero
+    
+- `ALCANCAR_P75` não pode gerar valor menor que `ALCANCAR_P50` em condições normais
+    
+- cenário de correção da principal alavanca deve mexer só na alavanca correta
+    
+
+## Testes de narrativa
+
+- `txt_cenario` não nulo
+    
+- `alavanca_principal` válido
+    
+- coerência entre diagnóstico e driver
+    
+
+O seu checklist de qualidade já aponta explicitamente testes de duplicidade, null crítico, reconciliação, linha vazia e consistência de narrativa.
+
+---
+
+# ⚠️ Erros comuns
+
+## 1. Misturar grãos
+
+Exemplo ruim:
+
+- uma parte da base em contrato-dia
+    
+- outra em escritório-mês
+    
+- outra em cenário
+    
+
+Isso explode join e distorce médias.
+
+## 2. Fazer tudo no QuickSight
+
+Errado.
+
+QuickSight deve ser camada de exibição.  
+A lógica oficial precisa nascer no Athena / mart.
+
+## 3. Usar cenário agressivo demais como recomendação padrão
+
+P75 às vezes é bom para benchmarking, mas ruim como recomendação operacional imediata.
+
+## 4. Transformar hipótese em verdade oficial cedo demais
+
+Se a regra ainda é exploratória, não suba para gold/mart oficial.
+
+## 5. Deixar o dashboard sem ação
+
+Sem `next_best_action`, o simulador vira curiosidade e não ferramenta de gestão.
+
+---
+
+# 🗺️ Roadmap de implantação
+
+## Fase 1 — mínimo viável de valor
+
+- mart base mensal por escritório
+    
+- mart de cenários oficiais
+    
+- view de consumo QuickSight
+    
+- aba guiada
+    
+- KPIs atual vs simulado
+    
+- texto automático
+    
+
+## Fase 2 — camada de potencial
+
+- potencial por alavanca
+    
+- ranking por impacto
+    
+- `next_best_action`
+    
+- comparação p50/p75
+    
+
+## Fase 3 — pacing e previsão
+
+- curva por dia útil
+    
+- projeção de fechamento
+    
+- risco de desvio precoce
+    
+
+## Fase 4 — priorização avançada
+
+- elasticidade
+    
+- facilidade de ganho
+    
+- custo da inação
+    
+
+## Fase 5 — ciclo fechado
+
+- ação recomendada
+    
+- ação executada
+    
+- impacto pós-ação
+    
+- aprendizado
+    
+
+---
+
+# 📋 Checklist final de implantação
+
+## Modelagem
+
+- Declarei o grão explicitamente
+    
+- A mart base está estável
+    
+- Os cenários são claros e limitados
+    
+- Não misturei granularidades
+    
+
+## Arquitetura
+
+- Bronze preserva origem
+    
+- Silver padronizado cria contrato técnico
+    
+- Silver integrado consolida
+    
+- Gold/Mart define a verdade oficial
+    
+- QuickSight só consome
+    
+
+## SQL
+
+- Fórmulas estruturais revisadas
+    
+- Benchmark p50/p75 correto
+    
+- Alavanca principal coerente
+    
+- Narrativa pronta
+    
+
+## Plataforma
+
+- Tabela Iceberg criada
+    
+- Estratégia de atualização definida
+    
+- Orquestração no Step Functions
+    
+- Testes automatizados
+    
+
+## QuickSight
+
+- Aba guiada pronta
+    
+- KPIs atuais vs simulados
+    
+- Texto explicativo
+    
+- Barras atual/simulado/p50/p75
+    
+- Potencial + ação
+    
+
+---
+
+# 🧠 Frases para internalizar
+
+```text
+GRÃO → define o que a linha representa
+CENÁRIO → define a hipótese operacional
+MART → define a fonte oficial
+NARRATIVA → define o entendimento
+AÇÃO → define o valor real
+```
+
+```text
+Simulação boa não é a que impressiona.
+É a que ajuda alguém a decidir o que fazer amanhã.
+```
+
+```text
+Athena pensa.
+Iceberg materializa.
+Step Functions orquestra.
+QuickSight mostra.
+```
+
+---
+
+# 🚀 Fechamento
+
+Se você implantar isso direito, o resultado não será “uma tela de simulação”.
+
+Será isto:
+
+```text
+uma mart oficial de cenários
++ uma lógica de benchmark reutilizável
++ uma leitura clara por alavanca
++ uma projeção de impacto em caixa e eficiência
++ uma narrativa pronta para comitê
++ uma base evolutiva para previsão, risco e priorização
+```
+
+Ou seja:
+
+> **Você deixa de entregar um painel de hipótese. Você passa a entregar um sistema de decisão operacional.**
+
+```
+
+Se quiser, no próximo passo eu transformo essa nota em uma versão ainda mais operacional, já quebrada em:
+
+- `01_ddl_mart_cenarios.sql`
+- `02_carga_mart_cenarios.sql`
+- `03_campos_quicksight_simulacao.md`
+- `04_step_functions_orquestracao.md`
+- `05_testes_framework_simulacao.sql`
+```
