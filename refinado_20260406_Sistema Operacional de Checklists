@@ -1,0 +1,672 @@
+
+# 🧠 Sistema Operacional de Checklists
+
+> [!important]
+> Este sistema transforma qualidade em algo automático.
+>
+> Você não depende de “lembrar de fazer bem”.
+>
+> Você **não consegue fazer errado**, porque sempre passa pelos mesmos filtros mentais.
+
+---
+
+# 🎯 Ideia central
+
+> **Alta performance não vem de esforço — vem de checklist mental consistente.**
+
+Você vai operar com 3 camadas:
+
+1. **Checklists base → garantem qualidade**
+2. **Modo automático → dispara sem pensar**
+3. **Integração → vira sistema vivo no dia a dia**
+
+---
+
+# 🧠 1. CHECKLIST UNIVERSAL (use SEMPRE)
+
+Esse é o seu default.
+
+```text
+[CHECK FINAL]
+
+1. Está claro?
+2. Está estruturado?
+3. Tem resposta?
+4. Tem ação?
+````
+
+> [!tip]  
+> Se passar nisso → já está acima da média.
+
+---
+
+# 🔥 2. SUPER CHECK (entregas importantes)
+
+```text
+[SUPER CHECK]
+
+1. Está correto?
+2. Está claro?
+3. Está estruturado?
+4. Está confiável?
+5. Está acionável?
+6. Está reutilizável?
+```
+
+> [!important]  
+> Se isso passa → entrega nível alto.
+
+---
+
+# ⚙️ 3. MODO AUTOMÁTICO (o núcleo do sistema)
+
+Você não vai abrir checklist toda hora.
+
+Você vai usar **gatilhos mentais por contexto**.
+
+---
+
+## 🔥 3.1. Antes de ENTREGAR
+
+```text
+CLAREZA → RESPOSTA → AÇÃO
+```
+
+Se faltar 1 → não envia.
+
+---
+
+## 🔥 3.2. Durante ANÁLISE
+
+```text
+GRÃO → COMPARAÇÃO → CAUSA
+```
+
+- qual é a unidade?
+    
+- comparei com algo?
+    
+- entendi o porquê?
+    
+
+---
+
+## 🔥 3.3. Durante SQL / PIPELINE
+
+```text
+GRÃO → JOIN → FILTRO → AGREGAÇÃO → EXPLOSÃO
+```
+
+> [!warning]  
+> Isso evita 80% dos bugs de SQL.
+
+---
+
+## 🔥 3.4. Ao CRIAR algo novo
+
+```text
+REPETE → PADRÃO → AUTOMATIZA
+```
+
+---
+
+## 🔥 3.5. Ao COMUNICAR
+
+```text
+PROBLEMA → INSIGHT → AÇÃO
+```
+
+---
+
+# 📚 4. COLETÂNEA COMPLETA DE CHECKLISTS
+
+---
+
+# 🧠 BLOCO 1 — UNIVERSAIS
+
+## 🔹 Mínimo
+
+-  Está claro?
+    
+-  Tem resposta?
+    
+-  Tem ação?
+    
+
+## 🔹 Completo
+
+-  Está correto?
+    
+-  Está claro?
+    
+-  Está estruturado?
+    
+-  Está acionável?
+    
+-  Está reutilizável?
+    
+
+---
+
+# 📊 BLOCO 2 — ANÁLISE
+
+## 🔹 Básico
+
+-  Dado correto?
+    
+-  Grão claro?
+    
+-  Comparei com período anterior?
+    
+-  Identifiquei causa (ou hipótese)?
+    
+-  Consigo explicar em 1 frase?
+    
+
+## 🔹 Avançado
+
+-  Qual a tendência?
+    
+-  Onde está concentrado?
+    
+-  Qual o driver?
+    
+-  É sazonal ou estrutural?
+    
+-  Qual o impacto?
+    
+
+## 🔹 Anti-análise ruim
+
+-  Estou só descrevendo?
+    
+-  Tem insight real?
+    
+-  Isso muda decisão?
+    
+
+---
+
+# 🧾 BLOCO 3 — DADOS
+
+## 🔹 Qualidade
+
+-  Tem duplicidade?
+    
+-  Tem NULL crítico?
+    
+-  Tipos corretos?
+    
+-  Chave faz sentido?
+    
+-  Volume bate com expectativa?
+    
+
+## 🔹 Consistência
+
+-  Bate com outra fonte?
+    
+-  Tem quebra de lógica?
+    
+-  Tem outlier estranho?
+    
+
+---
+
+# ⚙️ BLOCO 4 — SQL
+
+## 🔹 Básico
+
+-  Join correto?
+    
+-  Filtro correto?
+    
+-  Agregação correta?
+    
+
+## 🔹 Avançado
+
+-  Grão preservado?
+    
+-  Evita duplicação?
+    
+-  Janela correta?
+    
+-  Performance aceitável?
+    
+
+## 🔹 Anti-bug
+
+-  Explodiu linha?
+    
+-  Duplicou sem perceber?
+    
+-  LEFT virou INNER sem querer?
+    
+-  COUNT está correto?
+    
+
+> [!warning]  
+> Erros clássicos:
+> 
+> - JOIN errado
+>     
+> - filtro no lugar errado
+>     
+> - agregação inconsistente
+>     
+
+---
+
+# 🔁 BLOCO 5 — PIPELINE
+
+## 🔹 Mínimo
+
+-  Roda só quando precisa?
+    
+-  Tem log?
+    
+-  Falha visível?
+    
+
+## 🔹 Avançado
+
+-  Idempotente?
+    
+-  Incremental?
+    
+-  Detecta mudança?
+    
+-  Tem retry?
+    
+-  Debugável?
+    
+
+---
+
+# 📊 BLOCO 6 — DASHBOARD
+
+## 🔹 Básico
+
+-  Entendível em 5 segundos?
+    
+-  Tem mensagem principal?
+    
+-  Sem poluição?
+    
+
+## 🔹 Avançado
+
+-  Conta história?
+    
+-  Guia decisão?
+    
+-  Tem drill?
+    
+-  Tem contexto?
+    
+
+---
+
+# 🧠 BLOCO 7 — INSIGHT
+
+## 🔹 Mínimo
+
+-  É relevante?
+    
+-  É específico?
+    
+-  É acionável?
+    
+
+## 🔹 Forte
+
+-  Quantifica impacto?
+    
+-  Mostra causa?
+    
+-  Sugere ação?
+    
+-  Prioriza?
+    
+
+---
+
+# 💬 BLOCO 8 — COMUNICAÇÃO
+
+## 🔹 Básico
+
+-  Está direto?
+    
+-  Tem contexto?
+    
+-  Tem conclusão?
+    
+
+## 🔹 Forte
+
+-  Tem narrativa?
+    
+-  Tem priorização?
+    
+-  Tem recomendação?
+    
+-  Tem próximo passo?
+    
+
+---
+
+# 🧱 BLOCO 9 — NAMING
+
+-  Dá pra entender sem contexto?
+    
+-  Está consistente?
+    
+-  Indica o que é?
+    
+-  Indica granularidade?
+    
+
+---
+
+# 🧭 BLOCO 10 — ROI
+
+-  Isso vai se repetir?
+    
+-  Dá pra automatizar?
+    
+-  Dá pra virar padrão?
+    
+-  Isso reduz esforço futuro?
+    
+
+---
+
+# 🔥 BLOCO 11 — CARREIRA
+
+-  Isso me torna referência?
+    
+-  Isso aumenta visibilidade?
+    
+-  Isso escala?
+    
+-  Isso ajuda outras pessoas?
+    
+
+---
+
+# 🧠 5. CHECKLIST EXECUTIVO (nível diretoria)
+
+```text
+[EXECUTIVO]
+
+1. Qual é o problema?
+2. Qual o principal achado?
+3. Onde está concentrado?
+4. Qual o impacto?
+5. O que deve ser feito agora?
+```
+
+> [!important]  
+> Se faltar um → não está pronto.
+
+---
+
+# 🧠 6. CHECKLIST DE INSIGHT (diferencial real)
+
+```text
+[INSIGHT]
+
+1. Isso é relevante?
+2. Isso muda decisão?
+3. Está específico?
+4. Está acionável?
+```
+
+---
+
+# 📊 7. CHECKLIST DASHBOARD (QuickSight)
+
+```text
+[DASHBOARD]
+
+1. Dá pra entender em 5s?
+2. Tem mensagem principal?
+3. Tem excesso de gráfico?
+4. Está guiando decisão?
+5. Está consistente?
+```
+
+---
+
+# ⚙️ 8. CHECKLIST PIPELINE
+
+```text
+[PIPELINE]
+
+1. Roda só quando precisa?
+2. É idempotente?
+3. Tem log?
+4. Dá pra debugar?
+5. Tem fallback?
+```
+
+---
+
+# 🧠 9. CHECKLIST SQL (SCAN MENTAL)
+
+## 🔥 Versão rápida
+
+```text
+GRÃO → JOIN → FILTRO → AGREGAÇÃO → EXPLOSÃO
+```
+
+## 🔥 Versão completa
+
+-  Qual é o grão?
+    
+-  Join pode duplicar?
+    
+-  Filtro está no lugar certo?
+    
+-  Agregação consistente?
+    
+-  Window correta?
+    
+-  NULL tratado?
+    
+-  Performance ok?
+    
+
+> [!quote]  
+> Se você não sabe o grão → você não sabe o que está fazendo.
+
+---
+
+# 🧭 10. ONDE APLICAR (mapa prático)
+
+## 📍 Rodando query
+
+→ SQL + dados
+
+## 📍 Fazendo análise
+
+→ análise + insight
+
+## 📍 Montando dashboard
+
+→ dashboard + comunicação
+
+## 📍 Enviando mensagem/email
+
+→ comunicação + executivo
+
+## 📍 Criando algo novo
+
+→ ROI + naming
+
+## 📍 Finalizando qualquer coisa
+
+→ super check
+
+---
+
+# ⚡ 11. ROTINA IDEAL
+
+## 🟢 Durante o trabalho
+
+→ modo automático
+
+## 🟡 Antes de enviar
+
+→ checklist universal
+
+## 🔵 Entregas importantes
+
+→ super check + executivo
+
+## 🔴 SQL
+
+→ scan SQL (10–20s)
+
+---
+
+# 📓 12. INTEGRAÇÃO COM OBSIDIAN
+
+## Estrutura sugerida
+
+```text
+00 - Sistema/
+   sistema_operacional.md
+   checklist_sql.md
+   checklist_dashboard.md
+
+01 - Templates/
+   template_analise.md
+   template_pipeline.md
+
+02 - Execucao/
+   analises/
+   pipelines/
+```
+
+---
+
+## Nota central
+
+```markdown
+# 🧠 Sistema de Qualidade Operacional
+
+## Modo Automático
+
+Entrega → CLAREZA → RESPOSTA → AÇÃO  
+Análise → GRÃO → COMPARAÇÃO → CAUSA  
+SQL → GRÃO → JOIN → FILTRO → AGREGAÇÃO  
+Comunicação → PROBLEMA → INSIGHT → AÇÃO  
+Criação → REPETE → PADRÃO → AUTOMATIZA  
+
+---
+
+## Super Check
+- [ ] Correto?
+- [ ] Claro?
+- [ ] Estruturado?
+- [ ] Acionável?
+- [ ] Confiável?
+- [ ] Reutilizável?
+```
+
+---
+
+## Template com checklist embutido
+
+```markdown
+---
+tipo: analise
+---
+
+# Contexto
+
+# Problema
+
+# Evidência
+
+# Insight
+
+# Recomendação
+
+---
+
+## ✔ Checklist
+- [ ] Está claro?
+- [ ] Tem resposta?
+- [ ] Tem ação?
+- [ ] Está confiável?
+```
+
+---
+
+# 🚀 13. O efeito real disso
+
+Depois de algumas semanas:
+
+- menos erro
+    
+- mais clareza
+    
+- mais confiança
+    
+- mais velocidade
+    
+- mais percepção de qualidade
+    
+- mais influência
+    
+
+---
+
+# 🧠 14. Frases para internalizar
+
+> “Alta performance não é pensar melhor — é esquecer menos.”
+
+> “Qualidade alta vem de checklist, não de esforço.”
+
+> “Profissional forte pensa bem. Profissional absurdo tem sistema que pensa por ele.”
+
+---
+
+# 🎯 RESUMO FINAL
+
+Você passa a operar assim:
+
+- não depende de memória
+    
+- não depende de esforço extra
+    
+- não entrega coisa confusa
+    
+- não quebra dado
+    
+- não faz análise rasa
+    
+
+Você passa a ter:
+
+> **um sistema que garante qualidade automaticamente**
+
+---
+
+# 🔗 Próximos passos
+
+- [[Sistema de Naming]]
+    
+- [[Template de Análise]]
+    
+- [[Pipeline Idempotente]]
+    
+- [[Dashboard Executivo]]
+    
+- [[Data Operating System]]
+    
+
+---
