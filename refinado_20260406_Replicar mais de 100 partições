@@ -1,0 +1,400 @@
+Claro. Vou deixar **hardcoded**, como se fosse um primeiro protótipo para copiar uma tabela já existente e replicá-la como bronze, **mantendo as mesmas colunas de partição**.
+
+Vou assumir este exemplo:
+
+```text
+origem:  workspace_db.minha_tabela_origem
+destino: workspace_db.tabela_bronze_fonte_cobranca_minha_entidade
+partições: anomes, dt_ref
+path destino: s3://meu-bucket/bronze/cobranca/minha_entidade/
+```
+
+E reforçando o ponto central: para mais de 500 partições, o caminho certo é usar Glue/Spark para escrever a tabela nova, não CTAS/INSERT do Athena, porque o Athena limita CTAS e `INSERT INTO` a 100 partições por operação. O Glue, por outro lado, consegue atualizar o catálogo com `enableUpdateCatalog=True` e `partitionKeys=[...]`.
+
+---
+
+# Exemplo hardcoded — versão simples
+
+## O que este script faz
+
+1. lê a tabela existente no Glue Catalog
+    
+2. converte para DataFrame
+    
+3. escreve no novo caminho S3 bronze
+    
+4. mantém as partições `anomes` e `dt_ref`
+    
+5. publica/atualiza a nova tabela no catálogo
+    
+
+---
+
+## Script Glue PySpark hardcoded
+
+```python
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.context import SparkContext
+
+# =========================================================
+# 1) CONTEXTO
+# =========================================================
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+
+job.init("job_replicacao_bronze_hardcoded", {})
+
+# =========================================================
+# 2) DEFINIÇÕES HARDCODED
+# =========================================================
+SRC_DATABASE = "workspace_db"
+SRC_TABLE = "minha_tabela_origem"
+
+DST_DATABASE = "workspace_db"
+DST_TABLE = "tabela_bronze_fonte_cobranca_minha_entidade"
+
+DST_S3_PATH = "s3://meu-bucket/bronze/cobranca/minha_entidade/"
+
+PARTITION_KEYS = ["anomes", "dt_ref"]
+
+# =========================================================
+# 3) LEITURA DA TABELA ORIGEM
+# =========================================================
+dyf_src = glueContext.create_dynamic_frame.from_catalog(
+    database=SRC_DATABASE,
+    table_name=SRC_TABLE
+)
+
+df_src = dyf_src.toDF()
+
+print("Schema da origem:")
+df_src.printSchema()
+
+print("Quantidade de linhas da origem:")
+print(df_src.count())
+
+# =========================================================
+# 4) ESCRITA FÍSICA NO NOVO PATH
+#    mantendo as mesmas partições
+# =========================================================
+(
+    df_src.write
+        .mode("overwrite")
+        .format("parquet")
+        .partitionBy(*PARTITION_KEYS)
+        .save(DST_S3_PATH)
+)
+
+# =========================================================
+# 5) REGISTRO / ATUALIZAÇÃO DA TABELA NO CATALOG
+# =========================================================
+sink = glueContext.getSink(
+    connection_type="s3",
+    path=DST_S3_PATH,
+    enableUpdateCatalog=True,
+    updateBehavior="UPDATE_IN_DATABASE",
+    partitionKeys=PARTITION_KEYS
+)
+
+sink.setFormat("parquet")
+sink.setCatalogInfo(
+    catalogDatabase=DST_DATABASE,
+    catalogTableName=DST_TABLE
+)
+
+sink.writeFrame(dyf_src)
+
+job.commit()
+```
+
+---
+
+# O problema dessa versão
+
+Ela tem uma limitação importante:
+
+na etapa final, o `sink.writeFrame(dyf_src)` **escreve de novo**.  
+Ou seja, ela funciona como exemplo didático, mas **mistura a escrita física com a publicação da tabela** de um jeito que eu não usaria em produção.
+
+Para produção, eu prefiro uma versão um pouco mais correta.
+
+---
+
+# Exemplo hardcoded — versão melhor
+
+Aqui eu deixo a escrita física explícita e depois publico a tabela no catálogo a partir do mesmo DataFrame convertido novamente para DynamicFrame.
+
+```python
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.context import SparkContext
+
+# =========================================================
+# 1) CONTEXTO
+# =========================================================
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+
+job.init("job_replicacao_bronze_hardcoded", {})
+
+# =========================================================
+# 2) DEFINIÇÕES HARDCODED
+# =========================================================
+SRC_DATABASE = "workspace_db"
+SRC_TABLE = "minha_tabela_origem"
+
+DST_DATABASE = "workspace_db"
+DST_TABLE = "tabela_bronze_fonte_cobranca_minha_entidade"
+
+DST_S3_PATH = "s3://meu-bucket/bronze/cobranca/minha_entidade/"
+
+PARTITION_KEYS = ["anomes", "dt_ref"]
+
+# =========================================================
+# 3) LEITURA DA ORIGEM
+# =========================================================
+dyf_src = glueContext.create_dynamic_frame.from_catalog(
+    database=SRC_DATABASE,
+    table_name=SRC_TABLE
+)
+
+df_src = dyf_src.toDF()
+
+# =========================================================
+# 4) ESCRITA FÍSICA NO S3
+# =========================================================
+(
+    df_src.write
+        .mode("overwrite")
+        .format("parquet")
+        .partitionBy(*PARTITION_KEYS)
+        .save(DST_S3_PATH)
+)
+
+# =========================================================
+# 5) RELER O DESTINO E PUBLICAR NO CATALOG
+# =========================================================
+df_dst = spark.read.parquet(DST_S3_PATH)
+dyf_dst = DynamicFrame.fromDF(df_dst, glueContext, "dyf_dst")
+
+sink = glueContext.getSink(
+    connection_type="s3",
+    path=DST_S3_PATH,
+    enableUpdateCatalog=True,
+    updateBehavior="UPDATE_IN_DATABASE",
+    partitionKeys=PARTITION_KEYS
+)
+
+sink.setFormat("parquet")
+sink.setCatalogInfo(
+    catalogDatabase=DST_DATABASE,
+    catalogTableName=DST_TABLE
+)
+
+sink.writeFrame(dyf_dst)
+
+job.commit()
+```
+
+---
+
+# O que esse exemplo preserva
+
+Ele preserva:
+
+- mesmo conteúdo lógico da origem
+    
+- mesmas chaves de partição
+    
+- nova tabela bronze
+    
+- novo caminho físico no S3
+    
+
+Ou seja, se a origem tinha algo como:
+
+```text
+anomes=202501/dt_ref=20250101
+anomes=202501/dt_ref=20250102
+...
+anomes=202512/dt_ref=20251231
+```
+
+o destino bronze vai nascer com a mesma lógica de partição.
+
+---
+
+# Exemplo mais realista com rename de bronze
+
+Se você quiser fazer isso já no espírito do seu naming oficial, o script ficaria assim:
+
+```python
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.context import SparkContext
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+
+job.init("job_bronze_fonte_cobranca_pagamentos", {})
+
+# ---------------------------------------------------------
+# ORIGEM
+# ---------------------------------------------------------
+SRC_DATABASE = "workspace_db"
+SRC_TABLE = "view_ou_tabela_legada_pagamentos"
+
+# ---------------------------------------------------------
+# DESTINO BRONZE
+# ---------------------------------------------------------
+DST_DATABASE = "workspace_db"
+DST_TABLE = "tabela_bronze_fonte_cobranca_pagamentos"
+DST_S3_PATH = "s3://meu-bucket/bronze/cobranca/pagamentos/"
+
+PARTITION_KEYS = ["anomes", "dt_ref"]
+
+# ---------------------------------------------------------
+# LEITURA
+# ---------------------------------------------------------
+dyf_src = glueContext.create_dynamic_frame.from_catalog(
+    database=SRC_DATABASE,
+    table_name=SRC_TABLE
+)
+
+df_src = dyf_src.toDF()
+
+# ---------------------------------------------------------
+# ESCRITA
+# ---------------------------------------------------------
+(
+    df_src.write
+        .mode("overwrite")
+        .format("parquet")
+        .partitionBy("anomes", "dt_ref")
+        .save(DST_S3_PATH)
+)
+
+# ---------------------------------------------------------
+# PUBLICAÇÃO NO CATÁLOGO
+# ---------------------------------------------------------
+df_dst = spark.read.parquet(DST_S3_PATH)
+dyf_dst = DynamicFrame.fromDF(df_dst, glueContext, "dyf_dst")
+
+sink = glueContext.getSink(
+    connection_type="s3",
+    path=DST_S3_PATH,
+    enableUpdateCatalog=True,
+    updateBehavior="UPDATE_IN_DATABASE",
+    partitionKeys=["anomes", "dt_ref"]
+)
+
+sink.setFormat("parquet")
+sink.setCatalogInfo(
+    catalogDatabase=DST_DATABASE,
+    catalogTableName=DST_TABLE
+)
+
+sink.writeFrame(dyf_dst)
+
+job.commit()
+```
+
+---
+
+# Cuidados importantes
+
+## 1. `overwrite` apaga o destino
+
+Se você rodar de novo com `.mode("overwrite")`, ele regrava tudo.
+
+Para replicação inicial completa, isso é ok.  
+Para incremental depois, normalmente eu mudaria a estratégia.
+
+## 2. As colunas de partição precisam existir no DataFrame
+
+Se a origem não expõe `anomes` e `dt_ref` como colunas normais, você vai precisar recriá-las antes do `.partitionBy(...)`.
+
+## 3. Tabela de origem pode ser view
+
+Se for view no catálogo, muitas vezes funciona normal.  
+Mas, se ela tiver alguma limitação, pode ser melhor ler direto do path físico.
+
+## 4. Mais de 500 partições não é o problema aqui
+
+O problema de “100 partições” é do Athena em CTAS/INSERT.  
+Nesse padrão com Glue/Spark, você não está preso a esse limite da mesma forma.
+
+---
+
+# Quando eu colocaria loop mesmo assim
+
+Mesmo sem precisar por causa das 500 partições, eu faria loop quando:
+
+- a tabela é muito grande
+    
+- você quer copiar por faixa de `anomes`
+    
+- quer retomar em caso de falha
+    
+- quer reduzir risco operacional
+    
+
+Exemplo mental:
+
+```text
+202401-202406
+202407-202412
+202501-202506
+...
+```
+
+Mas para a sua pergunta específica, **não precisa loop só porque passou de 500 partições**.
+
+---
+
+# Melhor leitura sênior do caso
+
+O seu problema não é:
+
+> “como copiar 500 partições?”
+
+O seu problema real é:
+
+> “como replicar fisicamente uma tabela particionada sem usar o mecanismo errado do Athena?”
+
+E a resposta é:
+
+```text
+Glue/Spark para escrita física
++
+mesmas partition keys
++
+enableUpdateCatalog=True
+```
+
+---
+
+# Recomendação final
+
+Para começar, use a versão hardcoded “melhor” acima.  
+Ela é simples, clara e já resolve seu caso.
+
+Depois, a próxima evolução natural seria:
+
+```text
+hardcoded full load
+→ hardcoded por faixa de anomes
+→ parametrizado
+→ orquestrado por Step Functions
+```
+
+Se você quiser, no próximo passo eu monto a **versão hardcoded com loop por `anomes`**, que é a mais útil quando a tabela é muito grande.
