@@ -1,0 +1,450 @@
+Dá, mas aqui tem uma distinção importante:
+
+## ponto crítico
+
+**“Ler de uma query Athena”** não é a mesma coisa que **“ler de uma tabela do catálogo que o Athena consulta”**.
+
+Para o seu caso, isso muda bastante.
+
+### Se você ler o resultado de uma query Athena
+
+Você vai receber um **result set**.
+Esse resultado vem “achatado”, sem herdar automaticamente a estrutura física de partições da tabela origem.
+
+Ou seja:
+
+* a query pode trazer as colunas `anomes`, `dt_ref`
+* mas o Athena **não te entrega a tabela já particionada**
+* quem vai recriar as partições é o **Glue/Spark**, no momento da escrita
+
+Além disso, por padrão, resultado de `SELECT` no Athena vai para o bucket de resultados, e o Athena grava isso em **CSV**, a menos que você use `UNLOAD` ou CTAS. A própria doc fala isso explicitamente. 
+
+---
+
+# leitura sênior do problema
+
+Se o seu objetivo é:
+
+```text
+pegar o resultado de uma lógica SQL
+e materializar como bronze
+mantendo partições
+```
+
+então existem 3 caminhos.
+
+## caminho 1 — o melhor
+
+**Transformar a query em view** e o Glue ler a view/tabela pelo catálogo.
+
+## caminho 2 — aceitável
+
+Executar a query Athena via API, esperar terminar, ler o CSV gerado no S3, e depois escrever particionado no bronze.
+
+## caminho 3 — geralmente o mais limpo em Glue
+
+Ler a tabela base no Glue e executar a lógica SQL no próprio Spark com `spark.sql`.
+
+Para o seu caso, eu evitaria o caminho 2, a não ser que você **precise muito** que a engine que execute a lógica seja o Athena.
+
+---
+
+# o que eu recomendo no seu caso
+
+Como você quer replicar para bronze e manter partições, eu recomendo:
+
+```text id="v9w8f3"
+Athena view (ou tabela)
+    ↓
+Glue lê do catálogo
+    ↓
+Glue escreve no bronze com partitionBy(...)
+```
+
+Porque o Glue usa o Data Catalog como fonte de metadados, e o Athena também usa o Glue Data Catalog para saber como encontrar e ler os dados no S3. 
+
+Isso fica mais consistente com o seu padrão arquitetural:
+
+```text id="58a4x0"
+bronze_fonte -> silver_padronizado -> silver_integrado -> gold
+```
+
+---
+
+# 1. jeito mais limpo: query Athena vira view
+
+## exemplo no Athena
+
+Suponha que sua query seja:
+
+```sql id="90s2z5"
+CREATE OR REPLACE VIEW workspace_db.view_tmp_replicacao_bronze AS
+SELECT
+    col1,
+    col2,
+    anomes,
+    dt_ref
+FROM workspace_db.minha_tabela_origem
+WHERE anomes >= 202401;
+```
+
+Depois o Glue lê essa view do catálogo e escreve no bronze.
+
+## Glue hardcoded lendo a view
+
+```python id="qj1e1v"
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.context import SparkContext
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+
+job.init("job_bronze_lendo_view_athena", {})
+
+SRC_DATABASE = "workspace_db"
+SRC_TABLE = "view_tmp_replicacao_bronze"
+
+DST_DATABASE = "workspace_db"
+DST_TABLE = "tabela_bronze_fonte_cobranca_minha_entidade"
+DST_S3_PATH = "s3://meu-bucket/bronze/cobranca/minha_entidade/"
+
+PARTITION_KEYS = ["anomes", "dt_ref"]
+
+# lê a view registrada no catálogo
+dyf_src = glueContext.create_dynamic_frame.from_catalog(
+    database=SRC_DATABASE,
+    table_name=SRC_TABLE
+)
+
+df_src = dyf_src.toDF()
+
+# garante que as colunas de partição estão presentes
+df_src.select("anomes", "dt_ref").show(5, False)
+
+# escreve no bronze recriando as partições
+(
+    df_src.write
+        .mode("overwrite")
+        .format("parquet")
+        .partitionBy(*PARTITION_KEYS)
+        .save(DST_S3_PATH)
+)
+
+# publica no catálogo
+df_dst = spark.read.parquet(DST_S3_PATH)
+dyf_dst = DynamicFrame.fromDF(df_dst, glueContext, "dyf_dst")
+
+sink = glueContext.getSink(
+    connection_type="s3",
+    path=DST_S3_PATH,
+    enableUpdateCatalog=True,
+    updateBehavior="UPDATE_IN_DATABASE",
+    partitionKeys=PARTITION_KEYS
+)
+
+sink.setFormat("parquet")
+sink.setCatalogInfo(
+    catalogDatabase=DST_DATABASE,
+    catalogTableName=DST_TABLE
+)
+
+sink.writeFrame(dyf_dst)
+
+job.commit()
+```
+
+## por que esse caminho é melhor
+
+Porque você não fica dependente do bucket de resultado do Athena, nem de CSV intermediário.
+
+---
+
+# 2. jeito “literal”: executar query Athena e ler o resultado no S3
+
+Se você quer **realmente** que o Glue leia o resultado de uma query Athena, o fluxo é este:
+
+```text id="wajd9n"
+Glue -> boto3 start_query_execution
+     -> polling até SUCCEEDED
+     -> pega OutputLocation
+     -> lê o arquivo de resultado no S3
+     -> escreve no bronze com partitionBy
+```
+
+## cuidado importante
+
+Resultado de `SELECT` do Athena sai em **CSV** por padrão. 
+
+Então esse método funciona, mas é mais “gambiarra operacional” do que arquitetura limpa para pipeline recorrente.
+
+## exemplo hardcoded
+
+```python id="25d6w1"
+import time
+import boto3
+
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.context import SparkContext
+from pyspark.sql import functions as F
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+
+job.init("job_bronze_lendo_query_athena", {})
+
+athena = boto3.client("athena", region_name="us-east-1")
+
+DATABASE = "workspace_db"
+WORKGROUP = "primary"
+ATHENA_OUTPUT = "s3://meu-bucket-athena-results/queries/"
+QUERY = """
+SELECT
+    col1,
+    col2,
+    anomes,
+    dt_ref
+FROM workspace_db.minha_tabela_origem
+WHERE anomes >= 202401
+"""
+
+DST_DATABASE = "workspace_db"
+DST_TABLE = "tabela_bronze_fonte_cobranca_minha_entidade"
+DST_S3_PATH = "s3://meu-bucket/bronze/cobranca/minha_entidade/"
+PARTITION_KEYS = ["anomes", "dt_ref"]
+
+# ---------------------------------------------------------
+# 1) executa query Athena
+# ---------------------------------------------------------
+resp = athena.start_query_execution(
+    QueryString=QUERY,
+    QueryExecutionContext={"Database": DATABASE},
+    ResultConfiguration={"OutputLocation": ATHENA_OUTPUT},
+    WorkGroup=WORKGROUP
+)
+
+query_execution_id = resp["QueryExecutionId"]
+
+# ---------------------------------------------------------
+# 2) espera terminar
+# ---------------------------------------------------------
+while True:
+    status_resp = athena.get_query_execution(QueryExecutionId=query_execution_id)
+    state = status_resp["QueryExecution"]["Status"]["State"]
+
+    if state in ["SUCCEEDED", "FAILED", "CANCELLED"]:
+        break
+
+    time.sleep(3)
+
+if state != "SUCCEEDED":
+    raise Exception(f"Query Athena falhou. Status final: {state}")
+
+output_location = status_resp["QueryExecution"]["ResultConfiguration"]["OutputLocation"]
+print("Output Athena:", output_location)
+
+# ---------------------------------------------------------
+# 3) lê resultado CSV do Athena
+# ---------------------------------------------------------
+df_src = (
+    spark.read
+         .option("header", "true")
+         .csv(output_location)
+)
+
+# se necessário, ajusta tipos
+df_src = (
+    df_src
+    .withColumn("anomes", F.col("anomes").cast("int"))
+    .withColumn("dt_ref", F.col("dt_ref").cast("int"))
+)
+
+# ---------------------------------------------------------
+# 4) escreve no bronze recriando partições
+# ---------------------------------------------------------
+(
+    df_src.write
+        .mode("overwrite")
+        .format("parquet")
+        .partitionBy(*PARTITION_KEYS)
+        .save(DST_S3_PATH)
+)
+
+# ---------------------------------------------------------
+# 5) publica no catálogo
+# ---------------------------------------------------------
+df_dst = spark.read.parquet(DST_S3_PATH)
+dyf_dst = DynamicFrame.fromDF(df_dst, glueContext, "dyf_dst")
+
+sink = glueContext.getSink(
+    connection_type="s3",
+    path=DST_S3_PATH,
+    enableUpdateCatalog=True,
+    updateBehavior="UPDATE_IN_DATABASE",
+    partitionKeys=PARTITION_KEYS
+)
+
+sink.setFormat("parquet")
+sink.setCatalogInfo(
+    catalogDatabase=DST_DATABASE,
+    catalogTableName=DST_TABLE
+)
+
+sink.writeFrame(dyf_dst)
+
+job.commit()
+```
+
+---
+
+# 3. o melhor desenho dentro do Glue: fazer a query no Spark
+
+Se a sua query Athena é só SQL sobre tabelas do catálogo, muitas vezes o melhor é:
+
+1. ler a tabela no Glue
+2. registrar temp view
+3. rodar `spark.sql(...)`
+4. escrever particionado
+
+## exemplo
+
+```python id="64owpq"
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.context import SparkContext
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+
+job.init("job_bronze_sql_spark", {})
+
+dyf_src = glueContext.create_dynamic_frame.from_catalog(
+    database="workspace_db",
+    table_name="minha_tabela_origem"
+)
+
+df_src = dyf_src.toDF()
+df_src.createOrReplaceTempView("origem")
+
+df_result = spark.sql("""
+    SELECT
+        col1,
+        col2,
+        anomes,
+        dt_ref
+    FROM origem
+    WHERE anomes >= 202401
+""")
+
+(
+    df_result.write
+        .mode("overwrite")
+        .format("parquet")
+        .partitionBy("anomes", "dt_ref")
+        .save("s3://meu-bucket/bronze/cobranca/minha_entidade/")
+)
+```
+
+## por que isso costuma ser melhor
+
+Porque você elimina:
+
+* polling de Athena
+* CSV intermediário
+* dependência do output bucket
+* dupla engine para uma lógica simples
+
+---
+
+# observação importante sobre partições
+
+Esse é o erro conceitual mais comum:
+
+> “se eu ler de uma query Athena, as partições da tabela origem vêm junto”
+
+Não vêm.
+
+A query te devolve **linhas**, não a organização física da tabela.
+
+Então, para preservar a mesma lógica de partição, você precisa garantir duas coisas:
+
+## 1. a query devolve as colunas de partição
+
+Exemplo:
+
+```sql id="91wcc8"
+SELECT
+    col1,
+    col2,
+    anomes,
+    dt_ref
+FROM ...
+```
+
+## 2. o Glue escreve com `partitionBy("anomes", "dt_ref")`
+
+Sem isso, você perde a organização particionada no destino.
+
+---
+
+# o que eu faria no seu caso
+
+Como você quer “replicar como bronze”, eu faria assim:
+
+## opção mais sólida
+
+```text id="r9f93w"
+Athena view
+→ Glue from_catalog
+→ write partitionBy
+→ enableUpdateCatalog
+```
+
+## opção mais literal
+
+```text id="kqzcng"
+Athena start_query_execution
+→ lê CSV resultado
+→ write partitionBy
+→ enableUpdateCatalog
+```
+
+## opção mais pragmática
+
+```text id="cl2okt"
+Glue lê a tabela base
+→ Spark SQL
+→ write partitionBy
+→ enableUpdateCatalog
+```
+
+---
+
+# recomendação final
+
+Para produção, eu escolheria esta ordem:
+
+1. **view no Athena + Glue lendo do catálogo**
+2. **Spark SQL no Glue**
+3. **ler resultado CSV de query Athena**
+
+A terceira funciona, mas é a menos elegante.
+
+Se você quiser, eu posso montar agora uma versão **100% hardcoded no seu padrão**, usando um nome real tipo:
+
+```text id="g9dnst"
+origem: workspace_db.sua_tabela
+query: SELECT ... FROM ...
+destino: workspace_db.tabela_bronze_fonte_<sistema>_<entidade>
+partições: [...]
+```
