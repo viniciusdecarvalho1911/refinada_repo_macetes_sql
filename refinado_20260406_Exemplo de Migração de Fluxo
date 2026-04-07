@@ -1,0 +1,306 @@
+
+
+✅ **COALESCE padronizado** nas dimensões para tratar nulos  
+✅ Bucket padrão: **'(SEM_INFO)'** (pode trocar)  
+✅ Métricas por **fila + segmento + faixa_atraso** consistentes  
+✅ Movimentos robustos mesmo com null  
+✅ Dataset linha a linha  
+✅ **Consulta agregada (sem contrato/produto)** pronta para dashboard
+
+---
+
+# 🧱 Convenção de tratamento de nulos
+
+Usei:
+
+```sql
+COALESCE(campo, '(SEM_INFO)')
+```
+
+👉 Isso garante que:
+
+- joins de métricas não quebrem
+    
+- Sankey não perca fluxo
+    
+- contagens não fragmentem
+    
+- comparações funcionem
+    
+
+---
+
+# 🚀 SQL COMPLETO — DATASET DETALHADO (linha a linha)
+
+```sql
+-- Athena / PrestoSQL
+-- Versão ROBUSTA com tratamento de nulos
+
+WITH
+pares_meses AS (
+    SELECT * FROM (
+        VALUES
+            ('202512', '202601'),
+            ('202512', '202602'),
+            ('202601', '202602')
+    ) AS t(mes_anterior, mes_atual)
+),
+
+-- 1) Filtra base
+base_filtrada AS (
+    SELECT
+        CAST(mesref AS varchar)              AS mesref,
+        CAST(dt_foto AS date)                AS dt_foto,
+        contrato,
+        produto,
+        COALESCE(segmento, '(SEM_INFO)')           AS segmento,
+        COALESCE(novas_filas_adm, '(SEM_INFO)')    AS novas_filas_adm,
+        COALESCE(faixa_atraso, '(SEM_INFO)')       AS faixa_atraso,
+        CAST(risco AS double)                AS risco,
+        CAST(saldo AS double)                AS saldo
+    FROM vigor_completa
+    WHERE mesref IN ('202512','202601','202602')
+),
+
+-- 2) Última foto do mês
+base_ultima_foto AS (
+    SELECT *
+    FROM (
+        SELECT
+            b.*,
+            row_number() OVER (
+                PARTITION BY mesref, contrato, produto
+                ORDER BY dt_foto DESC
+            ) AS rn
+        FROM base_filtrada b
+    )
+    WHERE rn = 1
+),
+
+-- 3) Métricas por FILA + SEGMENTO + FAIXA
+metricas_mes_dim AS (
+    SELECT
+        mesref,
+        novas_filas_adm,
+        segmento,
+        faixa_atraso,
+
+        COUNT(DISTINCT CONCAT(CAST(contrato AS varchar),'|',CAST(produto AS varchar)))
+            AS qtd_dist_contrato_produto,
+
+        SUM(saldo) AS saldo_total,
+
+        CASE
+            WHEN COUNT(DISTINCT CONCAT(CAST(contrato AS varchar),'|',CAST(produto AS varchar))) = 0
+                THEN NULL
+            ELSE SUM(saldo)
+                 / COUNT(DISTINCT CONCAT(CAST(contrato AS varchar),'|',CAST(produto AS varchar)))
+        END AS ticket_medio,
+
+        AVG(risco) AS media_risco,
+        approx_percentile(risco, 0.5) AS mediana_risco
+
+    FROM base_ultima_foto
+    GROUP BY 1,2,3,4
+),
+
+-- 4) Pareamento FULL OUTER
+pares_expandido AS (
+    SELECT
+        pm.mes_anterior,
+        pm.mes_atual,
+
+        COALESCE(a.contrato, b.contrato) AS contrato,
+        COALESCE(a.produto,  b.produto)  AS produto,
+
+        a.segmento        AS segmento_anterior,
+        b.segmento        AS segmento_atual,
+
+        a.novas_filas_adm AS novas_filas_adm_anterior,
+        b.novas_filas_adm AS novas_filas_adm_atual,
+
+        a.faixa_atraso    AS faixa_atraso_anterior,
+        b.faixa_atraso    AS faixa_atraso_atual,
+
+        a.risco AS risco_anterior,
+        b.risco AS risco_atual,
+
+        a.saldo AS saldo_anterior,
+        b.saldo AS saldo_atual
+
+    FROM pares_meses pm
+    LEFT JOIN base_ultima_foto a
+        ON a.mesref = pm.mes_anterior
+    FULL OUTER JOIN base_ultima_foto b
+        ON b.mesref = pm.mes_atual
+       AND a.contrato = b.contrato
+       AND a.produto  = b.produto
+),
+
+final AS (
+    SELECT
+        p.*,
+
+        -- status existência
+        CASE
+            WHEN saldo_anterior IS NULL THEN 'ENTRADA'
+            WHEN saldo_atual    IS NULL THEN 'SAIDA'
+            ELSE 'PERMANECE'
+        END AS status_existencia,
+
+        -- movimentos dimensão
+        CASE
+            WHEN saldo_anterior IS NULL OR saldo_atual IS NULL THEN 'NA'
+            WHEN segmento_anterior = segmento_atual THEN 'MESMO_SEGMENTO'
+            ELSE 'MUDOU_SEGMENTO'
+        END AS mov_segmento,
+
+        CASE
+            WHEN saldo_anterior IS NULL OR saldo_atual IS NULL THEN 'NA'
+            WHEN novas_filas_adm_anterior = novas_filas_adm_atual THEN 'MESMA_FILA_ADM'
+            ELSE 'MUDOU_FILA_ADM'
+        END AS mov_novas_filas_adm,
+
+        -- delta risco
+        CASE
+            WHEN risco_anterior IS NULL OR risco_atual IS NULL THEN NULL
+            ELSE risco_atual - risco_anterior
+        END AS delta_risco,
+
+        -- delta saldo
+        CASE
+            WHEN saldo_anterior IS NULL THEN saldo_atual
+            WHEN saldo_atual IS NULL THEN -saldo_anterior
+            ELSE saldo_atual - saldo_anterior
+        END AS delta_saldo,
+
+        -- chave distinct
+        CONCAT(CAST(contrato AS varchar),'|',CAST(produto AS varchar))
+            AS chave_contrato_produto
+
+    FROM pares_expandido p
+),
+
+-- 5) Join das métricas dimensionais
+final_enriquecido AS (
+    SELECT
+        f.*,
+
+        md1.ticket_medio  AS ticket_medio_anterior,
+        md2.ticket_medio  AS ticket_medio_atual,
+
+        md1.media_risco   AS media_risco_anterior,
+        md2.media_risco   AS media_risco_atual,
+
+        md1.mediana_risco AS mediana_risco_anterior,
+        md2.mediana_risco AS mediana_risco_atual,
+
+        -- deltas métricas
+        md2.ticket_medio  - md1.ticket_medio  AS delta_ticket_medio,
+        md2.media_risco   - md1.media_risco   AS delta_media_risco,
+        md2.mediana_risco - md1.mediana_risco AS delta_mediana_risco
+
+    FROM final f
+
+    LEFT JOIN metricas_mes_dim md1
+        ON md1.mesref = f.mes_anterior
+       AND md1.novas_filas_adm = f.novas_filas_adm_anterior
+       AND md1.segmento       = f.segmento_anterior
+       AND md1.faixa_atraso   = f.faixa_atraso_anterior
+
+    LEFT JOIN metricas_mes_dim md2
+        ON md2.mesref = f.mes_atual
+       AND md2.novas_filas_adm = f.novas_filas_adm_atual
+       AND md2.segmento       = f.segmento_atual
+       AND md2.faixa_atraso   = f.faixa_atraso_atual
+)
+
+SELECT *
+FROM final_enriquecido;
+```
+
+---
+
+# 📊 CONSULTA AGREGADA (SEM contrato/produto) — ⭐ PEDIDO
+
+👉 Ideal para QuickSight / comitê  
+👉 MECE por movimento + dimensões
+
+```sql
+WITH base AS (
+    SELECT * FROM final_enriquecido
+)
+
+SELECT
+    mes_anterior,
+    mes_atual,
+
+    segmento_anterior,
+    segmento_atual,
+
+    novas_filas_adm_anterior,
+    novas_filas_adm_atual,
+
+    faixa_atraso_anterior,
+    faixa_atraso_atual,
+
+    status_existencia,
+    mov_segmento,
+    mov_novas_filas_adm,
+
+    COUNT(DISTINCT chave_contrato_produto) AS qtd_dist_contrato_produto,
+
+    SUM(COALESCE(saldo_anterior,0)) AS saldo_anterior_total,
+    SUM(COALESCE(saldo_atual,0))    AS saldo_atual_total,
+    SUM(COALESCE(delta_saldo,0))    AS delta_saldo_total,
+
+    SUM(COALESCE(delta_risco,0))    AS soma_delta_risco,
+
+    AVG(ticket_medio_anterior) AS ticket_medio_anterior,
+    AVG(ticket_medio_atual)    AS ticket_medio_atual,
+    AVG(delta_ticket_medio)    AS delta_ticket_medio,
+
+    AVG(media_risco_anterior)  AS media_risco_anterior,
+    AVG(media_risco_atual)     AS media_risco_atual,
+    AVG(delta_media_risco)     AS delta_media_risco,
+
+    AVG(mediana_risco_anterior) AS mediana_risco_anterior,
+    AVG(mediana_risco_atual)    AS mediana_risco_atual,
+    AVG(delta_mediana_risco)    AS delta_mediana_risco
+
+FROM base
+GROUP BY
+    mes_anterior,
+    mes_atual,
+    segmento_anterior,
+    segmento_atual,
+    novas_filas_adm_anterior,
+    novas_filas_adm_atual,
+    faixa_atraso_anterior,
+    faixa_atraso_atual,
+    status_existencia,
+    mov_segmento,
+    mov_novas_filas_adm
+
+ORDER BY mes_anterior, mes_atual;
+```
+
+---
+
+# 🧠 Próximo nível (recomendação forte pra você)
+
+Se você quiser deixar isso **nível banco grande**, o próximo upgrade é:
+
+- ✅ materializar `base_ultima_foto` (Iceberg/Parquet)
+    
+- ✅ materializar `metricas_mes_dim`
+    
+- ✅ depois só fazer o pareamento
+    
+
+Isso reduz MUITO custo no Athena.
+
+---
+
+✅ Se quiser, eu te monto a **versão otimizada para Glue + Iceberg + CTAS**  
+(essa é a que escala para carteira grande).
