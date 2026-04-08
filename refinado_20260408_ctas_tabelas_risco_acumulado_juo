@@ -1,0 +1,1665 @@
+Você tem razão. A versão anterior ficou resumida demais.
+
+Abaixo vai o conteúdo completo e consistente dos 6 arquivos, com tudo que é necessário em base para produzir as tabelas finais que desenhamos:
+
+fontes padronizadas
+
+integrações
+
+deduplicação de caixa
+
+fatos gold
+
+mart por caso + MOB
+
+mart por safra + MOB
+
+testes
+
+
+
+---
+
+01_silver_padronizado.sql
+
+-- =========================================================
+-- 01_silver_padronizado.sql
+-- Camada: silver_padronizado
+-- Objetivo:
+--   1) Padronizar snapshots de carteira/risco judicial
+--   2) Padronizar composição (novo contrato invalida o anterior)
+--   3) Padronizar custos judiciais
+--   4) Padronizar pagamentos de BOLETO, DEBITO e BD
+-- Observação:
+--   Ajuste nomes de tabelas e colunas conforme seu ambiente real.
+-- =========================================================
+
+-- =========================================================
+-- 1) CARTEIRA / RISCO SNAPSHOT
+-- Grão:
+--   1 linha = 1 dt_ref + 1 cdpasta + 1 cnpj + 1 contrato + 1 produto
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_juridico_carteira_snapshot AS
+SELECT
+    cast(date_format(cast(dt_ref as date), '%Y%m') as integer)            AS p_anomes_ref,
+    cast(date_format(cast(dt_ref as date), '%Y%m%d') as integer)          AS dt_ref_yyyymmdd,
+    cast(dt_ref as date)                                                  AS dt_ref_date,
+    cast(dt_ref as timestamp)                                             AS ts_ref,
+
+    trim(cast(cdpasta as varchar))                                        AS cdpasta,
+    trim(cast(cnpj as varchar))                                           AS cnpj,
+    trim(cast(contrato as varchar))                                       AS contrato,
+    trim(cast(produto as varchar))                                        AS produto,
+
+    cast(coalesce(dt_ajuizamento, dt_ref) as date)                        AS dt_ajuizamento_date,
+    cast(coalesce(atraso_dias, 0) as integer)                             AS atraso_dias,
+    cast(coalesce(vl_risco_atual, 0) as decimal(18,2))                    AS vl_risco_atual,
+    cast(coalesce(vl_saldo_atual, 0) as decimal(18,2))                    AS vl_saldo_atual,
+    cast(coalesce(fl_ajuizado, true) as boolean)                          AS fl_ajuizado,
+
+    current_timestamp                                                     AS dt_ingestao_modelo,
+    'execucao_manual'                                                     AS id_execucao,
+
+    md5(
+        concat(
+            coalesce(trim(cast(cdpasta as varchar)), ''),
+            '|', coalesce(trim(cast(cnpj as varchar)), ''),
+            '|', coalesce(trim(cast(contrato as varchar)), ''),
+            '|', coalesce(trim(cast(produto as varchar)), '')
+        )
+    ) AS hash_chave_caso
+FROM workspace_db.tabela_bronze_fonte_juridico_carteira_snapshot
+WHERE cdpasta  IS NOT NULL
+  AND cnpj     IS NOT NULL
+  AND contrato IS NOT NULL
+  AND produto  IS NOT NULL;
+
+-- =========================================================
+-- 2) COMPOSICAO
+-- Grão:
+--   1 linha = 1 evento de composição
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_juridico_composicao AS
+SELECT
+    cast(date_format(cast(dt_composicao as date), '%Y%m') as integer)     AS p_anomes_composicao,
+    cast(date_format(cast(dt_composicao as date), '%Y%m%d') as integer)   AS dt_composicao_yyyymmdd,
+    cast(dt_composicao as date)                                            AS dt_composicao_date,
+
+    trim(cast(cdpasta as varchar))                                         AS cdpasta,
+    trim(cast(cnpj as varchar))                                            AS cnpj,
+    trim(cast(contrato_origem as varchar))                                 AS contrato_origem,
+    trim(cast(produto_origem as varchar))                                  AS produto_origem,
+    trim(cast(contrato_destino as varchar))                                AS contrato_destino,
+    trim(cast(produto_destino as varchar))                                 AS produto_destino,
+
+    current_timestamp                                                      AS dt_ingestao_modelo,
+    'execucao_manual'                                                      AS id_execucao
+FROM workspace_db.tabela_bronze_fonte_juridico_composicao
+WHERE dt_composicao IS NOT NULL
+  AND contrato_origem IS NOT NULL
+  AND produto_origem IS NOT NULL
+  AND contrato_destino IS NOT NULL
+  AND produto_destino IS NOT NULL;
+
+-- =========================================================
+-- 3) CUSTOS
+-- Grão:
+--   1 linha = 1 evento de custo
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_juridico_custos AS
+SELECT
+    cast(date_format(cast(dt_custo as date), '%Y%m') as integer)          AS p_anomes_custo,
+    cast(date_format(cast(dt_custo as date), '%Y%m%d') as integer)        AS dt_custo_yyyymmdd,
+    cast(dt_custo as date)                                                AS dt_custo_date,
+
+    trim(cast(id_custo as varchar))                                       AS id_custo,
+    trim(cast(cdpasta as varchar))                                        AS cdpasta,
+    trim(cast(cnpj as varchar))                                           AS cnpj,
+    trim(cast(contrato as varchar))                                       AS contrato,
+    trim(cast(produto as varchar))                                        AS produto,
+    upper(trim(cast(tp_custo as varchar)))                                AS tp_custo,
+
+    cast(coalesce(vl_custo, 0) as decimal(18,2))                          AS vl_custo,
+
+    current_timestamp                                                     AS dt_ingestao_modelo,
+    'execucao_manual'                                                     AS id_execucao
+FROM workspace_db.tabela_bronze_fonte_juridico_custos
+WHERE dt_custo IS NOT NULL
+  AND cdpasta  IS NOT NULL
+  AND cnpj     IS NOT NULL
+  AND contrato IS NOT NULL
+  AND produto  IS NOT NULL;
+
+-- =========================================================
+-- 4) PAGAMENTOS - BOLETO
+-- Grão:
+--   1 linha = 1 pagamento
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_boletos AS
+SELECT
+    cast(date_format(cast(dt_pagamento as date), '%Y%m') as integer)      AS p_anomes_pagto,
+    cast(date_format(cast(dt_pagamento as date), '%Y%m%d') as integer)    AS dt_pagamento_yyyymmdd,
+    cast(dt_pagamento as date)                                             AS dt_pagamento_date,
+
+    trim(cast(id_pagamento as varchar))                                    AS id_pagamento,
+    trim(cast(contrato as varchar))                                        AS contrato,
+    trim(cast(produto as varchar))                                         AS produto,
+
+    cast(coalesce(vl_pago, 0) as decimal(18,2))                            AS vl_pago,
+    cast(coalesce(flag_cancelado, 0) as integer)                           AS flag_cancelado,
+
+    'BOLETO'                                                               AS origem_pagamento,
+
+    current_timestamp                                                      AS dt_ingestao_modelo,
+    'execucao_manual'                                                      AS id_execucao
+FROM workspace_db.tabela_bronze_fonte_sap_boletos
+WHERE dt_pagamento IS NOT NULL
+  AND contrato IS NOT NULL
+  AND produto IS NOT NULL;
+
+-- =========================================================
+-- 5) PAGAMENTOS - DEBITO
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_debito_conta AS
+SELECT
+    cast(date_format(cast(dt_pagamento as date), '%Y%m') as integer)      AS p_anomes_pagto,
+    cast(date_format(cast(dt_pagamento as date), '%Y%m%d') as integer)    AS dt_pagamento_yyyymmdd,
+    cast(dt_pagamento as date)                                             AS dt_pagamento_date,
+
+    trim(cast(id_pagamento as varchar))                                    AS id_pagamento,
+    trim(cast(contrato as varchar))                                        AS contrato,
+    trim(cast(produto as varchar))                                         AS produto,
+
+    cast(coalesce(vl_pago, 0) as decimal(18,2))                            AS vl_pago,
+
+    'DEBITO'                                                               AS origem_pagamento,
+
+    current_timestamp                                                      AS dt_ingestao_modelo,
+    'execucao_manual'                                                      AS id_execucao
+FROM workspace_db.tabela_bronze_fonte_legado_debito_conta
+WHERE dt_pagamento IS NOT NULL
+  AND contrato IS NOT NULL
+  AND produto IS NOT NULL;
+
+-- =========================================================
+-- 6) PAGAMENTOS - BD / BACKOFFICE
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_bd AS
+SELECT
+    cast(date_format(cast(dt_pagamento as date), '%Y%m') as integer)      AS p_anomes_pagto,
+    cast(date_format(cast(dt_pagamento as date), '%Y%m%d') as integer)    AS dt_pagamento_yyyymmdd,
+    cast(dt_pagamento as date)                                             AS dt_pagamento_date,
+
+    trim(cast(id_pagamento as varchar))                                    AS id_pagamento,
+    trim(cast(contrato as varchar))                                        AS contrato,
+    trim(cast(produto as varchar))                                         AS produto,
+
+    cast(coalesce(vl_pago, 0) as decimal(18,2))                            AS vl_pago,
+
+    'BD'                                                                   AS origem_pagamento,
+
+    current_timestamp                                                      AS dt_ingestao_modelo,
+    'execucao_manual'                                                      AS id_execucao
+FROM workspace_db.tabela_bronze_fonte_backoffice_fluxo_apartado
+WHERE dt_pagamento IS NOT NULL
+  AND contrato IS NOT NULL
+  AND produto IS NOT NULL;
+
+
+---
+
+02_silver_integrado.sql
+
+-- =========================================================
+-- 02_silver_integrado.sql
+-- Camada: silver_integrado
+-- Objetivo:
+--   1) Criar âncora oficial do caso judicial
+--   2) Consolidar caixa recebido com prioridade BOLETO > BD > DEBITO
+--      usando janela de conflito de +/- 3 dias
+--   3) Construir snapshots mensais de risco
+--   4) Construir eventos de regularização/ganho de risco
+-- =========================================================
+
+-- =========================================================
+-- 1) ANCORA OFICIAL DO CASO
+-- Grão:
+--   1 linha = 1 cdpasta + cnpj + contrato + produto
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_juridico_caso_ancora AS
+WITH base AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        dt_ajuizamento_date,
+        dt_ref_date,
+        vl_risco_atual,
+        vl_saldo_atual,
+        hash_chave_caso,
+        row_number() OVER (
+            PARTITION BY cdpasta, cnpj, contrato, produto
+            ORDER BY dt_ajuizamento_date, dt_ref_date
+        ) AS rn
+    FROM workspace_db.view_silver_padronizado_juridico_carteira_snapshot
+    WHERE fl_ajuizado = true
+),
+inicial AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        cast(date_format(dt_ajuizamento_date, '%Y%m') as integer) AS safra_ajuizamento_yyyymm,
+        dt_ajuizamento_date,
+        vl_risco_atual AS vl_risco_inicial,
+        vl_saldo_atual AS vl_saldo_inicial,
+        hash_chave_caso
+    FROM base
+    WHERE rn = 1
+)
+SELECT
+    *
+FROM inicial;
+
+-- =========================================================
+-- 2) CAIXA RECEBIDO JURIDICO
+-- Regra:
+--   BOLETO > BD > DEBITO
+--   conflito por contrato + produto em +/- 3 dias
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_cobranca_caixa_recebido_juridico AS
+WITH boletos AS (
+    SELECT
+        id_pagamento,
+        dt_pagamento_date,
+        contrato,
+        produto,
+        vl_pago,
+        origem_pagamento
+    FROM workspace_db.view_silver_padronizado_cobranca_boletos
+    WHERE flag_cancelado = 0
+      AND vl_pago > 0
+),
+bd AS (
+    SELECT
+        b.*
+    FROM workspace_db.view_silver_padronizado_cobranca_bd b
+    WHERE b.vl_pago > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM boletos x
+          WHERE x.contrato = b.contrato
+            AND x.produto  = b.produto
+            AND abs(date_diff('day', x.dt_pagamento_date, b.dt_pagamento_date)) <= 3
+      )
+),
+debito AS (
+    SELECT
+        d.*
+    FROM workspace_db.view_silver_padronizado_cobranca_debito_conta d
+    WHERE d.vl_pago > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM boletos x
+          WHERE x.contrato = d.contrato
+            AND x.produto  = d.produto
+            AND abs(date_diff('day', x.dt_pagamento_date, d.dt_pagamento_date)) <= 3
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM bd x
+          WHERE x.contrato = d.contrato
+            AND x.produto  = d.produto
+            AND abs(date_diff('day', x.dt_pagamento_date, d.dt_pagamento_date)) <= 3
+      )
+),
+unionizada AS (
+    SELECT * FROM boletos
+    UNION ALL
+    SELECT * FROM bd
+    UNION ALL
+    SELECT * FROM debito
+),
+enriquecida AS (
+    SELECT
+        u.id_pagamento,
+        u.dt_pagamento_date,
+        u.contrato,
+        u.produto,
+        u.vl_pago AS vl_caixa_recebido_evento,
+        u.origem_pagamento,
+
+        a.cdpasta,
+        a.cnpj,
+        a.safra_ajuizamento_yyyymm,
+        a.dt_ajuizamento_date,
+        a.hash_chave_caso,
+
+        row_number() OVER (
+            PARTITION BY u.id_pagamento, u.contrato, u.produto, u.dt_pagamento_date
+            ORDER BY a.dt_ajuizamento_date DESC
+        ) AS rn_ancora
+    FROM unionizada u
+    JOIN workspace_db.view_silver_integrado_juridico_caso_ancora a
+      ON a.contrato = u.contrato
+     AND a.produto  = u.produto
+     AND u.dt_pagamento_date >= a.dt_ajuizamento_date
+)
+SELECT
+    coalesce(
+        id_pagamento,
+        md5(
+            concat(
+                contrato,'|',produto,'|',
+                cast(dt_pagamento_date as varchar),'|',
+                cast(vl_caixa_recebido_evento as varchar)
+            )
+        )
+    ) AS id_evento_caixa,
+    cdpasta,
+    cnpj,
+    contrato,
+    produto,
+    safra_ajuizamento_yyyymm,
+    dt_ajuizamento_date,
+    dt_pagamento_date,
+    date_diff(
+        'month',
+        date_trunc('month', dt_ajuizamento_date),
+        date_trunc('month', dt_pagamento_date)
+    ) AS mob_evento,
+    origem_pagamento,
+    cast(vl_caixa_recebido_evento as decimal(18,2)) AS vl_caixa_recebido_evento,
+    hash_chave_caso
+FROM enriquecida
+WHERE rn_ancora = 1;
+
+-- =========================================================
+-- 3) SNAPSHOT MENSAL DE RISCO
+-- Grão:
+--   1 linha = 1 caso + 1 mês de referência (última foto do mês)
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_juridico_risco_snapshot_mes AS
+WITH base AS (
+    SELECT
+        s.cdpasta,
+        s.cnpj,
+        s.contrato,
+        s.produto,
+        a.safra_ajuizamento_yyyymm,
+        a.dt_ajuizamento_date,
+
+        cast(date_format(s.dt_ref_date, '%Y%m') as integer) AS anomes_ref,
+        s.dt_ref_date,
+        s.atraso_dias,
+        s.vl_risco_atual,
+        s.vl_saldo_atual,
+        s.hash_chave_caso,
+
+        row_number() OVER (
+            PARTITION BY s.cdpasta, s.cnpj, s.contrato, s.produto, cast(date_format(s.dt_ref_date, '%Y%m') as integer)
+            ORDER BY s.dt_ref_date DESC
+        ) AS rn_mes
+    FROM workspace_db.view_silver_padronizado_juridico_carteira_snapshot s
+    JOIN workspace_db.view_silver_integrado_juridico_caso_ancora a
+      ON a.cdpasta  = s.cdpasta
+     AND a.cnpj     = s.cnpj
+     AND a.contrato = s.contrato
+     AND a.produto  = s.produto
+    WHERE s.dt_ref_date >= a.dt_ajuizamento_date
+)
+SELECT
+    cdpasta,
+    cnpj,
+    contrato,
+    produto,
+    safra_ajuizamento_yyyymm,
+    dt_ajuizamento_date,
+    anomes_ref,
+    dt_ref_date AS dt_fechamento_mes,
+    atraso_dias,
+    cast(vl_risco_atual as decimal(18,2)) AS vl_risco_atual_mes,
+    cast(vl_saldo_atual as decimal(18,2)) AS vl_saldo_atual_mes,
+    date_diff(
+        'month',
+        date_trunc('month', dt_ajuizamento_date),
+        date_trunc('month', dt_ref_date)
+    ) AS mob_mes,
+    hash_chave_caso
+FROM base
+WHERE rn_mes = 1;
+
+-- =========================================================
+-- 4) EVENTOS DE REGULARIZACAO NO MESMO CONTRATO
+-- Regra:
+--   a) atraso > 0 e vira 0 -> risco abatido = saldo atual
+--   b) atraso cai, continua > 0, e saldo cai -> abatimento = saldo anterior - saldo atual
+--   c) risco pode ganhar ao longo do tempo -> ganho positivo de risco
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_juridico_risco_regularizacao_mesmo_contrato AS
+WITH base AS (
+    SELECT
+        s.cdpasta,
+        s.cnpj,
+        s.contrato,
+        s.produto,
+        a.safra_ajuizamento_yyyymm,
+        a.dt_ajuizamento_date,
+        s.dt_ref_date,
+        s.atraso_dias,
+        s.vl_risco_atual,
+        s.vl_saldo_atual,
+        a.hash_chave_caso,
+
+        lag(s.dt_ref_date) OVER (
+            PARTITION BY s.cdpasta, s.cnpj, s.contrato, s.produto
+            ORDER BY s.dt_ref_date
+        ) AS dt_ref_anterior,
+
+        lag(s.atraso_dias) OVER (
+            PARTITION BY s.cdpasta, s.cnpj, s.contrato, s.produto
+            ORDER BY s.dt_ref_date
+        ) AS atraso_dias_anterior,
+
+        lag(s.vl_risco_atual) OVER (
+            PARTITION BY s.cdpasta, s.cnpj, s.contrato, s.produto
+            ORDER BY s.dt_ref_date
+        ) AS vl_risco_anterior,
+
+        lag(s.vl_saldo_atual) OVER (
+            PARTITION BY s.cdpasta, s.cnpj, s.contrato, s.produto
+            ORDER BY s.dt_ref_date
+        ) AS vl_saldo_anterior
+    FROM workspace_db.view_silver_padronizado_juridico_carteira_snapshot s
+    JOIN workspace_db.view_silver_integrado_juridico_caso_ancora a
+      ON a.cdpasta  = s.cdpasta
+     AND a.cnpj     = s.cnpj
+     AND a.contrato = s.contrato
+     AND a.produto  = s.produto
+    WHERE s.dt_ref_date >= a.dt_ajuizamento_date
+),
+eventos AS (
+    SELECT
+        md5(
+            concat(
+                cdpasta,'|',cnpj,'|',contrato,'|',produto,'|',
+                cast(dt_ref_date as varchar),'|REGRA_MESMO_CONTRATO'
+            )
+        ) AS id_evento_risco,
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        safra_ajuizamento_yyyymm,
+        dt_ajuizamento_date,
+        dt_ref_date AS dt_evento_date,
+
+        date_diff(
+            'month',
+            date_trunc('month', dt_ajuizamento_date),
+            date_trunc('month', dt_ref_date)
+        ) AS mob_evento,
+
+        cast(
+            CASE
+                WHEN dt_ref_anterior IS NULL THEN 0
+                WHEN coalesce(atraso_dias_anterior, 0) > 0
+                 AND coalesce(atraso_dias, 0) = 0
+                THEN coalesce(vl_saldo_atual, 0)
+                WHEN coalesce(atraso_dias_anterior, 0) > coalesce(atraso_dias, 0)
+                 AND coalesce(atraso_dias, 0) > 0
+                 AND coalesce(vl_saldo_anterior, 0) > coalesce(vl_saldo_atual, 0)
+                THEN coalesce(vl_saldo_anterior, 0) - coalesce(vl_saldo_atual, 0)
+                ELSE 0
+            END
+        as decimal(18,2)) AS vl_risco_abatido_evento,
+
+        cast(
+            CASE
+                WHEN dt_ref_anterior IS NULL THEN 0
+                WHEN coalesce(vl_risco_atual, 0) > coalesce(vl_risco_anterior, 0)
+                THEN coalesce(vl_risco_atual, 0) - coalesce(vl_risco_anterior, 0)
+                ELSE 0
+            END
+        as decimal(18,2)) AS vl_risco_ganho_evento,
+
+        'MESMO_CONTRATO' AS tp_evento_risco,
+        hash_chave_caso
+    FROM base
+)
+SELECT
+    *
+FROM eventos
+WHERE vl_risco_abatido_evento > 0
+   OR vl_risco_ganho_evento > 0;
+
+-- =========================================================
+-- 5) EVENTOS DE REGULARIZACAO POR COMPOSICAO
+-- Regra:
+--   regularização do contrato anterior = valor de risco/saldo do novo contrato
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_juridico_risco_regularizacao_composicao AS
+WITH novo_contrato_snapshot AS (
+    SELECT
+        c.dt_composicao_date,
+        c.cdpasta,
+        c.cnpj,
+        c.contrato_origem,
+        c.produto_origem,
+        c.contrato_destino,
+        c.produto_destino,
+
+        s.dt_ref_date,
+        s.vl_risco_atual,
+        s.vl_saldo_atual,
+
+        row_number() OVER (
+            PARTITION BY c.cdpasta, c.cnpj, c.contrato_origem, c.produto_origem, c.dt_composicao_date
+            ORDER BY s.dt_ref_date
+        ) AS rn
+    FROM workspace_db.view_silver_padronizado_juridico_composicao c
+    JOIN workspace_db.view_silver_padronizado_juridico_carteira_snapshot s
+      ON s.cdpasta   = c.cdpasta
+     AND s.cnpj      = c.cnpj
+     AND s.contrato  = c.contrato_destino
+     AND s.produto   = c.produto_destino
+     AND s.dt_ref_date >= c.dt_composicao_date
+),
+escolhido AS (
+    SELECT
+        *
+    FROM novo_contrato_snapshot
+    WHERE rn = 1
+)
+SELECT
+    md5(
+        concat(
+            c.cdpasta,'|',c.cnpj,'|',c.contrato_origem,'|',c.produto_origem,'|',
+            cast(c.dt_composicao_date as varchar),'|COMPOSICAO'
+        )
+    ) AS id_evento_risco,
+    a.cdpasta,
+    a.cnpj,
+    a.contrato,
+    a.produto,
+    a.safra_ajuizamento_yyyymm,
+    a.dt_ajuizamento_date,
+    c.dt_composicao_date AS dt_evento_date,
+    date_diff(
+        'month',
+        date_trunc('month', a.dt_ajuizamento_date),
+        date_trunc('month', c.dt_composicao_date)
+    ) AS mob_evento,
+
+    cast(coalesce(e.vl_saldo_atual, e.vl_risco_atual, 0) as decimal(18,2)) AS vl_risco_abatido_evento,
+    cast(0 as decimal(18,2)) AS vl_risco_ganho_evento,
+    'COMPOSICAO' AS tp_evento_risco,
+    a.hash_chave_caso
+FROM workspace_db.view_silver_padronizado_juridico_composicao c
+JOIN workspace_db.view_silver_integrado_juridico_caso_ancora a
+  ON a.cdpasta  = c.cdpasta
+ AND a.cnpj     = c.cnpj
+ AND a.contrato = c.contrato_origem
+ AND a.produto  = c.produto_origem
+LEFT JOIN escolhido e
+  ON e.cdpasta            = c.cdpasta
+ AND e.cnpj               = c.cnpj
+ AND e.contrato_origem    = c.contrato_origem
+ AND e.produto_origem     = c.produto_origem
+ AND e.dt_composicao_date = c.dt_composicao_date
+WHERE c.dt_composicao_date >= a.dt_ajuizamento_date;
+
+-- =========================================================
+-- 6) CONSOLIDADO DE EVENTOS DE RISCO
+-- =========================================================
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_juridico_risco_regularizacao_evento AS
+SELECT
+    id_evento_risco,
+    cdpasta,
+    cnpj,
+    contrato,
+    produto,
+    safra_ajuizamento_yyyymm,
+    dt_ajuizamento_date,
+    dt_evento_date,
+    mob_evento,
+    tp_evento_risco,
+    cast(vl_risco_abatido_evento as decimal(18,2)) AS vl_risco_abatido_evento,
+    cast(vl_risco_ganho_evento as decimal(18,2))   AS vl_risco_ganho_evento,
+    hash_chave_caso
+FROM workspace_db.view_silver_integrado_juridico_risco_regularizacao_mesmo_contrato
+
+UNION ALL
+
+SELECT
+    id_evento_risco,
+    cdpasta,
+    cnpj,
+    contrato,
+    produto,
+    safra_ajuizamento_yyyymm,
+    dt_ajuizamento_date,
+    dt_evento_date,
+    mob_evento,
+    tp_evento_risco,
+    cast(vl_risco_abatido_evento as decimal(18,2)) AS vl_risco_abatido_evento,
+    cast(vl_risco_ganho_evento as decimal(18,2))   AS vl_risco_ganho_evento,
+    hash_chave_caso
+FROM workspace_db.view_silver_integrado_juridico_risco_regularizacao_composicao;
+
+
+---
+
+03_gold_fatos.sql
+
+-- =========================================================
+-- 03_gold_fatos.sql
+-- Camada: gold
+-- Objetivo:
+--   materializar os fatos oficiais do processo:
+--   - entrada da safra
+--   - snapshot mensal de risco
+--   - eventos de regularização/ganho de risco
+--   - eventos de caixa
+--   - eventos de custo
+-- =========================================================
+
+-- =========================================================
+-- 1) FATO DE ENTRADA DA SAFRA
+-- =========================================================
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_juridico_safra_entrada (
+    cdpasta                    varchar,
+    cnpj                       varchar,
+    contrato                   varchar,
+    produto                    varchar,
+    safra_ajuizamento_yyyymm   integer,
+    dt_ajuizamento_date        date,
+    vl_risco_inicial           decimal(18,2),
+    vl_saldo_inicial           decimal(18,2),
+    hash_chave_caso            varchar,
+    dt_ingestao_modelo         timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type='ICEBERG',
+    format='PARQUET',
+    write_compression='SNAPPY',
+    partitioning = ARRAY['safra_ajuizamento_yyyymm']
+);
+
+INSERT INTO workspace_db.iceberg_gold_fato_juridico_safra_entrada
+SELECT
+    cdpasta,
+    cnpj,
+    contrato,
+    produto,
+    safra_ajuizamento_yyyymm,
+    dt_ajuizamento_date,
+    cast(vl_risco_inicial as decimal(18,2)) AS vl_risco_inicial,
+    cast(vl_saldo_inicial as decimal(18,2)) AS vl_saldo_inicial,
+    hash_chave_caso,
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao
+FROM workspace_db.view_silver_integrado_juridico_caso_ancora;
+
+-- =========================================================
+-- 2) FATO DE SNAPSHOT MENSAL DE RISCO
+-- =========================================================
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_juridico_risco_snapshot_mes (
+    cdpasta                    varchar,
+    cnpj                       varchar,
+    contrato                   varchar,
+    produto                    varchar,
+    safra_ajuizamento_yyyymm   integer,
+    dt_ajuizamento_date        date,
+    anomes_ref                 integer,
+    dt_fechamento_mes          date,
+    mob_mes                    integer,
+    atraso_dias                integer,
+    vl_risco_atual_mes         decimal(18,2),
+    vl_saldo_atual_mes         decimal(18,2),
+    hash_chave_caso            varchar,
+    dt_ingestao_modelo         timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type='ICEBERG',
+    format='PARQUET',
+    write_compression='SNAPPY',
+    partitioning = ARRAY['safra_ajuizamento_yyyymm']
+);
+
+INSERT INTO workspace_db.iceberg_gold_fato_juridico_risco_snapshot_mes
+SELECT
+    cdpasta,
+    cnpj,
+    contrato,
+    produto,
+    safra_ajuizamento_yyyymm,
+    dt_ajuizamento_date,
+    anomes_ref,
+    dt_fechamento_mes,
+    mob_mes,
+    atraso_dias,
+    cast(vl_risco_atual_mes as decimal(18,2)) AS vl_risco_atual_mes,
+    cast(vl_saldo_atual_mes as decimal(18,2)) AS vl_saldo_atual_mes,
+    hash_chave_caso,
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao
+FROM workspace_db.view_silver_integrado_juridico_risco_snapshot_mes;
+
+-- =========================================================
+-- 3) FATO DE EVENTOS DE RISCO
+-- =========================================================
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_juridico_risco_regularizacao_evento (
+    id_evento_risco            varchar,
+    cdpasta                    varchar,
+    cnpj                       varchar,
+    contrato                   varchar,
+    produto                    varchar,
+    safra_ajuizamento_yyyymm   integer,
+    dt_ajuizamento_date        date,
+    dt_evento_date             date,
+    mob_evento                 integer,
+    tp_evento_risco            varchar,
+    vl_risco_abatido_evento    decimal(18,2),
+    vl_risco_ganho_evento      decimal(18,2),
+    hash_chave_caso            varchar,
+    dt_ingestao_modelo         timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type='ICEBERG',
+    format='PARQUET',
+    write_compression='SNAPPY',
+    partitioning = ARRAY['safra_ajuizamento_yyyymm']
+);
+
+INSERT INTO workspace_db.iceberg_gold_fato_juridico_risco_regularizacao_evento
+SELECT
+    id_evento_risco,
+    cdpasta,
+    cnpj,
+    contrato,
+    produto,
+    safra_ajuizamento_yyyymm,
+    dt_ajuizamento_date,
+    dt_evento_date,
+    mob_evento,
+    tp_evento_risco,
+    cast(vl_risco_abatido_evento as decimal(18,2)) AS vl_risco_abatido_evento,
+    cast(vl_risco_ganho_evento as decimal(18,2))   AS vl_risco_ganho_evento,
+    hash_chave_caso,
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao
+FROM workspace_db.view_silver_integrado_juridico_risco_regularizacao_evento;
+
+-- =========================================================
+-- 4) FATO DE EVENTOS DE CAIXA
+-- =========================================================
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_juridico_caixa_evento (
+    id_evento_caixa            varchar,
+    cdpasta                    varchar,
+    cnpj                       varchar,
+    contrato                   varchar,
+    produto                    varchar,
+    safra_ajuizamento_yyyymm   integer,
+    dt_ajuizamento_date        date,
+    dt_pagamento_date          date,
+    mob_evento                 integer,
+    origem_pagamento           varchar,
+    vl_caixa_recebido_evento   decimal(18,2),
+    hash_chave_caso            varchar,
+    dt_ingestao_modelo         timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type='ICEBERG',
+    format='PARQUET',
+    write_compression='SNAPPY',
+    partitioning = ARRAY['safra_ajuizamento_yyyymm']
+);
+
+INSERT INTO workspace_db.iceberg_gold_fato_juridico_caixa_evento
+SELECT
+    id_evento_caixa,
+    cdpasta,
+    cnpj,
+    contrato,
+    produto,
+    safra_ajuizamento_yyyymm,
+    dt_ajuizamento_date,
+    dt_pagamento_date,
+    mob_evento,
+    origem_pagamento,
+    cast(vl_caixa_recebido_evento as decimal(18,2)) AS vl_caixa_recebido_evento,
+    hash_chave_caso,
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao
+FROM workspace_db.view_silver_integrado_cobranca_caixa_recebido_juridico;
+
+-- =========================================================
+-- 5) FATO DE EVENTOS DE CUSTO
+-- =========================================================
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_juridico_custo_evento (
+    id_custo                   varchar,
+    cdpasta                    varchar,
+    cnpj                       varchar,
+    contrato                   varchar,
+    produto                    varchar,
+    safra_ajuizamento_yyyymm   integer,
+    dt_ajuizamento_date        date,
+    dt_custo_date              date,
+    mob_evento                 integer,
+    tp_custo                   varchar,
+    vl_custo                   decimal(18,2),
+    hash_chave_caso            varchar,
+    dt_ingestao_modelo         timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type='ICEBERG',
+    format='PARQUET',
+    write_compression='SNAPPY',
+    partitioning = ARRAY['safra_ajuizamento_yyyymm']
+);
+
+INSERT INTO workspace_db.iceberg_gold_fato_juridico_custo_evento
+SELECT
+    c.id_custo,
+    a.cdpasta,
+    a.cnpj,
+    a.contrato,
+    a.produto,
+    a.safra_ajuizamento_yyyymm,
+    a.dt_ajuizamento_date,
+    c.dt_custo_date,
+    date_diff(
+        'month',
+        date_trunc('month', a.dt_ajuizamento_date),
+        date_trunc('month', c.dt_custo_date)
+    ) AS mob_evento,
+    c.tp_custo,
+    cast(c.vl_custo as decimal(18,2)) AS vl_custo,
+    a.hash_chave_caso,
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao
+FROM workspace_db.view_silver_padronizado_juridico_custos c
+JOIN workspace_db.view_silver_integrado_juridico_caso_ancora a
+  ON a.cdpasta  = c.cdpasta
+ AND a.cnpj     = c.cnpj
+ AND a.contrato = c.contrato
+ AND a.produto  = c.produto
+WHERE c.dt_custo_date >= a.dt_ajuizamento_date;
+
+
+---
+
+04_mart_caso_mob.sql
+
+-- =========================================================
+-- 04_mart_caso_mob.sql
+-- Camada: mart
+-- Objetivo:
+--   criar a mart detalhada por caso e MOB
+-- Grão:
+--   1 linha = 1 cdpasta + 1 cnpj + 1 contrato + 1 produto + 1 MOB
+-- =========================================================
+
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_mart_juridico_caso_mob (
+    safra_ajuizamento_yyyymm             integer,
+    mob                                  integer,
+
+    cdpasta                              varchar,
+    cnpj                                 varchar,
+    contrato                             varchar,
+    produto                              varchar,
+
+    dt_ajuizamento_date                  date,
+    dt_fim_mes_referencia                date,
+
+    vl_risco_inicial                     decimal(18,2),
+    vl_risco_atual_mes                   decimal(18,2),
+    vl_delta_risco_mes                   decimal(18,2),
+    vl_risco_ganho_mes                   decimal(18,2),
+
+    vl_risco_abatido_mes                 decimal(18,2),
+    vl_risco_abatido_acumulado           decimal(18,2),
+
+    vl_caixa_recebido_mes                decimal(18,2),
+    vl_caixa_recebido_acumulado          decimal(18,2),
+
+    vl_custo_mes                         decimal(18,2),
+    vl_custo_acumulado                   decimal(18,2),
+
+    idx_risco_abatido_por_custo_acum     decimal(18,6),
+    idx_caixa_por_custo_acum             decimal(18,6),
+
+    dt_ingestao_modelo                   timestamp,
+    id_execucao                          varchar
+)
+WITH (
+    table_type='ICEBERG',
+    format='PARQUET',
+    write_compression='SNAPPY',
+    partitioning = ARRAY['safra_ajuizamento_yyyymm']
+);
+
+INSERT INTO workspace_db.iceberg_gold_mart_juridico_caso_mob
+WITH casos AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        safra_ajuizamento_yyyymm,
+        dt_ajuizamento_date,
+        vl_risco_inicial
+    FROM workspace_db.iceberg_gold_fato_juridico_safra_entrada
+),
+
+mobs AS (
+    SELECT mob
+    FROM UNNEST(sequence(0, 60)) AS t(mob)
+),
+
+grade AS (
+    SELECT
+        c.safra_ajuizamento_yyyymm,
+        m.mob,
+        c.cdpasta,
+        c.cnpj,
+        c.contrato,
+        c.produto,
+        c.dt_ajuizamento_date,
+        date_add(
+            'day',
+            -1,
+            date_add('month', m.mob + 1, date_trunc('month', c.dt_ajuizamento_date))
+        ) AS dt_fim_mes_referencia,
+        c.vl_risco_inicial
+    FROM casos c
+    CROSS JOIN mobs m
+),
+
+risco_mes AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        mob_mes AS mob,
+        max_by(vl_risco_atual_mes, dt_fechamento_mes) AS vl_risco_atual_mes
+    FROM workspace_db.iceberg_gold_fato_juridico_risco_snapshot_mes
+    GROUP BY
+        cdpasta, cnpj, contrato, produto, mob_mes
+),
+
+risco_abatido_mes AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        mob_evento AS mob,
+        cast(sum(vl_risco_abatido_evento) as decimal(18,2)) AS vl_risco_abatido_mes,
+        cast(sum(vl_risco_ganho_evento) as decimal(18,2))   AS vl_risco_ganho_mes
+    FROM workspace_db.iceberg_gold_fato_juridico_risco_regularizacao_evento
+    GROUP BY
+        cdpasta, cnpj, contrato, produto, mob_evento
+),
+
+caixa_mes AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        mob_evento AS mob,
+        cast(sum(vl_caixa_recebido_evento) as decimal(18,2)) AS vl_caixa_recebido_mes
+    FROM workspace_db.iceberg_gold_fato_juridico_caixa_evento
+    GROUP BY
+        cdpasta, cnpj, contrato, produto, mob_evento
+),
+
+custo_mes AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        mob_evento AS mob,
+        cast(sum(vl_custo) as decimal(18,2)) AS vl_custo_mes
+    FROM workspace_db.iceberg_gold_fato_juridico_custo_evento
+    GROUP BY
+        cdpasta, cnpj, contrato, produto, mob_evento
+),
+
+base AS (
+    SELECT
+        g.safra_ajuizamento_yyyymm,
+        g.mob,
+        g.cdpasta,
+        g.cnpj,
+        g.contrato,
+        g.produto,
+        g.dt_ajuizamento_date,
+        g.dt_fim_mes_referencia,
+        cast(g.vl_risco_inicial as decimal(18,2)) AS vl_risco_inicial,
+
+        cast(coalesce(r.vl_risco_atual_mes, 0) as decimal(18,2)) AS vl_risco_atual_mes,
+        cast(coalesce(a.vl_risco_ganho_mes, 0) as decimal(18,2)) AS vl_risco_ganho_mes,
+        cast(coalesce(a.vl_risco_abatido_mes, 0) as decimal(18,2)) AS vl_risco_abatido_mes,
+        cast(coalesce(x.vl_caixa_recebido_mes, 0) as decimal(18,2)) AS vl_caixa_recebido_mes,
+        cast(coalesce(c.vl_custo_mes, 0) as decimal(18,2)) AS vl_custo_mes
+    FROM grade g
+    LEFT JOIN risco_mes r
+      ON g.cdpasta  = r.cdpasta
+     AND g.cnpj     = r.cnpj
+     AND g.contrato = r.contrato
+     AND g.produto  = r.produto
+     AND g.mob      = r.mob
+    LEFT JOIN risco_abatido_mes a
+      ON g.cdpasta  = a.cdpasta
+     AND g.cnpj     = a.cnpj
+     AND g.contrato = a.contrato
+     AND g.produto  = a.produto
+     AND g.mob      = a.mob
+    LEFT JOIN caixa_mes x
+      ON g.cdpasta  = x.cdpasta
+     AND g.cnpj     = x.cnpj
+     AND g.contrato = x.contrato
+     AND g.produto  = x.produto
+     AND g.mob      = x.mob
+    LEFT JOIN custo_mes c
+      ON g.cdpasta  = c.cdpasta
+     AND g.cnpj     = c.cnpj
+     AND g.contrato = c.contrato
+     AND g.produto  = c.produto
+     AND g.mob      = c.mob
+),
+
+com_delta AS (
+    SELECT
+        *,
+        cast(
+            vl_risco_atual_mes
+            - lag(vl_risco_atual_mes) OVER (
+                PARTITION BY cdpasta, cnpj, contrato, produto
+                ORDER BY mob
+            )
+        as decimal(18,2)) AS vl_delta_risco_mes
+    FROM base
+),
+
+acumulada AS (
+    SELECT
+        *,
+        cast(
+            sum(vl_risco_abatido_mes) OVER (
+                PARTITION BY cdpasta, cnpj, contrato, produto
+                ORDER BY mob
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )
+        as decimal(18,2)) AS vl_risco_abatido_acumulado,
+
+        cast(
+            sum(vl_caixa_recebido_mes) OVER (
+                PARTITION BY cdpasta, cnpj, contrato, produto
+                ORDER BY mob
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )
+        as decimal(18,2)) AS vl_caixa_recebido_acumulado,
+
+        cast(
+            sum(vl_custo_mes) OVER (
+                PARTITION BY cdpasta, cnpj, contrato, produto
+                ORDER BY mob
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )
+        as decimal(18,2)) AS vl_custo_acumulado
+    FROM com_delta
+)
+
+SELECT
+    safra_ajuizamento_yyyymm,
+    mob,
+    cdpasta,
+    cnpj,
+    contrato,
+    produto,
+    dt_ajuizamento_date,
+    dt_fim_mes_referencia,
+    vl_risco_inicial,
+    vl_risco_atual_mes,
+    cast(coalesce(vl_delta_risco_mes, 0) as decimal(18,2)) AS vl_delta_risco_mes,
+    vl_risco_ganho_mes,
+    vl_risco_abatido_mes,
+    vl_risco_abatido_acumulado,
+    vl_caixa_recebido_mes,
+    vl_caixa_recebido_acumulado,
+    vl_custo_mes,
+    vl_custo_acumulado,
+
+    cast(
+        vl_risco_abatido_acumulado / nullif(vl_custo_acumulado, 0)
+    as decimal(18,6)) AS idx_risco_abatido_por_custo_acum,
+
+    cast(
+        vl_caixa_recebido_acumulado / nullif(vl_custo_acumulado, 0)
+    as decimal(18,6)) AS idx_caixa_por_custo_acum,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao
+FROM acumulada;
+
+
+---
+
+05_mart_safra_mob.sql
+
+-- =========================================================
+-- 05_mart_safra_mob.sql
+-- Camada: mart
+-- Objetivo:
+--   criar a mart agregada por safra e MOB
+-- Grão:
+--   1 linha = 1 safra_ajuizamento + 1 MOB
+-- =========================================================
+
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_mart_juridico_safra_mob (
+    safra_ajuizamento_yyyymm             integer,
+    mob                                  integer,
+
+    qt_casos                             bigint,
+
+    vl_risco_inicial_total               decimal(18,2),
+    vl_risco_atual_total_mes             decimal(18,2),
+    vl_risco_ganho_total_mes             decimal(18,2),
+
+    vl_risco_abatido_total_mes           decimal(18,2),
+    vl_risco_abatido_total_acumulado     decimal(18,2),
+
+    vl_caixa_recebido_total_mes          decimal(18,2),
+    vl_caixa_recebido_total_acumulado    decimal(18,2),
+
+    vl_custo_total_mes                   decimal(18,2),
+    vl_custo_total_acumulado             decimal(18,2),
+
+    idx_risco_abatido_por_custo_acum     decimal(18,6),
+    idx_caixa_por_custo_acum             decimal(18,6),
+
+    dt_ingestao_modelo                   timestamp,
+    id_execucao                          varchar
+)
+WITH (
+    table_type='ICEBERG',
+    format='PARQUET',
+    write_compression='SNAPPY',
+    partitioning = ARRAY['safra_ajuizamento_yyyymm']
+);
+
+INSERT INTO workspace_db.iceberg_gold_mart_juridico_safra_mob
+SELECT
+    safra_ajuizamento_yyyymm,
+    mob,
+
+    count(*) AS qt_casos,
+
+    cast(sum(vl_risco_inicial) as decimal(18,2))            AS vl_risco_inicial_total,
+    cast(sum(vl_risco_atual_mes) as decimal(18,2))          AS vl_risco_atual_total_mes,
+    cast(sum(vl_risco_ganho_mes) as decimal(18,2))          AS vl_risco_ganho_total_mes,
+
+    cast(sum(vl_risco_abatido_mes) as decimal(18,2))        AS vl_risco_abatido_total_mes,
+    cast(sum(vl_risco_abatido_acumulado) as decimal(18,2))  AS vl_risco_abatido_total_acumulado,
+
+    cast(sum(vl_caixa_recebido_mes) as decimal(18,2))       AS vl_caixa_recebido_total_mes,
+    cast(sum(vl_caixa_recebido_acumulado) as decimal(18,2)) AS vl_caixa_recebido_total_acumulado,
+
+    cast(sum(vl_custo_mes) as decimal(18,2))                AS vl_custo_total_mes,
+    cast(sum(vl_custo_acumulado) as decimal(18,2))          AS vl_custo_total_acumulado,
+
+    cast(
+        sum(vl_risco_abatido_acumulado) / nullif(sum(vl_custo_acumulado), 0)
+    as decimal(18,6)) AS idx_risco_abatido_por_custo_acum,
+
+    cast(
+        sum(vl_caixa_recebido_acumulado) / nullif(sum(vl_custo_acumulado), 0)
+    as decimal(18,6)) AS idx_caixa_por_custo_acum,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'execucao_manual' AS id_execucao
+FROM workspace_db.iceberg_gold_mart_juridico_caso_mob
+GROUP BY
+    safra_ajuizamento_yyyymm,
+    mob;
+
+-- =========================================================
+-- Query de leitura principal
+-- =========================================================
+SELECT
+    safra_ajuizamento_yyyymm,
+    mob,
+    qt_casos,
+    vl_risco_inicial_total,
+    vl_risco_atual_total_mes,
+    vl_risco_ganho_total_mes,
+    vl_risco_abatido_total_mes,
+    vl_risco_abatido_total_acumulado,
+    vl_caixa_recebido_total_mes,
+    vl_caixa_recebido_total_acumulado,
+    vl_custo_total_mes,
+    vl_custo_total_acumulado,
+    idx_risco_abatido_por_custo_acum,
+    idx_caixa_por_custo_acum
+FROM workspace_db.iceberg_gold_mart_juridico_safra_mob
+ORDER BY
+    safra_ajuizamento_yyyymm,
+    mob;
+
+
+---
+
+06_testes.sql
+
+-- =========================================================
+-- 06_testes.sql
+-- Objetivo:
+--   testes operacionais de qualidade e consistência
+-- Padrão:
+--   cada teste retorna uma única linha com qtd_erros
+-- =========================================================
+
+-- =========================================================
+-- TESTE 01 - DUPLICIDADE NA ANCORA
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto
+    FROM workspace_db.view_silver_integrado_juridico_caso_ancora
+    GROUP BY 1,2,3,4
+    HAVING count(*) > 1
+);
+
+-- =========================================================
+-- TESTE 02 - RISCO INICIAL NULO OU NEGATIVO
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_juridico_safra_entrada
+WHERE vl_risco_inicial IS NULL
+   OR vl_risco_inicial < 0;
+
+-- =========================================================
+-- TESTE 03 - CAIXA DUPLICADO APOS DEDUPLICACAO
+-- Esperado:
+--   0
+-- Observação:
+--   a lógica aqui usa o identificador do evento final
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT
+        id_evento_caixa
+    FROM workspace_db.iceberg_gold_fato_juridico_caixa_evento
+    GROUP BY 1
+    HAVING count(*) > 1
+);
+
+-- =========================================================
+-- TESTE 04 - VALORES DE CAIXA NEGATIVOS
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_juridico_caixa_evento
+WHERE vl_caixa_recebido_evento < 0;
+
+-- =========================================================
+-- TESTE 05 - VALORES DE CUSTO NEGATIVOS
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_juridico_custo_evento
+WHERE vl_custo < 0;
+
+-- =========================================================
+-- TESTE 06 - RISCO ABATIDO NEGATIVO
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_juridico_risco_regularizacao_evento
+WHERE vl_risco_abatido_evento < 0;
+
+-- =========================================================
+-- TESTE 07 - MOB NEGATIVO
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_mart_juridico_caso_mob
+WHERE mob < 0;
+
+-- =========================================================
+-- TESTE 08 - MART CASO: UM REGISTRO POR CASO + MOB
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        mob
+    FROM workspace_db.iceberg_gold_mart_juridico_caso_mob
+    GROUP BY 1,2,3,4,5
+    HAVING count(*) > 1
+);
+
+-- =========================================================
+-- TESTE 09 - MART SAFRA: UM REGISTRO POR SAFRA + MOB
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT
+        safra_ajuizamento_yyyymm,
+        mob
+    FROM workspace_db.iceberg_gold_mart_juridico_safra_mob
+    GROUP BY 1,2
+    HAVING count(*) > 1
+);
+
+-- =========================================================
+-- TESTE 10 - ACUMULADO DE CAIXA NÃO PODE CAIR
+-- Esperado:
+--   0
+-- =========================================================
+WITH base AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        mob,
+        vl_caixa_recebido_acumulado,
+        lag(vl_caixa_recebido_acumulado) OVER (
+            PARTITION BY cdpasta, cnpj, contrato, produto
+            ORDER BY mob
+        ) AS valor_anterior
+    FROM workspace_db.iceberg_gold_mart_juridico_caso_mob
+)
+SELECT count(*) AS qtd_erros
+FROM base
+WHERE valor_anterior IS NOT NULL
+  AND vl_caixa_recebido_acumulado < valor_anterior;
+
+-- =========================================================
+-- TESTE 11 - ACUMULADO DE CUSTO NÃO PODE CAIR
+-- Esperado:
+--   0
+-- =========================================================
+WITH base AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        mob,
+        vl_custo_acumulado,
+        lag(vl_custo_acumulado) OVER (
+            PARTITION BY cdpasta, cnpj, contrato, produto
+            ORDER BY mob
+        ) AS valor_anterior
+    FROM workspace_db.iceberg_gold_mart_juridico_caso_mob
+)
+SELECT count(*) AS qtd_erros
+FROM base
+WHERE valor_anterior IS NOT NULL
+  AND vl_custo_acumulado < valor_anterior;
+
+-- =========================================================
+-- TESTE 12 - ACUMULADO DE RISCO ABATIDO NÃO PODE CAIR
+-- Esperado:
+--   0
+-- =========================================================
+WITH base AS (
+    SELECT
+        cdpasta,
+        cnpj,
+        contrato,
+        produto,
+        mob,
+        vl_risco_abatido_acumulado,
+        lag(vl_risco_abatido_acumulado) OVER (
+            PARTITION BY cdpasta, cnpj, contrato, produto
+            ORDER BY mob
+        ) AS valor_anterior
+    FROM workspace_db.iceberg_gold_mart_juridico_caso_mob
+)
+SELECT count(*) AS qtd_erros
+FROM base
+WHERE valor_anterior IS NOT NULL
+  AND vl_risco_abatido_acumulado < valor_anterior;
+
+-- =========================================================
+-- TESTE 13 - RECONCILIAÇÃO MART SAFRA VS MART CASO
+-- Esperado:
+--   0
+-- =========================================================
+WITH caso AS (
+    SELECT
+        safra_ajuizamento_yyyymm,
+        mob,
+        cast(sum(vl_risco_abatido_acumulado) as decimal(18,2)) AS soma_risco_abatido_acum,
+        cast(sum(vl_caixa_recebido_acumulado) as decimal(18,2)) AS soma_caixa_acum,
+        cast(sum(vl_custo_acumulado) as decimal(18,2)) AS soma_custo_acum
+    FROM workspace_db.iceberg_gold_mart_juridico_caso_mob
+    GROUP BY 1,2
+),
+safra AS (
+    SELECT
+        safra_ajuizamento_yyyymm,
+        mob,
+        cast(vl_risco_abatido_total_acumulado as decimal(18,2)) AS risco_abatido_acum,
+        cast(vl_caixa_recebido_total_acumulado as decimal(18,2)) AS caixa_acum,
+        cast(vl_custo_total_acumulado as decimal(18,2)) AS custo_acum
+    FROM workspace_db.iceberg_gold_mart_juridico_safra_mob
+)
+SELECT count(*) AS qtd_erros
+FROM caso c
+JOIN safra s
+  ON c.safra_ajuizamento_yyyymm = s.safra_ajuizamento_yyyymm
+ AND c.mob = s.mob
+WHERE c.soma_risco_abatido_acum <> s.risco_abatido_acum
+   OR c.soma_caixa_acum <> s.caixa_acum
+   OR c.soma_custo_acum <> s.custo_acum;
+
+-- =========================================================
+-- TESTE 14 - RISCO ATUAL NÃO DEVE SER NEGATIVO
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_juridico_risco_snapshot_mes
+WHERE vl_risco_atual_mes < 0;
+
+-- =========================================================
+-- TESTE 15 - EVENTO DE RISCO SEM DATA
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_juridico_risco_regularizacao_evento
+WHERE dt_evento_date IS NULL;
+
+-- =========================================================
+-- TESTE 16 - EVENTO DE CAIXA ANTES DO AJUIZAMENTO
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_juridico_caixa_evento
+WHERE dt_pagamento_date < dt_ajuizamento_date;
+
+-- =========================================================
+-- TESTE 17 - EVENTO DE CUSTO ANTES DO AJUIZAMENTO
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_juridico_custo_evento
+WHERE dt_custo_date < dt_ajuizamento_date;
+
+-- =========================================================
+-- TESTE 18 - ÍNDICES NULOS APENAS QUANDO CUSTO ACUMULADO = 0
+-- Esperado:
+--   0
+-- =========================================================
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_mart_juridico_caso_mob
+WHERE (idx_risco_abatido_por_custo_acum IS NULL OR idx_caixa_por_custo_acum IS NULL)
+  AND vl_custo_acumulado <> 0;
+
+
+---
+
+O que estava faltando e agora está coberto
+
+Agora sim você tem o pacote completo de base para construir as tabelas finais, incluindo:
+
+Fontes mínimas necessárias
+
+tabela_bronze_fonte_juridico_carteira_snapshot
+
+tabela_bronze_fonte_juridico_composicao
+
+tabela_bronze_fonte_juridico_custos
+
+tabela_bronze_fonte_sap_boletos
+
+tabela_bronze_fonte_legado_debito_conta
+
+tabela_bronze_fonte_backoffice_fluxo_apartado
+
+
+Views de preparação
+
+snapshots de risco
+
+composição
+
+custos
+
+pagamentos por origem
+
+
+Views de integração
+
+âncora oficial do caso
+
+deduplicação/priorização de caixa
+
+snapshot mensal de risco
+
+eventos de abatimento e ganho de risco
+
+composição
+
+
+Fatos gold
+
+safra de entrada
+
+snapshot de risco
+
+evento de risco
+
+evento de caixa
+
+evento de custo
+
+
+Marts finais
+
+caso + mob
+
+safra + mob
+
+
+Testes
+
+duplicidade
+
+monotonicidade de acumulados
+
+reconciliação
+
+negativos
+
+datas inconsistentes
+
+
+
+---
+
+Ponto importante
+
+Esses scripts assumem que a base de carteira/snapshot já consegue te dar:
+
+dt_ref
+
+dt_ajuizamento
+
+atraso_dias
+
+vl_risco_atual
+
+vl_saldo_atual
+
+
+Se a sua base real tiver nomes diferentes, a troca é só de coluna.
+Mas sem essa base de evolução de risco, não dá para calcular corretamente:
+
+risco atual por mês
+
+ganho de risco
+
+abatimento por queda de atraso
+
+regularização por saldo
+
+
+
+---
+
+O que eu recomendo como próximo passo
+
+O passo mais útil agora é eu te entregar um dicionário de origem → destino, assim:
+
+tabela bronze esperada
+
+colunas obrigatórias
+
+colunas opcionais
+
+regra que depende de cada uma
+
+onde cada coluna entra no pipeline
+
+
+Isso costuma ser o que mais ajuda a sair do “SQL bonito” para “implementação real”.
