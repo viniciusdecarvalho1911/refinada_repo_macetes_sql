@@ -1,0 +1,382 @@
+Aqui está o seu conteúdo com ortografia corrigida, gramática ajustada, mantendo o mesmo nível de detalhamento e organizado em:
+
+🔴 Importantes e Urgentes
+
+🟡 Apenas Importantes
+
+Com sub-blocos conforme solicitado (Pagadoria ADM / Pagadoria Jud)
+
+
+
+---
+
+🔴 Importantes e Urgentes
+
+📊 Estudo de Ajuizamento
+
+Apuração da PAGTT:
+
+A partir do código do GitHub, trocar para computar de 2025-11 em diante
+
+Ajustar o campo dtajuiz para produzir:
+
+mesref_ajuiz
+
+dtajuiz_ent = coalesce(dtajuiz, dtent)
+
+mesref_ajuiz_ent
+
+
+Trazer os campos:
+
+esteira
+
+nome_acao_jud
+
+segmento
+
+escritório
+
+flag de recuperabilidade
+
+
+Presumir 11% de comissão para pagamentos pré-2024
+
+Capturar em boletos, BD e PGCC:
+
+Critério de 1 dia para:
+
+contrato diferente
+
+produto diferente
+
+tipo de negociação diferente
+
+
+Critério de 3 dias para:
+
+mesmo contrato
+
+mesmo produto
+
+mesmo tipo de negociação
+
+
+
+
+
+---
+
+🧾 Pagadoria ADM
+
+📦 Casos ADM — Template Marketplace (Serasa / QuiteJá)
+
+Criar tabela Iceberg: resultados_marketplace
+
+Produzir uma automação que:
+
+Só insira registros se produto + contrato + boleto + valor não estiverem contidos na tabela original
+
+
+Invalidar registros caso o boleto seja cancelado
+
+Aplicar regra de comissionamento:
+
+Sempre considerar mês anterior e mês atual
+
+
+Produzir layout de disparo
+
+Realizar disparo
+
+
+
+---
+
+⚖️ Casos ADM — Análise de Contestação
+
+Produzir base de pré-input, limpando dados para formato adequado
+
+Passar no “moedor”
+
+Verificar casos de possível CompJur
+
+Conferir na base do Britez de Produção
+
+
+Apurar devolutiva dos casos e enviar aos escritórios
+
+Se procedente:
+
+Inserir na base de prévia de fechamento
+
+
+
+
+---
+
+⚖️ Pagadoria Jud
+
+🏛️ Casos Jud — Levantamento Judicial
+
+Produzir base de pré-input, limpando para formato adequado
+
+Passar no “moedor”
+
+Verificar se é procedente ou não e o motivo
+
+Regras:
+
+Se procedente e estiver na Vijud:
+
+Inserir na base de prévia de fechamento
+
+Participar do cálculo de atingimento da meta
+
+
+Se procedente e possuir:
+
+pasta de execução
+
+ou alguma pasta na Vijud
+→ Aplicar percentual de comissionamento da Vijud
+→ Não participar da meta
+
+
+Se for RecJud: → Pagar 3,5%
+
+Se for Colchão: → Pagar como colchão
+
+Se for LevJud e não estiver nas anteriores: → Pagar como levantamento judicial
+→ Buscar valor correto
+
+Se não procedente: → Entender o motivo
+
+
+Disparar devolutiva aos escritórios
+
+
+
+---
+
+🏛️ Casos Jud — Impugnação do Mês Anterior
+
+Produzir base de pré-input
+
+Passar no moedor
+
+Regras:
+
+Se procedente e for Vijud: → Entrar na prévia de fechamento
+→ Participar da meta
+
+Se procedente e não estiver na Vijud:
+
+Verificar se já está em outras bases
+
+Se estiver: → Registrar, mas não pagar
+
+Se não estiver: → Capturar percentual de comissionamento
+
+
+
+Se não procedente: → Entender o motivo
+
+
+Disparar devolutiva aos escritórios
+
+
+
+---
+
+🏛️ Casos Jud — Deveriam Ter Estado na Vijud
+
+Apurar os 4 casos que deveriam ter estado na Vijud
+
+Buscar dados em:
+
+boletos
+
+débito
+
+BD
+
+
+Calcular:
+
+caixa
+
+regularização
+
+
+Inserir no cálculo de atingimento da meta
+
+Avaliar viabilidade de:
+
+Inserção manual (campos mínimos necessários)
+
+Ou ajuste mantendo layout padrão
+
+
+Enviar devolutiva:
+
+Luizão
+
+Escritórios
+
+
+Após a pagadoria:
+
+Definir com Ana Ka fluxo de consideração
+
+
+Possível regra:
+
+Considerar casos que:
+
+eram elegíveis
+
+não entraram por não execução diária
+
+
+Se elegível e pago: → Trazer:
+
+caixa
+
+regul
+
+risco
+→ Participar de:
+
+eficiência
+
+atingimento da meta
+
+
+
+
+
+---
+
+🟡 Apenas Importantes
+
+⚖️ Pagadoria Jud
+
+🧩 Casos Jud — Composição Jurídica
+
+Entender com Luizão do que se trata
+
+Apurar procedência
+
+Regras:
+
+Se procedente e Vijud: → Entrar no cálculo de meta
+
+Se procedente e não Vijud:
+
+Verificar:
+
+pasta na Vijud
+
+ações elegíveis
+
+
+
+→ Aplicar percentual da Vijud
+
+Se for colchão: → Aplicar percentual de colchão
+
+Se for recuperação judicial: → Pagar 3,5%
+
+
+
+
+
+---
+
+📧 Casos Jud — Entender Pedidos de E-mail
+
+Entender valores enviados por e-mail
+
+Verificar:
+
+quanto foi pago a mais
+
+quanto foi pago a menos
+
+
+Ajustar na nota do mês
+
+
+
+---
+
+💰 Casos Jud — Descontos e Considerações
+
+Verificar valor descontado dos R$ 1,9 milhões
+
+Montar quadro para o James:
+
+Para apresentação ao Mourato
+
+
+Incluir também:
+
+R$ 1,1 milhão do colchão
+
+Que estava sendo pago erroneamente
+
+
+
+
+---
+
+🧾 Pagadoria ADM
+
+🧠 Casos ADM — Template de Pagamento (Novos Segmentos)
+
+Verificar possibilidade de integração:
+
+Smart
+
+EMPS+
+→ pagamento direto no SAP
+
+
+Se possível: → Dar devolutiva à solicitante
+
+Se não: → Manter no radar para ajuste futuro
+
+
+
+---
+
+📄 Casos ADM — Template Serasa
+
+Identificar ponto focal para apoio no template SAP
+
+Verificar se conseguimos:
+
+Template
+
+Validação do template
+
+
+Se possível: → Implementar
+
+Caso contrário: → Escalar o tema (levantar a mão)
+
+
+
+---
+
+Se quiser, posso te transformar isso em:
+
+✅ checklist operacional diário
+
+✅ backlog estilo Jira
+
+✅ ou playbook no padrão Obsidian com links ([[...]])
+
+
+Isso aqui já está bem próximo de um sistema operacional de execução.
