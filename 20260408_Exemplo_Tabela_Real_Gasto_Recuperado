@@ -1,0 +1,211 @@
+Perfeito.
+
+Vou refazer a tabela com um cenário ilustrativo fechado, para ficar consistente com as novas premissas.
+
+Premissas usadas no exemplo
+
+Vou assumir:
+
+safra: 202501
+
+qt_casos: 120
+
+risco inicial total: R$ 30.000.000,00
+
+custo inicial no M0: 2% do risco inicial total
+→ R$ 600.000,00
+
+regularização acumulada em 18 meses: 3% do saldo total disponível
+→ R$ 900.000,00 ao final do M18
+
+pagamento aos escritórios: 10% sobre o caixa recebido
+
+risco ganho no período: R$ 0,00 neste exemplo, só para isolar a lógica
+
+como risco abatido ≠ caixa recebido, assumi aqui, apenas para exemplo, que o caixa acumulado ao final de 18 meses é 70% do risco abatido acumulado
+→ isso faz o caixa final fechar em R$ 630.000,00
+
+
+Fórmula de custo usada
+
+Para este exemplo:
+
+custo_total_mes =
+    2% do risco inicial total no M0
+    + 10% do caixa recebido do mês
+
+Ou seja:
+
+no M0, o custo já larga alto
+
+do M1 em diante, entra só o componente variável de 10% sobre o caixa do mês
+
+
+
+---
+
+Tabela exemplo — iceberg_gold_mart_juridico_safra_mob
+
+safra_ajuizamento_yyyymm	mob	qt_casos	vl_risco_inicial_total	vl_risco_atual_total_mes	vl_risco_ganho_total_mes	vl_risco_abatido_total_mes	vl_risco_abatido_total_acumulado	vl_caixa_recebido_total_mes	vl_caixa_recebido_total_acumulado	vl_custo_total_mes	vl_custo_total_acumulado	idx_risco_abatido_por_custo_acum	idx_caixa_por_custo_acum
+
+202501	0	120	30.000.000,00	29.970.000,00	0,00	30.000,00	30.000,00	21.000,00	21.000,00	602.100,00	602.100,00	0,0498	0,0349
+202501	1	120	30.000.000,00	29.934.000,00	0,00	36.000,00	66.000,00	25.200,00	46.200,00	2.520,00	604.620,00	0,1092	0,0764
+202501	2	120	30.000.000,00	29.895.000,00	0,00	39.000,00	105.000,00	27.300,00	73.500,00	2.730,00	607.350,00	0,1729	0,1210
+202501	3	120	30.000.000,00	29.850.000,00	0,00	45.000,00	150.000,00	31.500,00	105.000,00	3.150,00	610.500,00	0,2457	0,1720
+202501	4	120	30.000.000,00	29.796.000,00	0,00	54.000,00	204.000,00	37.800,00	142.800,00	3.780,00	614.280,00	0,3321	0,2325
+202501	5	120	30.000.000,00	29.739.000,00	0,00	57.000,00	261.000,00	39.900,00	182.700,00	3.990,00	618.270,00	0,4221	0,2955
+202501	6	120	30.000.000,00	29.685.000,00	0,00	54.000,00	315.000,00	37.800,00	220.500,00	3.780,00	622.050,00	0,5064	0,3545
+202501	7	120	30.000.000,00	29.634.000,00	0,00	51.000,00	366.000,00	35.700,00	256.200,00	3.570,00	625.620,00	0,5850	0,4095
+202501	8	120	30.000.000,00	29.586.000,00	0,00	48.000,00	414.000,00	33.600,00	289.800,00	3.360,00	628.980,00	0,6582	0,4607
+202501	9	120	30.000.000,00	29.541.000,00	0,00	45.000,00	459.000,00	31.500,00	321.300,00	3.150,00	632.130,00	0,7261	0,5083
+202501	10	120	30.000.000,00	29.499.000,00	0,00	42.000,00	501.000,00	29.400,00	350.700,00	2.940,00	635.070,00	0,7889	0,5522
+202501	11	120	30.000.000,00	29.460.000,00	0,00	39.000,00	540.000,00	27.300,00	378.000,00	2.730,00	637.800,00	0,8466	0,5927
+202501	12	120	30.000.000,00	29.424.000,00	0,00	36.000,00	576.000,00	25.200,00	403.200,00	2.520,00	640.320,00	0,8996	0,6297
+202501	13	120	30.000.000,00	29.391.000,00	0,00	33.000,00	609.000,00	23.100,00	426.300,00	2.310,00	642.630,00	0,9477	0,6634
+202501	14	120	30.000.000,00	29.355.000,00	0,00	36.000,00	645.000,00	25.200,00	451.500,00	2.520,00	645.150,00	0,9998	0,6998
+202501	15	120	30.000.000,00	29.295.000,00	0,00	60.000,00	705.000,00	42.000,00	493.500,00	4.200,00	649.350,00	1,0857	0,7599
+202501	16	120	30.000.000,00	29.220.000,00	0,00	75.000,00	780.000,00	52.500,00	546.000,00	5.250,00	654.600,00	1,1916	0,8344
+202501	17	120	30.000.000,00	29.160.000,00	0,00	60.000,00	840.000,00	42.000,00	588.000,00	4.200,00	658.800,00	1,2750	0,8925
+202501	18	120	30.000.000,00	29.100.000,00	0,00	60.000,00	900.000,00	42.000,00	630.000,00	4.200,00	663.000,00	1,3575	0,9502
+
+
+
+---
+
+Como interpretar essa nova curva
+
+1. O M0 fica “pesado” por causa do custo de largada
+
+Como você definiu que a largada já tem custo de 2% do risco total, o M0 fica assim:
+
+risco inicial total = R$ 30,0 MM
+
+custo inicial = R$ 600 mil
+
+mais 10% do caixa do mês
+
+
+Por isso o vl_custo_total_mes no M0 já nasce em R$ 602,1 mil.
+
+Isso derruba bastante os índices no começo:
+
+idx_risco_abatido_por_custo_acum = 0,0498
+
+idx_caixa_por_custo_acum = 0,0349
+
+
+Ou seja, no início a safra ainda está “pagando o setup”.
+
+
+---
+
+2. A regularização acumulada final é pequena frente ao risco inicial
+
+Como a regularização total em 18 meses foi definida em apenas 3% do saldo disponível:
+
+risco inicial = R$ 30,0 MM
+
+risco abatido acumulado no M18 = R$ 900 mil
+
+
+Então, mesmo após 18 meses, o risco atual total ainda fica em:
+
+R$ 29,1 MM
+
+
+
+---
+
+3. O caixa continua menor que o risco abatido
+
+No exemplo:
+
+risco abatido acumulado no M18 = R$ 900 mil
+
+caixa acumulado no M18 = R$ 630 mil
+
+
+Isso preserva exatamente a sua regra conceitual:
+
+risco abatido ≠ caixa recebido
+
+
+---
+
+4. O custo acumulado “come” bastante o retorno
+
+No M18:
+
+custo acumulado = R$ 663 mil
+
+risco abatido acumulado = R$ 900 mil
+
+caixa acumulado = R$ 630 mil
+
+
+Então:
+
+idx_risco_abatido_por_custo_acum = 1,3575
+
+idx_caixa_por_custo_acum = 0,9502
+
+
+Leitura:
+
+para cada R$ 1,00 de custo acumulado, a safra gerou R$ 1,36 de risco abatido
+
+mas só R$ 0,95 de caixa acumulado
+
+
+Ou seja:
+
+a safra se paga em risco abatido
+
+mas ainda não se paga integralmente em caixa
+
+
+
+---
+
+Narrativa executiva pronta
+
+> A safra 202501 entrou com R$ 30,0 MM de risco inicial. Considerando custo inicial de 2% sobre o risco no M0 e remuneração variável de 10% sobre o caixa recebido, o custo acumulado chega a R$ 663 mil no M18. No mesmo período, a regularização acumulada alcança R$ 900 mil, equivalente a 3% do saldo disponível, enquanto o caixa acumulado soma R$ 630 mil. Isso resulta em 1,36x de risco abatido por custo acumulado, mas apenas 0,95x de caixa por custo acumulado.
+
+
+
+
+---
+
+Observação importante
+
+Essa tabela é ilustrativa.
+O único ponto que precisei assumir, porque você não fixou explicitamente, foi a relação entre:
+
+risco abatido acumulado
+
+caixa recebido acumulado
+
+
+Eu usei uma relação de 70% só para construir um exemplo coerente com:
+
+risco abatido e caixa não são a mesma coisa
+
+Se você quiser, no próximo passo eu posso montar 3 versões comparativas da mesma tabela:
+
+cenário conservador
+
+cenário base
+
+cenário agressivo
+
+
+mudando apenas a relação entre:
+
+regularização de risco
+
+conversão dessa regularização em caixa
+
+payout de escritório
+
+
+para você enxergar como a curva muda.
