@@ -1,0 +1,835 @@
+Perfeito.
+
+O que você quer agora é uma versão mais **operacional e escalável** da lógica, com 3 mudanças centrais:
+
+## Mudanças pedidas
+
+### 1. Intervalo de períodos
+
+Em vez de um único `anomes_ref`, capturar de um período até outro.
+
+Exemplo:
+
+```sql
+202501 até 202603
+```
+
+---
+
+### 2. Trocar `NOT EXISTS` por `LEFT JOIN ... IS NULL`
+
+Principalmente nas anti-duplicidades entre:
+
+* débito vs boleto
+* opc vs boleto
+* opc vs débito
+
+Isso costuma ficar mais controlável para tuning no Athena, especialmente quando você já pré-reduz as bases em CTEs auxiliares.
+
+---
+
+### 3. Regras de matching sempre respeitando janela temporal correta
+
+Você pediu que, nos casos abaixo, o vínculo aconteça em:
+
+* **mesmo mês**
+* ou **mês seguinte**
+
+porque pode haver delay para:
+
+* surgir novo contrato
+* aparecer desconto
+* aparecer carteira/opc
+* aparecer composição
+
+Então vou aplicar isso para:
+
+* composição boleto vs débito
+* desconto PN
+* carteira/opc
+* mapa contrato origem → contrato comp
+
+---
+
+# Estratégia correta
+
+A melhor forma é criar uma chave auxiliar de mês:
+
+```sql
+mes_ref
+mes_ref_seguinte
+```
+
+e usar isso nas junções.
+
+No Athena, eu prefiro calcular também um `anomes_seguinte` inteiro.
+
+Exemplo:
+
+* `202501 -> 202502`
+* `202512 -> 202601`
+
+---
+
+# Versão revisada
+
+Abaixo vai uma versão estruturada do seu SQL já com:
+
+* intervalo `anomes_ini` / `anomes_fim`
+* joins em vez de `exists`
+* regra de match no **mesmo mês + mês seguinte**
+
+---
+
+```sql
+WITH parametros AS (
+    SELECT
+        202501 AS anomes_ini,
+        202603 AS anomes_fim
+),
+
+periodos AS (
+    SELECT
+        x.anomes_ref,
+        cast(
+            date_format(
+                date_add(
+                    'month',
+                    1,
+                    date_parse(cast(x.anomes_ref as varchar) || '01', '%Y%m%d')
+                ),
+                '%Y%m'
+            ) as integer
+        ) AS anomes_seguinte
+    FROM (
+        SELECT
+            cast(date_format(dt_mes, '%Y%m') as integer) AS anomes_ref
+        FROM parametros p
+        CROSS JOIN UNNEST(
+            sequence(
+                date_parse(cast(p.anomes_ini as varchar) || '01', '%Y%m%d'),
+                date_parse(cast(p.anomes_fim as varchar) || '01', '%Y%m%d'),
+                interval '1' month
+            )
+        ) AS t(dt_mes)
+    ) x
+),
+
+-- =========================================================
+-- 1) BOLETOS
+-- =========================================================
+base_boletos AS (
+    SELECT
+        cast(substring(cast(b.dtrecebi as varchar), 1, 6) as integer)          AS anomes,
+        cast(b.dtrecebi as date)                                                AS dt_evento,
+        cast(cast(b.numctror as bigint) as varchar)                             AS contrato,
+        cast(cast(b.cprodlim as bigint) as varchar)                             AS produto,
+        cast(b.numreceb as varchar)                                             AS boleto,
+        cast('BOLETO' as varchar)                                               AS origem_evento,
+        cast(b.tp_neg as varchar)                                               AS tp_neg,
+        cast(b.tp_neg as varchar)                                               AS tp_acordo,
+        try_cast(b.vlr_recebi_liq as decimal(18,2))                             AS vl_caixa,
+        try_cast(
+            case
+                when coalesce(b.vlprest, 0) = 0 then 0
+                else b.desc_parc / b.vlprest
+            end
+            as decimal(18,6)
+        )                                                                       AS perc_desconto_evento,
+        try_cast(b.vl_ca6 as decimal(18,2))                                     AS vl_ca6,
+        try_cast(b.vl_ser as decimal(18,2))                                     AS vl_ser
+    FROM mis_wk_boletos_pagos_vlr b
+    JOIN parametros p
+      ON cast(substring(cast(b.dtrecebi as varchar), 1, 6) as integer)
+         BETWEEN p.anomes_ini AND p.anomes_fim
+),
+
+-- =========================================================
+-- 2) DÉBITO
+-- =========================================================
+base_debito AS (
+    SELECT
+        cast(c.anomes as integer)                                               AS anomes,
+        cast(c.dt_pagamento as date)                                            AS dt_evento,
+        cast(c.contrato as varchar)                                             AS contrato,
+        cast(c.produto as varchar)                                              AS produto,
+        cast(null as varchar)                                                   AS boleto,
+        cast('DEBITO_CONTA' as varchar)                                         AS origem_evento,
+        cast(c.tp_neg as varchar)                                               AS tp_neg,
+        cast(c.tp_acordo as varchar)                                            AS tp_acordo,
+        try_cast(c.caixa_ajustado as decimal(18,2))                             AS vl_caixa,
+        try_cast(c.vl_desconto as decimal(18,6))                                AS perc_desconto_evento,
+        try_cast(c.vl_ca6 as decimal(18,2))                                     AS vl_ca6,
+        try_cast(c.vl_ser as decimal(18,2))                                     AS vl_ser
+    FROM mis_wk_caixa c
+    JOIN parametros p
+      ON cast(c.anomes as integer) BETWEEN p.anomes_ini AND p.anomes_fim
+),
+
+-- =========================================================
+-- 3) AUXILIAR DE MATCH COMPOSIÇÃO BOLETO
+--    apenas mesmo mês
+-- =========================================================
+boletos_composicao_mes AS (
+    SELECT DISTINCT
+        anomes,
+        contrato,
+        produto
+    FROM base_boletos
+    WHERE upper(coalesce(tp_neg, '')) IN ('COMPOSICAO', 'COMPOSIÇÃO')
+),
+
+-- =========================================================
+-- 4) AUXILIAR DE MATCH A VISTA BOLETO
+-- =========================================================
+boletos_avista_janela AS (
+    SELECT
+        anomes,
+        contrato,
+        produto,
+        dt_evento
+    FROM base_boletos
+    WHERE upper(coalesce(tp_neg, '')) IN ('A VISTA', 'A_VISTA')
+),
+
+-- =========================================================
+-- 5) DÉBITO FILTRADO
+--    - composição duplicada: mesmo mês
+--    - à vista duplicado: janela de 3 dias
+-- =========================================================
+debito_com_match AS (
+    SELECT
+        d.*,
+        bcm.contrato AS contrato_match_composicao,
+        bav.contrato AS contrato_match_avista
+    FROM base_debito d
+    LEFT JOIN boletos_composicao_mes bcm
+      ON d.anomes    = bcm.anomes
+     AND d.contrato  = bcm.contrato
+     AND d.produto   = bcm.produto
+     AND upper(coalesce(d.tp_neg, '')) IN ('COMPOSICAO', 'COMPOSIÇÃO')
+
+    LEFT JOIN boletos_avista_janela bav
+      ON d.contrato = bav.contrato
+     AND d.produto  = bav.produto
+     AND upper(coalesce(d.tp_neg, '')) IN ('A VISTA', 'A_VISTA')
+     AND bav.dt_evento BETWEEN date_add('day', -3, d.dt_evento)
+                          AND date_add('day',  3, d.dt_evento)
+),
+
+debito_filtrado AS (
+    SELECT *
+    FROM debito_com_match
+    WHERE NOT (
+            upper(coalesce(tp_neg, '')) IN ('COMPOSICAO', 'COMPOSIÇÃO')
+        AND contrato_match_composicao IS NOT NULL
+    )
+      AND NOT (
+            upper(coalesce(tp_neg, '')) IN ('A VISTA', 'A_VISTA')
+        AND contrato_match_avista IS NOT NULL
+    )
+),
+
+eventos_caixa AS (
+    SELECT * FROM base_boletos
+    UNION ALL
+    SELECT
+        anomes,
+        dt_evento,
+        contrato,
+        produto,
+        boleto,
+        origem_evento,
+        tp_neg,
+        tp_acordo,
+        vl_caixa,
+        perc_desconto_evento,
+        vl_ca6,
+        vl_ser
+    FROM debito_filtrado
+),
+
+eventos_caixa_classificados AS (
+    SELECT
+        e.*,
+        case
+            when upper(coalesce(e.tp_neg, '')) in ('A VISTA', 'A_VISTA') then 'A_VISTA'
+            when upper(coalesce(e.tp_neg, '')) in ('PARCELADO') then 'PARCELADO'
+            when upper(coalesce(e.tp_neg, '')) in ('COMPOSICAO', 'COMPOSIÇÃO') then 'COMPOSICAO'
+            else 'OUTROS'
+        end AS classe_regul
+    FROM eventos_caixa e
+),
+
+-- =========================================================
+-- 6) PN POR BOLETO
+--    mesmo mês + mês seguinte
+-- =========================================================
+pn_desconto_boleto_base AS (
+    SELECT
+        cast(pn.anomes as integer)                                              AS anomes,
+        cast(pn.contrato as varchar)                                            AS contrato,
+        cast(pn.produto as varchar)                                             AS produto,
+        cast(pn.boleto as varchar)                                              AS boleto,
+        cast(pn.dt_referencia as date)                                          AS dt_referencia_pn,
+        try_cast(pn.vl_desconto as decimal(18,6))                               AS perc_desconto_pn
+    FROM mis_wk_pns_decisao pn
+    JOIN parametros p
+      ON cast(pn.anomes as integer) BETWEEN p.anomes_ini AND p.anomes_fim + 1
+),
+
+pn_desconto_boleto_match AS (
+    SELECT
+        e.anomes                           AS anomes_evento,
+        e.contrato,
+        e.produto,
+        e.boleto,
+        pn.perc_desconto_pn,
+        row_number() over (
+            partition by e.anomes, e.contrato, e.produto, e.boleto
+            order by pn.dt_referencia_pn desc
+        ) AS rn
+    FROM eventos_caixa_classificados e
+    JOIN periodos per
+      ON e.anomes = per.anomes_ref
+    LEFT JOIN pn_desconto_boleto_base pn
+      ON e.contrato = pn.contrato
+     AND e.produto  = pn.produto
+     AND coalesce(e.boleto, '') = coalesce(pn.boleto, '')
+     AND pn.anomes in (per.anomes_ref, per.anomes_seguinte)
+),
+
+pn_desconto_boleto AS (
+    SELECT
+        anomes_evento AS anomes,
+        contrato,
+        produto,
+        boleto,
+        perc_desconto_pn
+    FROM pn_desconto_boleto_match
+    WHERE rn = 1
+),
+
+-- =========================================================
+-- 7) MAPA COMPOSIÇÃO
+--    contrato origem -> contrato comp
+--    mesmo mês + mês seguinte
+-- =========================================================
+mapa_composicao_base AS (
+    SELECT
+        cast(ppj.anomes as integer)                             AS anomes,
+        cast(ppj.numctror_origem as varchar)                    AS contrato_origem,
+        cast(ppj.numctror_comp as varchar)                      AS contrato_novo_comp,
+        cast(ppj.produto as varchar)                            AS produto,
+        cast(ppj.dt_referencia as date)                         AS dt_referencia
+    FROM mis_wk_producao_pj ppj
+    JOIN parametros p
+      ON cast(ppj.anomes as integer) BETWEEN p.anomes_ini AND p.anomes_fim + 1
+    WHERE ppj.numctror_origem is not null
+      AND ppj.numctror_comp is not null
+),
+
+mapa_composicao_match AS (
+    SELECT
+        e.anomes                           AS anomes_evento,
+        e.contrato                         AS contrato_origem,
+        e.produto,
+        mc.contrato_novo_comp,
+        row_number() over (
+            partition by e.anomes, e.contrato, e.produto
+            order by mc.dt_referencia desc
+        ) AS rn
+    FROM eventos_caixa_classificados e
+    JOIN periodos per
+      ON e.anomes = per.anomes_ref
+    LEFT JOIN mapa_composicao_base mc
+      ON e.contrato = mc.contrato_origem
+     AND e.produto  = mc.produto
+     AND mc.anomes in (per.anomes_ref, per.anomes_seguinte)
+),
+
+mapa_composicao AS (
+    SELECT
+        anomes_evento AS anomes,
+        contrato_origem,
+        produto,
+        contrato_novo_comp
+    FROM mapa_composicao_match
+    WHERE rn = 1
+),
+
+mapa_composicao_reverso AS (
+    SELECT
+        anomes,
+        contrato_novo_comp,
+        contrato_origem,
+        produto
+    FROM mapa_composicao
+),
+
+-- =========================================================
+-- 8) SALDO NOVO CONTRATO
+--    mesmo mês + mês seguinte
+-- =========================================================
+saldo_novo_contrato_base AS (
+    SELECT
+        cast(opc.anomes as integer)                             AS anomes,
+        cast(opc.contrato as varchar)                           AS contrato_novo_comp,
+        cast(opc.produto as varchar)                            AS produto,
+        cast(opc.dt_referencia as date)                         AS dt_referencia,
+        max(try_cast(opc.vl_ser_opc as decimal(18,2)))          AS vl_saldo_risco_disp_max_mes
+    FROM carteira_opc opc
+    JOIN parametros p
+      ON cast(opc.anomes as integer) BETWEEN p.anomes_ini AND p.anomes_fim + 1
+    GROUP BY 1,2,3,4
+),
+
+saldo_novo_contrato_match AS (
+    SELECT
+        mc.anomes                    AS anomes_evento,
+        mc.contrato_origem,
+        mc.produto,
+        mc.contrato_novo_comp,
+        snc.vl_saldo_risco_disp_max_mes,
+        row_number() over (
+            partition by mc.anomes, mc.contrato_origem, mc.produto
+            order by snc.dt_referencia desc
+        ) AS rn
+    FROM mapa_composicao mc
+    JOIN periodos per
+      ON mc.anomes = per.anomes_ref
+    LEFT JOIN saldo_novo_contrato_base snc
+      ON mc.contrato_novo_comp = snc.contrato_novo_comp
+     AND mc.produto            = snc.produto
+     AND snc.anomes in (per.anomes_ref, per.anomes_seguinte)
+),
+
+saldo_novo_contrato_mes AS (
+    SELECT
+        anomes_evento AS anomes,
+        contrato_origem,
+        produto,
+        contrato_novo_comp,
+        vl_saldo_risco_disp_max_mes
+    FROM saldo_novo_contrato_match
+    WHERE rn = 1
+),
+
+-- =========================================================
+-- 9) EVENTOS CAIXA ENRIQUECIDOS
+-- =========================================================
+eventos_caixa_enriquecidos AS (
+    SELECT
+        e.anomes,
+        e.dt_evento,
+        e.contrato,
+        e.produto,
+        e.boleto,
+        e.origem_evento,
+        e.tp_neg,
+        e.tp_acordo,
+        e.classe_regul,
+        e.vl_caixa,
+        e.perc_desconto_evento,
+        pnb.perc_desconto_pn,
+        coalesce(e.perc_desconto_evento, pnb.perc_desconto_pn, 0) AS perc_desconto_final,
+        e.vl_ca6,
+        e.vl_ser,
+        mc.contrato_novo_comp,
+        snc.vl_saldo_risco_disp_max_mes
+    FROM eventos_caixa_classificados e
+    LEFT JOIN pn_desconto_boleto pnb
+      ON e.anomes   = pnb.anomes
+     AND e.contrato = pnb.contrato
+     AND e.produto  = pnb.produto
+     AND coalesce(e.boleto, '') = coalesce(pnb.boleto, '')
+    LEFT JOIN mapa_composicao mc
+      ON e.anomes   = mc.anomes
+     AND e.contrato = mc.contrato_origem
+     AND e.produto  = mc.produto
+    LEFT JOIN saldo_novo_contrato_mes snc
+      ON e.anomes   = snc.anomes
+     AND e.contrato = snc.contrato_origem
+     AND e.produto  = snc.produto
+),
+
+-- =========================================================
+-- 10) OPC NEGOCIADOS SEM CAIXA
+--     usar LEFT JOIN anti-match
+-- =========================================================
+opc_negociados_raw AS (
+    SELECT
+        cast(opc.anomes as integer)                             AS anomes,
+        cast(opc.dt_referencia as date)                         AS dt_evento,
+        cast(opc.contrato as varchar)                           AS contrato,
+        cast(opc.produto as varchar)                            AS produto,
+        cast(null as varchar)                                   AS boleto,
+        cast('OPC_SEM_CAIXA' as varchar)                        AS origem_evento,
+        cast(opc.tp_neg as varchar)                             AS tp_neg,
+        cast(opc.tp_neg as varchar)                             AS tp_acordo,
+        cast(null as decimal(18,2))                             AS vl_caixa,
+        cast(null as decimal(18,6))                             AS perc_desconto_evento,
+        try_cast(opc.vl_ca6 as decimal(18,2))                   AS vl_ca6,
+        try_cast(opc.vl_ser_opc as decimal(18,2))               AS vl_ser
+    FROM carteira_opc opc
+    JOIN parametros p
+      ON cast(opc.anomes as integer) BETWEEN p.anomes_ini AND p.anomes_fim
+    WHERE 1 = 1
+      -- ajuste aqui o critério real de resultado de negociação
+),
+
+opc_negociados_match AS (
+    SELECT
+        o.*,
+        b.contrato AS contrato_match_boleto,
+        d.contrato AS contrato_match_debito
+    FROM opc_negociados_raw o
+    LEFT JOIN base_boletos b
+      ON o.anomes    = b.anomes
+     AND o.contrato  = b.contrato
+     AND o.produto   = b.produto
+    LEFT JOIN base_debito d
+      ON o.anomes    = d.anomes
+     AND o.contrato  = d.contrato
+     AND o.produto   = d.produto
+),
+
+opc_negociados_sem_caixa AS (
+    SELECT *
+    FROM opc_negociados_match
+    WHERE contrato_match_boleto IS NULL
+      AND contrato_match_debito IS NULL
+),
+
+opc_negociados_classificados AS (
+    SELECT
+        o.*,
+        case
+            when upper(coalesce(o.tp_neg, '')) in ('A VISTA', 'A_VISTA') then 'A_VISTA'
+            when upper(coalesce(o.tp_neg, '')) in ('PARCELADO') then 'PARCELADO'
+            else 'OUTROS'
+        end AS classe_regul
+    FROM opc_negociados_sem_caixa o
+),
+
+-- =========================================================
+-- 11) PN CONTRATO/PRODUTO
+--     mesmo mês + mês seguinte
+-- =========================================================
+pn_desconto_contrato_base AS (
+    SELECT
+        cast(pn.anomes as integer)                             AS anomes,
+        cast(pn.contrato as varchar)                           AS contrato,
+        cast(pn.produto as varchar)                            AS produto,
+        cast(pn.dt_referencia as date)                         AS dt_referencia_pn,
+        try_cast(pn.vl_desconto as decimal(18,6))              AS perc_desconto_pn
+    FROM mis_wk_pns_decisao pn
+    JOIN parametros p
+      ON cast(pn.anomes as integer) BETWEEN p.anomes_ini AND p.anomes_fim + 1
+),
+
+pn_desconto_contrato_match AS (
+    SELECT
+        o.anomes                             AS anomes_evento,
+        o.contrato                           AS contrato_novo_comp,
+        o.produto,
+        mcr.contrato_origem,
+        pnc.perc_desconto_pn,
+        row_number() over (
+            partition by o.anomes, o.contrato, o.produto
+            order by pnc.dt_referencia_pn desc
+        ) AS rn
+    FROM opc_negociados_classificados o
+    JOIN periodos per
+      ON o.anomes = per.anomes_ref
+    LEFT JOIN mapa_composicao_reverso mcr
+      ON o.contrato = mcr.contrato_novo_comp
+     AND o.produto  = mcr.produto
+     AND mcr.anomes = o.anomes
+    LEFT JOIN pn_desconto_contrato_base pnc
+      ON mcr.contrato_origem = pnc.contrato
+     AND o.produto           = pnc.produto
+     AND pnc.anomes in (per.anomes_ref, per.anomes_seguinte)
+),
+
+pn_desconto_contrato AS (
+    SELECT
+        anomes_evento AS anomes,
+        contrato_novo_comp,
+        produto,
+        contrato_origem,
+        perc_desconto_pn
+    FROM pn_desconto_contrato_match
+    WHERE rn = 1
+),
+
+opc_negociados_enriquecidos AS (
+    SELECT
+        o.anomes,
+        o.dt_evento,
+        o.contrato,
+        o.produto,
+        o.boleto,
+        o.origem_evento,
+        o.tp_neg,
+        o.tp_acordo,
+        o.classe_regul,
+        o.vl_caixa,
+        o.perc_desconto_evento,
+        pnc.perc_desconto_pn,
+        coalesce(pnc.perc_desconto_pn, 0)                       AS perc_desconto_final,
+        o.vl_ca6,
+        o.vl_ser,
+        o.contrato                                              AS contrato_novo_comp,
+        snc.vl_saldo_risco_disp_max_mes
+    FROM opc_negociados_classificados o
+    LEFT JOIN pn_desconto_contrato pnc
+      ON o.anomes   = pnc.anomes
+     AND o.contrato = pnc.contrato_novo_comp
+     AND o.produto  = pnc.produto
+    LEFT JOIN saldo_novo_contrato_base snc
+      ON o.contrato = snc.contrato_novo_comp
+     AND o.produto  = snc.produto
+     AND snc.anomes in (
+            o.anomes,
+            cast(
+                date_format(
+                    date_add(
+                        'month',
+                        1,
+                        date_parse(cast(o.anomes as varchar) || '01', '%Y%m%d')
+                    ),
+                    '%Y%m'
+                ) as integer
+            )
+        )
+),
+
+eventos_unificados AS (
+    SELECT
+        anomes,
+        dt_evento,
+        contrato,
+        produto,
+        boleto,
+        origem_evento,
+        tp_neg,
+        tp_acordo,
+        classe_regul,
+        contrato_novo_comp,
+        vl_caixa,
+        perc_desconto_evento,
+        perc_desconto_pn,
+        perc_desconto_final,
+        vl_ca6,
+        vl_ser,
+        vl_saldo_risco_disp_max_mes
+    FROM eventos_caixa_enriquecidos
+
+    UNION ALL
+
+    SELECT
+        anomes,
+        dt_evento,
+        contrato,
+        produto,
+        boleto,
+        origem_evento,
+        tp_neg,
+        tp_acordo,
+        classe_regul,
+        contrato_novo_comp,
+        vl_caixa,
+        perc_desconto_evento,
+        perc_desconto_pn,
+        perc_desconto_final,
+        vl_ca6,
+        vl_ser,
+        vl_saldo_risco_disp_max_mes
+    FROM opc_negociados_enriquecidos
+),
+
+calculo_regul AS (
+    SELECT
+        *,
+        case
+            when origem_evento = 'OPC_SEM_CAIXA'
+                then cast(0 as decimal(18,2))
+
+            when classe_regul = 'A_VISTA'
+                then coalesce(vl_caixa, 0)
+
+            when classe_regul = 'PARCELADO'
+             and coalesce(perc_desconto_final, 0) > 0
+                then coalesce(vl_ca6, 0) - (coalesce(vl_ca6, 0) * coalesce(perc_desconto_final, 0))
+
+            when classe_regul = 'PARCELADO'
+             and coalesce(perc_desconto_final, 0) = 0
+             and origem_evento = 'BOLETO'
+                then coalesce(vl_ser, 0)
+
+            when classe_regul = 'PARCELADO'
+             and coalesce(perc_desconto_final, 0) = 0
+             and origem_evento = 'DEBITO_CONTA'
+                then coalesce(vl_saldo_risco_disp_max_mes, 0)
+
+            else coalesce(vl_caixa, 0)
+        end AS vl_regul_sem_opc_extra,
+
+        case
+            when origem_evento = 'OPC_SEM_CAIXA'
+             and classe_regul = 'PARCELADO'
+             and coalesce(perc_desconto_final, 0) > 0
+                then coalesce(vl_ca6, 0) - (coalesce(vl_ca6, 0) * coalesce(perc_desconto_final, 0))
+
+            when origem_evento = 'OPC_SEM_CAIXA'
+             and classe_regul = 'PARCELADO'
+             and coalesce(perc_desconto_final, 0) = 0
+                then coalesce(vl_saldo_risco_disp_max_mes, 0)
+
+            when origem_evento = 'OPC_SEM_CAIXA'
+             and classe_regul = 'A_VISTA'
+             and coalesce(perc_desconto_final, 0) > 0
+                then coalesce(vl_ca6, 0) - (coalesce(vl_ca6, 0) * coalesce(perc_desconto_final, 0))
+
+            when origem_evento = 'OPC_SEM_CAIXA'
+             and classe_regul = 'A_VISTA'
+             and coalesce(perc_desconto_final, 0) = 0
+                then coalesce(vl_ser, 0)
+
+            when classe_regul = 'A_VISTA'
+                then coalesce(vl_caixa, 0)
+
+            when classe_regul = 'PARCELADO'
+             and coalesce(perc_desconto_final, 0) > 0
+                then coalesce(vl_ca6, 0) - (coalesce(vl_ca6, 0) * coalesce(perc_desconto_final, 0))
+
+            when classe_regul = 'PARCELADO'
+             and coalesce(perc_desconto_final, 0) = 0
+             and origem_evento = 'BOLETO'
+                then coalesce(vl_ser, 0)
+
+            when classe_regul = 'PARCELADO'
+             and coalesce(perc_desconto_final, 0) = 0
+             and origem_evento = 'DEBITO_CONTA'
+                then coalesce(vl_saldo_risco_disp_max_mes, 0)
+
+            else coalesce(vl_caixa, 0)
+        end AS vl_regul_com_opc_extra
+    FROM eventos_unificados
+)
+
+SELECT *
+FROM calculo_regul;
+```
+
+---
+
+# O que foi ajustado exatamente
+
+## Intervalo de tempo
+
+Agora você tem:
+
+```sql
+parametros(anomes_ini, anomes_fim)
+```
+
+e a CTE `periodos` expande os meses.
+
+---
+
+## Mesmo mês na composição boleto x débito
+
+Na regra:
+
+```sql
+b.contrato = d.contrato
+b.produto  = d.produto
+upper(coalesce(b.tp_neg, '')) in ('COMPOSICAO', 'COMPOSIÇÃO')
+```
+
+eu restringi para:
+
+```sql
+d.anomes = bcm.anomes
+```
+
+ou seja, **mesmo mês**.
+
+---
+
+## Mesmo mês + mês seguinte
+
+Passei a aplicar isso para:
+
+* PN desconto
+* mapa origem → contrato comp
+* saldo da carteira/opc
+
+usando:
+
+```sql
+pn.anomes in (per.anomes_ref, per.anomes_seguinte)
+mc.anomes in (per.anomes_ref, per.anomes_seguinte)
+snc.anomes in (per.anomes_ref, per.anomes_seguinte)
+```
+
+---
+
+## `LEFT JOIN` no lugar de `NOT EXISTS`
+
+A troca foi feita nas anti-regras principais.
+
+Isso facilita:
+
+* inspecionar match
+* medir cobertura
+* depurar descarte
+
+---
+
+# Ajustes que eu ainda faria no seu ambiente real
+
+Tem 3 pontos que eu ajustaria antes de produção.
+
+## 1. Não usar `p.anomes_fim + 1`
+
+Para virada de ano, isso quebra:
+
+* `202512 + 1 = 202513`
+
+No SQL acima eu deixei isso só em alguns filtros-base onde é melhor substituir por uma data real.
+Em produção, eu recomendaria criar também:
+
+```sql
+dt_ini
+dt_fim
+dt_fim_mais_1_mes
+```
+
+e filtrar por data, não por inteiro `YYYYMM`.
+
+## 2. Deduplicar bases auxiliares
+
+Em Athena, `LEFT JOIN` pode explodir se a base auxiliar tiver várias linhas por chave.
+Por isso, em produção, eu normalmente criaria:
+
+* `*_dedup`
+* `*_match`
+* `rn = 1`
+
+para tudo que possa multiplicar linhas.
+
+## 3. Materializar auxiliares pesadas
+
+Se isso for recorrente, eu não deixaria tudo como uma query única eterna.
+Eu materializaria:
+
+* mapa composição
+* pn desconto dedup
+* saldo contrato comp
+
+como intermediárias reutilizáveis.
+
+Isso está bem alinhado com sua arquitetura `silver_padronizado -> silver_integrado -> gold`, onde regra de integração pesada deve virar ativo reutilizável, não ficar soterrada em um único SQL monolítico.
