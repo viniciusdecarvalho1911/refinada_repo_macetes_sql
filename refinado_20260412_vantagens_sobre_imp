@@ -1,0 +1,378 @@
+Perfeito. O jeito mais forte de explicar isso é:
+
+> o problema não é existir pontuação
+> o problema é **o que a pontuação está premiando**
+
+Ou seja, você não precisa atacar o IMP como se ele fosse “ruim”.
+Você precisa mostrar que ele foi útil para um estágio de maturidade, mas que agora **ele não consegue separar volume, timing, estoque e efetividade real**.
+
+A melhor linha é esta:
+
+> **o modelo atual gamifica ato**
+> **o novo modelo mede gestão de carteira e pressão jurídica efetiva**
+
+Vou estruturar isso do jeito que você pode usar em comitê.
+
+---
+
+# 1. Mensagem principal
+
+## Frase executiva
+
+> “O IMP atual premia pontos acumulados por atos. O novo modelo passa a medir se o escritório enfrentou a carteira certa, no tempo certo, sem deixar estoque elegível envelhecer.”
+
+---
+
+# 2. Onde está a limitação do modelo atual
+
+Pelo que você descreveu, o IMP hoje funciona assim:
+
+* cada gatilho gera pontos
+* a pontuação depende do tempo gasto
+* o acompanhamento olha o acumulado
+* a leitura mensal é o delta de pontos
+
+Isso já foi um avanço em relação a medir só quantidade bruta.
+
+O problema é que ele ainda tem uma lógica muito centrada em:
+
+```text
+ato convertido em ponto
+```
+
+e pouco centrada em:
+
+```text
+carteira elegível
+estoque parado
+fluxo saudável
+comparabilidade justa
+```
+
+---
+
+# 3. O problema conceitual do modelo gamificado
+
+## 3.1 Ele premia o que aconteceu, mas não mostra bem o que deixou de acontecer
+
+No IMP, o foco fica muito em:
+
+> quantos pontos o escritório ganhou
+
+Mas o banco precisa responder também:
+
+> quantos casos elegíveis ficaram sem atuação?
+> quanto estoque envelheceu?
+> onde o fluxo travou?
+
+Esse é o ponto central.
+
+### Frase forte
+
+> “O IMP mede o ganho de pontos do que foi feito. O novo modelo mede também o custo do que deixou de ser feito.”
+
+---
+
+## 3.2 Ele pode esconder backlog
+
+Um escritório pode ganhar bastante ponto em alguns casos, mas ao mesmo tempo deixar muitos outros envelhecendo.
+
+### Exemplo
+
+Escritório A:
+
+* ganhou muitos pontos com citações rápidas
+* mas deixou crescer backlog de penhora
+
+No IMP, ele ainda pode parecer bem.
+
+No novo modelo:
+
+* o backlog derruba a leitura de performance
+
+### Frase
+
+> “O modelo atual enxerga produção. O novo modelo enxerga produção e estoque.”
+
+---
+
+## 3.3 Ele mistura mérito operacional com herança histórica do acumulado
+
+Quando o indicador é muito baseado em acumulado e no delta do acumulado, acontece um problema:
+
+* quem largou bem antes pode seguir “carregando vantagem”
+* quem recebeu carteira pior ou backlog herdado entra atrás
+* a leitura mensal fica contaminada pelo passado
+
+O novo modelo melhora isso porque olha mês a mês:
+
+* elegíveis do período
+* cobertura do período
+* execução do período
+* SLA do período
+* backlog atual e sua variação
+
+### Frase
+
+> “O acumulado conta história antiga; a gestão precisa enxergar capacidade atual.”
+
+---
+
+## 3.4 Ele incentiva comportamento de jogo
+
+Todo sistema gamificado gera adaptação comportamental.
+
+Se o escritório sabe que determinado ato rende mais ponto com menor esforço relativo, ele pode tender a:
+
+* concentrar atuação onde pontua melhor
+* priorizar atos mais fáceis
+* otimizar ponto, não necessariamente resultado
+
+Isso é o coração da crítica.
+
+### Frase forte
+
+> “Quando a régua é ponto, o comportamento tende a otimizar ponto. Quando a régua é pressão efetiva, o comportamento tende a otimizar resultado.”
+
+---
+
+## 3.5 Ele pode valorizar ato individual e subvalorizar gestão do fluxo
+
+O banco não quer só saber se houve ato.
+Ele quer saber se o fluxo inteiro está saudável.
+
+Por exemplo:
+
+* citar bem
+* pesquisar bem
+* penhorar no prazo
+* não deixar o estoque maduro parado
+
+O IMP tende a ser mais “evento-cêntrico”.
+O novo modelo é mais “fluxo-cêntrico”.
+
+### Frase
+
+> “O modelo antigo premia eventos. O novo modelo gere o fluxo.”
+
+---
+
+# 4. Por que o novo modelo é melhor
+
+Agora entra a parte positiva. Não fale só “o anterior é ruim”. Fale:
+
+> “o novo modelo resolve problemas que o IMP não consegue resolver sozinho”
+
+---
+
+## 4.1 O novo modelo parte do denominador correto
+
+Ele sempre começa de:
+
+* quantos casos eram elegíveis
+* quantos ainda precisavam de atuação
+* quantos estavam fora do prazo
+* quantos estavam em backlog
+
+Ou seja, ele traz contexto.
+
+### Frase
+
+> “Ponto sem denominador vira produção. Denominador transforma produção em performance.”
+
+---
+
+## 4.2 O novo modelo separa quatro dimensões
+
+* cobertura
+* execução real
+* timing
+* backlog
+
+Isso é muito melhor para gestão porque permite dizer:
+
+* o problema está em enfrentamento?
+* está em execução?
+* está em prazo?
+* está em estoque?
+
+O IMP costuma colapsar tudo numa lógica única de pontuação.
+
+### Frase
+
+> “O novo modelo não só diz quem foi mal; ele mostra em que exatamente foi mal.”
+
+---
+
+## 4.3 O novo modelo permite meta global e meta por gatilho
+
+Com o IMP, você tende a ficar olhando pontos.
+
+Com o novo modelo, você consegue cobrar:
+
+* meta global de movimentação
+* meta de citação
+* meta de pesquisa
+* meta de penhora
+* meta de backlog
+* meta de SLA
+
+Isso muda a qualidade da gestão.
+
+### Frase
+
+> “O novo modelo permite cobrar volume com direção.”
+
+---
+
+## 4.4 O novo modelo melhora a justiça comparativa
+
+Como você segmenta por:
+
+* praça
+* ticket
+* ativo ou WO
+
+a comparação fica mais justa.
+
+No modelo gamificado, a pontuação pode não refletir adequadamente diferenças de contexto entre carteiras.
+
+### Frase
+
+> “O novo modelo compara escritórios em contextos equivalentes, e não apenas por pontos acumulados.”
+
+---
+
+## 4.5 O novo modelo conversa melhor com share
+
+Essa é uma das partes mais fortes.
+
+Para distribuir novos casos, o banco quer saber:
+
+* quem absorve bem
+* quem atua no prazo
+* quem não acumula atraso
+* quem sustenta fluxo em estágios relevantes
+
+O IMP até pode ajudar, mas o novo modelo é muito mais aderente para orientar share.
+
+### Frase
+
+> “Para distribuir carteira, o banco precisa saber quem performa bem hoje — não só quem acumulou ponto ontem.”
+
+---
+
+## 4.6 O novo modelo melhora forecast
+
+O IMP olha muito o histórico de pontos.
+
+O novo modelo permite previsão operacional real:
+
+* elegíveis do mês
+* realizado até agora
+* backlog atual
+* capacidade restante
+* risco de não bater meta
+
+### Frase
+
+> “O novo modelo não é só de avaliação; ele é também de previsão e correção de rota.”
+
+---
+
+# 5. Como explicar sem parecer que está “matando” o modelo atual
+
+Essa parte é importante politicamente.
+
+Use esta linha:
+
+> “O IMP foi importante para introduzir disciplina de atuação e velocidade em atos específicos. O novo modelo não joga isso fora; ele evolui essa lógica para um nível de gestão de carteira, fluxo e resultado.”
+
+Ou ainda:
+
+> “O novo modelo incorpora a intuição correta do IMP — valorizar o tempo da atuação — mas adiciona o que faltava: estoque, elegibilidade, comparabilidade e capacidade de gestão.”
+
+Isso é muito melhor do que dizer “o atual está errado”.
+
+---
+
+# 6. Comparação direta para slide
+
+## Título
+
+**Modelo atual vs novo modelo**
+
+| Tema              | IMP atual                  | Novo modelo                          |
+| ----------------- | -------------------------- | ------------------------------------ |
+| Unidade principal | ponto por ato              | performance da carteira              |
+| Lógica            | gamificação                | gestão de fluxo                      |
+| Foco              | o que foi feito            | o que foi feito e o que ficou parado |
+| Tempo             | entra no ponto do ato      | entra no ato e no backlog            |
+| Estoque           | pouco visível              | explícito                            |
+| Meta              | mais indireta              | global e por gatilho                 |
+| Comparação        | mais centrada em acumulado | centrada no período e no cluster     |
+| Share             | apoio parcial              | uso direto                           |
+| Forecast          | limitado                   | forte                                |
+
+### Frase de fechamento
+
+> “O IMP mede esforço pontuado. O novo modelo mede efetividade gerencial.”
+
+---
+
+# 7. Exemplo prático muito bom para convencer
+
+## Escritório A
+
+* ganhou 120 pontos no mês
+* citou rápido
+* backlog de penhora subiu de 10% para 28%
+
+## Escritório B
+
+* ganhou 105 pontos no mês
+* citou um pouco menos rápido
+* backlog de penhora caiu de 25% para 12%
+* SLA global melhorou
+* bateu meta de constrição
+
+No IMP, A pode parecer melhor.
+No novo modelo, B provavelmente é melhor para o banco.
+
+### Frase
+
+> “O banco não ganha com quem faz o ato mais pontuado. O banco ganha com quem sustenta pressão efetiva ao longo do fluxo.”
+
+---
+
+# 8. Argumento mais forte de todos
+
+Se você quiser resumir em uma frase de alto impacto:
+
+> “O modelo atual recompensa bem o ato individual; o novo modelo recompensa melhor a gestão jurídica da carteira.”
+
+Essa é provavelmente a melhor frase de todas.
+
+---
+
+# 9. Texto pronto para apresentação
+
+Você pode falar assim:
+
+> “O IMP atual foi útil para criar disciplina e velocidade em determinados atos. Mas ele tem uma limitação estrutural: ele continua muito orientado à lógica de ponto acumulado. Isso faz com que enxerguemos bem o que foi feito, mas não com a mesma clareza o que ficou parado, o que envelheceu e onde o fluxo travou.
+>
+> O novo modelo evolui essa lógica. Ele mantém a importância do tempo, mas sai da gamificação do ato e passa para a gestão da carteira. Em vez de perguntar apenas quantos pontos foram gerados, ele pergunta: quantos casos elegíveis foram tratados, quantos exigiam atuação real, quantos foram movimentados no prazo e quanto estoque ficou envelhecendo.
+>
+> Com isso, a gestão fica mais justa, mais explicável e mais útil para decidir cobrança, forecast e share.”
+
+---
+
+# 10. Fechamento executivo
+
+> “O IMP atual mede bem pontuação de atuação. O novo modelo mede melhor efetividade jurídica. Ele é superior porque incorpora não só o valor do ato, mas também o contexto da carteira, o prazo, o backlog, a meta e a capacidade real do escritório de sustentar pressão jurídica ao longo do fluxo.”
+
+Se você quiser, no próximo passo eu posso transformar isso em:
+
+* **um slide comparativo pronto**
+* **uma fala de 3 minutos para defender a troca**
+* **uma seção de objeções esperadas dos escritórios e respostas prontas**
