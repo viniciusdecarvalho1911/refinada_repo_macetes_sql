@@ -1,0 +1,802 @@
+Perfeito. Vou te entregar em 3 camadas, já pensando no seu contexto de **cobrança judicial + gestão de escritórios + modelagem analítica**:
+
+1. **tabela lógica de métricas**
+2. **matriz de regras mensais**
+3. **modelo SQL conceitual em Athena**
+
+A ideia é que isso sirva ao mesmo tempo para:
+
+* acompanhamento operacional
+* cobrança mensal dos escritórios
+* previsão de fechamento
+* orientação de share
+* rastreabilidade e governança
+
+---
+
+# 1. Visão geral do modelo
+
+A lógica central passa a ser:
+
+```text
+Carteira do mês
+=
+estoque inicial
++ entradas novas do mês
+```
+
+Mas, para gestão justa, você precisa separar:
+
+```text
+estoque inicial
+novas entradas elegíveis plenas
+novas entradas elegíveis parciais
+novas entradas tardias
+```
+
+E, em paralelo, controlar:
+
+```text
+backlog inicial
+backlog gerado no mês
+backlog resolvido no mês
+backlog final
+```
+
+Ou seja, o escritório será avaliado em 3 frentes:
+
+1. **saneamento do herdado**
+2. **absorção do novo**
+3. **disciplina para não gerar backlog novo**
+
+---
+
+# 2. Tabela lógica de métricas
+
+Vou montar primeiro a lógica de negócio, sem SQL.
+
+## 2.1 Tabela base mensal por processo x gatilho
+
+Essa é a sua tabela mais importante.
+
+### Nome sugerido
+
+```text
+fato_processo_gatilho_mes
+```
+
+### Grão
+
+```text
+1 linha por processo_id + gatilho + mes_ref
+```
+
+---
+
+## 2.2 Campos principais
+
+| Campo                             | Descrição                                        |
+| --------------------------------- | ------------------------------------------------ |
+| mes_ref                           | mês de referência                                |
+| processo_id                       | identificador do processo                        |
+| contrato_id                       | contrato principal vinculado                     |
+| escritorio_id                     | escritório responsável no mês                    |
+| praca                             | região/praça                                     |
+| ticket_faixa                      | bucket de ticket                                 |
+| tp_carteira                       | ativo ou WO                                      |
+| gatilho                           | ex.: CITACAO, PESQUISA_BENS, PENHORA             |
+| dt_entrada_escritorio             | data em que o caso entrou no escritório          |
+| dt_primeira_elegibilidade_gatilho | data em que o gatilho passou a poder ser cobrado |
+| sla_dias_gatilho                  | prazo padrão do gatilho                          |
+| dt_execucao_gatilho               | data da execução real                            |
+| dt_baixa_excecao                  | data da saída por exceção                        |
+| motivo_baixa_excecao              | pagamento, encerramento, retroação etc.          |
+| flag_executado_mes                | 1/0                                              |
+| flag_excecao_mes                  | 1/0                                              |
+| flag_trabalhado_mes               | 1/0                                              |
+| flag_dentro_sla_mes               | 1/0                                              |
+| flag_fora_sla_mes                 | 1/0                                              |
+| flag_backlog_mes                  | 1/0                                              |
+| flag_estoque_inicial_mes          | 1/0                                              |
+| flag_entrada_nova_mes             | 1/0                                              |
+| flag_entrada_elegivel_plena_mes   | 1/0                                              |
+| flag_entrada_elegivel_parcial_mes | 1/0                                              |
+| flag_entrada_tardia_mes           | 1/0                                              |
+| flag_elegivel_mes                 | 1/0                                              |
+| flag_elegivel_liquido_mes         | 1/0                                              |
+| idade_gatilho_em_dias_fechamento  | dias desde elegibilidade até fechamento do mês   |
+| dias_ate_execucao                 | dias entre elegibilidade e execução              |
+| peso_gatilho                      | peso do estágio                                  |
+| penalidade_tempo                  | redutor por atraso                               |
+| score_evento                      | score final do evento                            |
+
+---
+
+## 2.3 Métricas derivadas principais
+
+Agora, no nível agregado por escritório, praça, ticket, tipo de carteira e gatilho.
+
+---
+
+### A. Métricas de estoque
+
+| Métrica           | Fórmula conceitual                      | Leitura                                     |
+| ----------------- | --------------------------------------- | ------------------------------------------- |
+| estoque_inicial   | qtd flag_estoque_inicial_mes=1          | o que já estava no escritório no 1º dia     |
+| entradas_novas    | qtd flag_entrada_nova_mes=1             | o que entrou no mês                         |
+| entradas_plenas   | qtd flag_entrada_elegivel_plena_mes=1   | entrou com tempo suficiente para meta cheia |
+| entradas_parciais | qtd flag_entrada_elegivel_parcial_mes=1 | entrou com tempo parcial                    |
+| entradas_tardias  | qtd flag_entrada_tardia_mes=1           | entrou tarde demais para meta cheia         |
+
+---
+
+### B. Métricas de elegibilidade
+
+| Métrica                | Fórmula conceitual                  | Leitura                                  |
+| ---------------------- | ----------------------------------- | ---------------------------------------- |
+| elegiveis_mes          | qtd flag_elegivel_mes=1             | o que podia receber atuação no mês       |
+| elegiveis_liquidos_mes | qtd flag_elegivel_liquido_mes=1     | elegíveis descontadas exceções legítimas |
+| elegiveis_iniciais     | elegíveis vindos do estoque inicial | pressão herdada                          |
+| elegiveis_novos        | elegíveis das entradas do mês       | pressão nova                             |
+
+---
+
+### C. Métricas de cobertura
+
+| Métrica                   | Fórmula                                                       | Leitura               |
+| ------------------------- | ------------------------------------------------------------- | --------------------- |
+| cobertura_global          | trabalhados / elegíveis                                       | enfrentou a carteira? |
+| cobertura_estoque_inicial | trabalhados do estoque inicial / elegíveis do estoque inicial | limpou herdado?       |
+| cobertura_novos           | trabalhados dos novos / elegíveis novos                       | absorveu o novo?      |
+| cobertura_gatilho         | trabalhados do gatilho / elegíveis do gatilho                 | enfrentou o gatilho?  |
+
+---
+
+### D. Métricas de execução real
+
+| Métrica                  | Fórmula                                               | Leitura           |
+| ------------------------ | ----------------------------------------------------- | ----------------- |
+| execucao_global          | executados / elegíveis líquidos                       | atuou de fato?    |
+| execucao_estoque_inicial | executados iniciais / elegíveis líquidos iniciais     | atuou no herdado? |
+| execucao_novos           | executados novos / elegíveis líquidos novos           | atuou no novo?    |
+| execucao_gatilho         | executados do gatilho / elegíveis líquidos do gatilho | atuou no gatilho? |
+
+---
+
+### E. Métricas de timing
+
+| Métrica             | Fórmula                                                | Leitura               |
+| ------------------- | ------------------------------------------------------ | --------------------- |
+| sla_global          | executados no prazo / executados                       | quão rápido atuou?    |
+| sla_estoque_inicial | executados iniciais no prazo / executados iniciais     | velocidade no herdado |
+| sla_novos           | executados novos no prazo / executados novos           | velocidade no novo    |
+| sla_gatilho         | executados do gatilho no prazo / executados do gatilho | velocidade por etapa  |
+
+---
+
+### F. Métricas de backlog
+
+| Métrica               | Fórmula                                                             | Leitura                       |
+| --------------------- | ------------------------------------------------------------------- | ----------------------------- |
+| backlog_inicial       | casos já fora do SLA no 1º dia / estoque inicial elegível           | passivo herdado               |
+| backlog_gerado_mes    | casos que venceram SLA dentro do mês sem atuação / elegíveis do mês | problema criado no mês        |
+| backlog_resolvido_mes | backlog inicial resolvido no mês / backlog inicial                  | limpou o atraso?              |
+| backlog_final         | casos fora do SLA no fechamento / elegíveis ativos                  | estoque envelhecido ao fechar |
+| backlog_gatilho       | backlog do gatilho / elegíveis ativos do gatilho                    | onde o fluxo travou           |
+
+---
+
+### G. Métricas de meta
+
+| Métrica               | Fórmula                                            | Leitura                  |
+| --------------------- | -------------------------------------------------- | ------------------------ |
+| meta_global_mes       | meta total do mês                                  | expectativa agregada     |
+| realizado_global_mes  | trabalhados ou executados, conforme régua definida | entrega total            |
+| atingimento_global    | realizado / meta                                   | bateu a meta do mês?     |
+| meta_gatilho_mes      | meta do gatilho                                    | expectativa por etapa    |
+| realizado_gatilho_mes | realizado no gatilho                               | entrega por etapa        |
+| atingimento_gatilho   | realizado gatilho / meta gatilho                   | bateu a meta do gatilho? |
+
+---
+
+### H. Métricas de score
+
+| Métrica       | Fórmula                                        | Leitura                              |
+| ------------- | ---------------------------------------------- | ------------------------------------ |
+| score_base    | soma score_evento / soma score máximo elegível | qualidade antes do backlog           |
+| score_final   | score_base × (1 - backlog_ponderado)           | qualidade após disciplina de estoque |
+| score_cluster | score final no cluster                         | comparável no contexto certo         |
+
+---
+
+# 3. Matriz de regras mensais
+
+Agora a parte mais importante para operação: **como classificar os casos dentro do mês**.
+
+---
+
+## 3.1 Regra de classificação do caso no mês
+
+### Regra 1 — Estoque inicial
+
+Caso já estava com o escritório antes do primeiro dia do mês.
+
+```text
+se dt_entrada_escritorio < primeiro_dia_mes
+então flag_estoque_inicial_mes = 1
+```
+
+---
+
+### Regra 2 — Entrada nova
+
+Caso entrou entre o primeiro e o último dia do mês.
+
+```text
+se dt_entrada_escritorio entre primeiro_dia_mes e ultimo_dia_mes
+então flag_entrada_nova_mes = 1
+```
+
+---
+
+### Regra 3 — Elegível no mês
+
+Caso já podia receber o gatilho em algum momento do mês.
+
+```text
+se dt_primeira_elegibilidade_gatilho <= ultimo_dia_mes
+e caso ainda não estava encerrado antes disso
+então flag_elegivel_mes = 1
+```
+
+---
+
+## 3.2 Regra de janela mensal: pleno, parcial ou tardio
+
+Aqui está a parte mais sensível.
+
+Você precisa definir uma janela mensal baseada no SLA do gatilho.
+
+### Exemplo de regra simples
+
+Suponha SLA = 30 dias.
+
+* se entrou/elegibilizou até o 5º dia útil → **pleno**
+* se entrou/elegibilizou entre o 6º e o 15º dia útil → **parcial**
+* se entrou/elegibilizou após o 15º dia útil → **tardio**
+
+Isso pode ser parametrizado por gatilho.
+
+---
+
+### Regra conceitual
+
+#### Elegível plena
+
+```text
+caso com tempo suficiente no mês para cobrança integral do gatilho
+```
+
+#### Elegível parcial
+
+```text
+caso com tempo insuficiente para cobrança integral,
+mas suficiente para cobrança parcial ou providência mínima
+```
+
+#### Entrada tardia
+
+```text
+caso sem tempo razoável para cobrança integral no mês
+```
+
+---
+
+## 3.3 Regra de exceção legítima
+
+Conta para cobertura, mas não para execução real.
+
+### Exemplos
+
+* pagamento espontâneo
+* encerramento processual
+* retroação de atraso
+* perda superveniente da necessidade do gatilho
+* suspensão jurídica válida
+
+```text
+se ocorreu exceção legítima no mês
+então flag_excecao_mes = 1
+flag_trabalhado_mes = 1
+flag_elegivel_liquido_mes = 0
+```
+
+---
+
+## 3.4 Regra de execução real
+
+```text
+se houve movimento processual válido do gatilho no mês
+então flag_executado_mes = 1
+flag_trabalhado_mes = 1
+```
+
+---
+
+## 3.5 Regra de SLA
+
+```text
+se flag_executado_mes = 1
+e dias_ate_execucao <= sla_dias_gatilho
+então flag_dentro_sla_mes = 1
+senão flag_fora_sla_mes = 1
+```
+
+---
+
+## 3.6 Regra de backlog
+
+### Backlog final do mês
+
+```text
+se caso continua elegível ativo
+e idade_gatilho_em_dias_fechamento > sla_dias_gatilho
+e não foi executado
+e não teve exceção legítima
+então flag_backlog_mes = 1
+```
+
+---
+
+## 3.7 Regras de meta
+
+### Meta global
+
+A meta global do mês deve ter três pedaços:
+
+```text
+meta_global_mes
+=
+meta_saneamento_estoque_inicial
++ meta_absorcao_novos_plenos
++ meta_minima_novos_parciais
+```
+
+### Meta por gatilho
+
+Mesmo raciocínio:
+
+```text
+meta_gatilho_mes
+=
+meta_estoque_inicial_gatilho
++ meta_novos_plenos_gatilho
++ meta_parcial_gatilho
+```
+
+---
+
+## 3.8 Exemplo de matriz mensal
+
+| Bloco           | O que mede                     | Regra                         |
+| --------------- | ------------------------------ | ----------------------------- |
+| Estoque inicial | o que já estava no escritório  | entrada antes do mês          |
+| Novo pleno      | entrou com tempo hábil         | janela mensal suficiente      |
+| Novo parcial    | entrou com tempo intermediário | janela parcial                |
+| Novo tardio     | entrou tarde                   | não cobra meta cheia          |
+| Exceção         | saiu legitimamente da fila     | conta cobertura, não execução |
+| Execução        | houve movimento válido         | conta execução e cobertura    |
+| SLA             | executou no prazo              | conta timing                  |
+| Backlog         | ficou parado além do prazo     | conta disciplina negativa     |
+
+---
+
+# 4. Modelo SQL conceitual em Athena
+
+Agora vou te dar um esqueleto que você consegue adaptar.
+
+---
+
+## 4.1 CTE de parâmetros mensais
+
+```sql
+with parametros as (
+    select
+        date '2026-04-01' as dt_inicio_mes,
+        date '2026-04-30' as dt_fim_mes,
+        5  as dia_util_corte_pleno,
+        15 as dia_util_corte_parcial
+),
+```
+
+Na prática, idealmente isso viria de uma tabela calendário com dia útil.
+
+---
+
+## 4.2 Base de casos e gatilhos
+
+```sql
+base_casos as (
+    select
+        processo_id,
+        contrato_id,
+        escritorio_id,
+        praca,
+        ticket_faixa,
+        tp_carteira, -- ATIVO / WO
+        gatilho,
+        dt_entrada_escritorio,
+        dt_primeira_elegibilidade_gatilho,
+        dt_execucao_gatilho,
+        dt_baixa_excecao,
+        motivo_baixa_excecao,
+        sla_dias_gatilho,
+        peso_gatilho
+    from sua_base_processo_gatilho
+),
+```
+
+---
+
+## 4.3 Enriquecimento mensal
+
+```sql
+base_mes as (
+    select
+        b.*,
+        p.dt_inicio_mes,
+        p.dt_fim_mes,
+
+        case
+            when b.dt_entrada_escritorio < p.dt_inicio_mes then 1 else 0
+        end as flag_estoque_inicial_mes,
+
+        case
+            when b.dt_entrada_escritorio between p.dt_inicio_mes and p.dt_fim_mes then 1 else 0
+        end as flag_entrada_nova_mes,
+
+        case
+            when b.dt_primeira_elegibilidade_gatilho <= p.dt_fim_mes then 1 else 0
+        end as flag_elegivel_mes
+    from base_casos b
+    cross join parametros p
+),
+```
+
+---
+
+## 4.4 Classificação da entrada no mês
+
+Aqui vou simplificar com diferença em dias corridos. Depois você pode trocar por dia útil via calendário.
+
+```sql
+classificacao_janela as (
+    select
+        *,
+        date_diff('day', dt_inicio_mes, coalesce(dt_entrada_escritorio, dt_inicio_mes)) as dias_desde_inicio_mes_entrada,
+        date_diff('day', dt_inicio_mes, coalesce(dt_primeira_elegibilidade_gatilho, dt_inicio_mes)) as dias_desde_inicio_mes_elegibilidade,
+
+        case
+            when flag_entrada_nova_mes = 1
+             and date_diff('day', dt_inicio_mes, dt_entrada_escritorio) <= 5
+                then 1 else 0
+        end as flag_entrada_elegivel_plena_mes,
+
+        case
+            when flag_entrada_nova_mes = 1
+             and date_diff('day', dt_inicio_mes, dt_entrada_escritorio) > 5
+             and date_diff('day', dt_inicio_mes, dt_entrada_escritorio) <= 15
+                then 1 else 0
+        end as flag_entrada_elegivel_parcial_mes,
+
+        case
+            when flag_entrada_nova_mes = 1
+             and date_diff('day', dt_inicio_mes, dt_entrada_escritorio) > 15
+                then 1 else 0
+        end as flag_entrada_tardia_mes
+    from base_mes
+),
+```
+
+---
+
+## 4.5 Regras de exceção, execução e trabalho
+
+```sql
+regras_atuacao as (
+    select
+        *,
+
+        case
+            when dt_baixa_excecao between dt_inicio_mes and dt_fim_mes
+             and motivo_baixa_excecao in (
+                 'PAGAMENTO',
+                 'ENCERRAMENTO',
+                 'RETROACAO',
+                 'PERDA_ELEGIBILIDADE',
+                 'SUSPENSAO_JURIDICA'
+             )
+                then 1 else 0
+        end as flag_excecao_mes,
+
+        case
+            when dt_execucao_gatilho between dt_inicio_mes and dt_fim_mes
+                then 1 else 0
+        end as flag_executado_mes
+    from classificacao_janela
+),
+```
+
+---
+
+## 4.6 Elegibilidade líquida e trabalho
+
+```sql
+regras_finais as (
+    select
+        *,
+
+        case
+            when flag_elegivel_mes = 1 and flag_excecao_mes = 0 then 1 else 0
+        end as flag_elegivel_liquido_mes,
+
+        case
+            when flag_executado_mes = 1 or flag_excecao_mes = 1 then 1 else 0
+        end as flag_trabalhado_mes,
+
+        case
+            when flag_executado_mes = 1
+                then date_diff('day', dt_primeira_elegibilidade_gatilho, dt_execucao_gatilho)
+            else null
+        end as dias_ate_execucao,
+
+        case
+            when flag_executado_mes = 1
+             and date_diff('day', dt_primeira_elegibilidade_gatilho, dt_execucao_gatilho) <= sla_dias_gatilho
+                then 1 else 0
+        end as flag_dentro_sla_mes,
+
+        case
+            when flag_executado_mes = 1
+             and date_diff('day', dt_primeira_elegibilidade_gatilho, dt_execucao_gatilho) > sla_dias_gatilho
+                then 1 else 0
+        end as flag_fora_sla_mes,
+
+        case
+            when flag_elegivel_mes = 1
+                then date_diff('day', dt_primeira_elegibilidade_gatilho, dt_fim_mes)
+            else null
+        end as idade_gatilho_em_dias_fechamento
+    from regras_atuacao
+),
+```
+
+---
+
+## 4.7 Backlog final
+
+```sql
+backlog as (
+    select
+        *,
+
+        case
+            when flag_elegivel_mes = 1
+             and flag_executado_mes = 0
+             and flag_excecao_mes = 0
+             and idade_gatilho_em_dias_fechamento > sla_dias_gatilho
+                then 1 else 0
+        end as flag_backlog_mes
+    from regras_finais
+),
+```
+
+---
+
+## 4.8 Penalidade de tempo e score do evento
+
+Vou usar um redutor simples em faixas, mais explicável para advogado.
+
+```sql
+score as (
+    select
+        *,
+
+        case
+            when flag_executado_mes = 0 then 0.0
+            when dias_ate_execucao <= sla_dias_gatilho then 1.0
+            when dias_ate_execucao <= sla_dias_gatilho + 10 then 0.7
+            when dias_ate_execucao <= sla_dias_gatilho + 30 then 0.4
+            else 0.2
+        end as penalidade_tempo,
+
+        cast(flag_executado_mes as double) * peso_gatilho *
+        case
+            when flag_executado_mes = 0 then 0.0
+            when dias_ate_execucao <= sla_dias_gatilho then 1.0
+            when dias_ate_execucao <= sla_dias_gatilho + 10 then 0.7
+            when dias_ate_execucao <= sla_dias_gatilho + 30 then 0.4
+            else 0.2
+        end as score_evento
+    from backlog
+)
+```
+
+---
+
+## 4.9 Agregado mensal por escritório, praça, ticket, carteira e gatilho
+
+```sql
+select
+    date_format(dt_inicio_mes, '%Y%m') as mes_ref,
+    escritorio_id,
+    praca,
+    ticket_faixa,
+    tp_carteira,
+    gatilho,
+
+    sum(flag_estoque_inicial_mes) as qtd_estoque_inicial,
+    sum(flag_entrada_nova_mes) as qtd_entradas_novas,
+    sum(flag_entrada_elegivel_plena_mes) as qtd_entradas_plenas,
+    sum(flag_entrada_elegivel_parcial_mes) as qtd_entradas_parciais,
+    sum(flag_entrada_tardia_mes) as qtd_entradas_tardias,
+
+    sum(flag_elegivel_mes) as qtd_elegiveis,
+    sum(flag_elegivel_liquido_mes) as qtd_elegiveis_liquidos,
+    sum(flag_trabalhado_mes) as qtd_trabalhados,
+    sum(flag_executado_mes) as qtd_executados,
+    sum(flag_excecao_mes) as qtd_excecoes,
+
+    sum(flag_dentro_sla_mes) as qtd_dentro_sla,
+    sum(flag_backlog_mes) as qtd_backlog_final,
+
+    cast(sum(flag_trabalhado_mes) as double) / nullif(sum(flag_elegivel_mes), 0) as cobertura,
+    cast(sum(flag_executado_mes) as double) / nullif(sum(flag_elegivel_liquido_mes), 0) as execucao_real,
+    cast(sum(flag_dentro_sla_mes) as double) / nullif(sum(flag_executado_mes), 0) as sla_compliance,
+    cast(sum(flag_backlog_mes) as double) / nullif(sum(flag_elegivel_mes), 0) as backlog_final,
+
+    sum(score_evento) as score_evento_total,
+    sum(cast(flag_elegivel_mes as double) * peso_gatilho) as score_maximo_teorico,
+
+    sum(score_evento) / nullif(sum(cast(flag_elegivel_mes as double) * peso_gatilho), 0) as score_base,
+
+    (
+        sum(score_evento) / nullif(sum(cast(flag_elegivel_mes as double) * peso_gatilho), 0)
+    ) * (
+        1 - cast(sum(flag_backlog_mes) as double) / nullif(sum(flag_elegivel_mes), 0)
+    ) as score_final
+from score
+group by 1,2,3,4,5,6
+;
+```
+
+---
+
+# 5. Como modelar a meta
+
+Agora a parte de gestão.
+
+Você pode ter uma tabela de metas mensais parametrizada.
+
+### Nome sugerido
+
+```text
+dim_meta_escritorio_mes
+```
+
+### Grão
+
+```text
+mes_ref + escritorio_id + praca + ticket_faixa + tp_carteira + gatilho
+```
+
+### Campos sugeridos
+
+| Campo                | Descrição                             |
+| -------------------- | ------------------------------------- |
+| mes_ref              | mês                                   |
+| escritorio_id        | escritório                            |
+| praca                | praça                                 |
+| ticket_faixa         | faixa                                 |
+| tp_carteira          | ativo ou WO                           |
+| gatilho              | gatilho ou GLOBAL                     |
+| meta_estoque_inicial | quantidade esperada do herdado        |
+| meta_novos_plenos    | quantidade esperada de novos plenos   |
+| meta_novos_parciais  | quantidade esperada de novos parciais |
+| meta_total           | soma                                  |
+| meta_cobertura       | alvo percentual                       |
+| meta_execucao        | alvo percentual                       |
+| meta_sla             | alvo percentual                       |
+| meta_backlog_max     | teto de backlog                       |
+
+---
+
+## Fórmula de meta total
+
+```text
+meta_total
+=
+meta_estoque_inicial
++ meta_novos_plenos
++ meta_novos_parciais
+```
+
+---
+
+# 6. Como confrontar realizado vs meta
+
+Você pode montar um mart final.
+
+### Nome sugerido
+
+```text
+mart_meta_performance_escritorio_mes
+```
+
+### Lógica
+
+Junta:
+
+* agregado de performance
+* tabela de metas
+
+E calcula:
+
+| Métrica                  | Fórmula                          |
+| ------------------------ | -------------------------------- |
+| atingimento_meta_total   | realizado_total / meta_total     |
+| atingimento_meta_gatilho | realizado_gatilho / meta_gatilho |
+| delta_cobertura          | cobertura - meta_cobertura       |
+| delta_execucao           | execucao_real - meta_execucao    |
+| delta_sla                | sla_compliance - meta_sla        |
+| delta_backlog            | backlog_final - meta_backlog_max |
+
+---
+
+# 7. Narrativas que isso permite
+
+Com esse modelo, você consegue falar:
+
+### Exemplo 1 — escritório abaixo da meta global
+
+> “O escritório não bateu a meta global porque recebeu alto estoque inicial e não conseguiu reduzir backlog herdado na frente de penhora.”
+
+### Exemplo 2 — escritório bateu o agregado, mas falhou no gatilho crítico
+
+> “O agregado foi atingido, mas o gatilho de constrição ficou abaixo da meta, com backlog final elevado.”
+
+### Exemplo 3 — escritório foi justo, mas recebeu entrada tardia
+
+> “Boa parte das entradas ocorreu sem tempo hábil para meta cheia, então o desvio esteve concentrado em entradas tardias e não em baixa produtividade do estoque enfrentável.”
+
+---
+
+# 8. O que isso te dá, de verdade
+
+Esse modelo te permite acompanhar, ao mesmo tempo:
+
+* **estoque herdado**
+* **fluxo novo**
+* **tempo**
+* **disciplina de estoque**
+* **meta global**
+* **meta por gatilho**
+* **forecast**
+* **fairness na comparação entre escritórios**
+
+Ou seja, ele resolve exatamente o problema que você trouxe:
+não misturar tudo no mesmo saco.
+
+---
+
+# 9. Próximo passo recomendado
+
+O próximo nível ideal é eu te entregar isso já em formato de:
+
+* **nota Obsidian completa**
+* **DDL lógico das tabelas**
+* **query Athena mais robusta com calendário de dia útil**
+* **estrutura de dashboard QuickSight**
+* **modelo de narrativa mensal pronto para os escritórios**
+
+Posso seguir nessa linha e montar o pacote completo já no padrão do seu lakehouse.
