@@ -1,0 +1,956 @@
+Vou te ensinar isso no estilo Dose Mínima Eficaz (Tim Ferriss) — só o que realmente faz você sair usando HOJE.
+
+
+---
+
+🎯 1. MONEY SHOT (o que você precisa saber primeiro)
+
+👉 Wireframe em ASCII = desenhar caixas + hierarquia + fluxo usando texto
+
+Você só precisa dominar 4 coisas:
+
++-----+   → caixa
+|     |   → conteúdo
++-----+
+
+[ Título ] → header
+
+----        → separador
+
+→ ↓ ↑ ←     → fluxo/navegação
+
+Se você souber isso, já consegue montar 80% dos dashboards.
+
+
+---
+
+🧠 2. PADRÃO UNIVERSAL (modelo mental simples)
+
+Pense sempre assim:
+
+[ HEADER ]
+
+[ FILTROS ]
+
+[ KPIs PRINCIPAIS ]
+
+[ VISUAL PRINCIPAL ]
+
+[ DETALHAMENTO ]
+
+👉 Isso resolve praticamente qualquer dashboard.
+
+
+---
+
+🧱 3. CURRÍCULO MÍNIMO VIÁVEL (3–5 coisas que importam)
+
+1. Blocos (containers)
+
++----------------------+
+|                      |
+|      CONTEÚDO        |
+|                      |
++----------------------+
+
+
+---
+
+2. Layout horizontal vs vertical
+
+Horizontal (KPIs)
++------+ +------+ +------+
+
+Vertical (lista)
++----------------------+
++----------------------+
++----------------------+
+
+
+---
+
+3. Hierarquia (o mais importante em cima)
+
+[ RESULTADO PRINCIPAL ]
+
+[ DETALHES ]
+
+[ TABELA ]
+
+
+---
+
+4. Agrupamento visual
+
++----------------------+
+| KPIs                 |
+| +----+ +----+ +----+ |
++----------------------+
+
+
+---
+
+5. Rótulos claros (sem ambiguidade)
+
+Errado:
+
+| valor |
+
+Certo:
+
+| Caixa Total |
+
+
+---
+
+⚡ 4. EXEMPLOS PRÁTICOS (use isso já)
+
+🧾 Exemplo 1 — Dashboard simples de cobrança
+
++--------------------------------------------------+
+| DASHBOARD COBRANÇA                               |
++--------------------------------------------------+
+
+[Filtros]
+Safra: [202401]  Escritório: [Todos]
+
++-------------+ +-------------+ +-------------+
+| Caixa       | | Eficiência  | | Carteira    |
+| R$ 1.2MM    | | 12.5%       | | R$ 10MM     |
++-------------+ +-------------+ +-------------+
+
++--------------------------------------------------+
+| Evolução do Caixa                                |
+|  (gráfico linha)                                 |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Detalhamento por Escritório                      |
+| Escr | Caixa | Eficiência | Ticket              |
++--------------------------------------------------+
+
+
+---
+
+🧠 Exemplo 2 — Dashboard com drill (seu caso real)
+
++--------------------------------------------------+
+| PERFORMANCE GERAL                                |
++--------------------------------------------------+
+
++-------------+ +-------------+ +-------------+
+| Caixa       | | Volume      | | Ticket      |
++-------------+ +-------------+ +-------------+
+
+                ↓
+
++--------------------------------------------------+
+| QUEBRA POR FILA                                  |
++--------------------------------------------------+
+
+                ↓
+
++--------------------------------------------------+
+| QUEBRA POR ESCRITÓRIO                            |
++--------------------------------------------------+
+
+                ↓
+
++--------------------------------------------------+
+| CONTRATOS (nível analítico)                      |
++--------------------------------------------------+
+
+👉 Isso aqui já resolve seu modelo de camadas (executivo → analítico)
+
+
+---
+
+⚙️ Exemplo 3 — Tela de acompanhamento operacional
+
++--------------------------------------------------+
+| EXECUÇÃO                                         |
++--------------------------------------------------+
+
++----------------------+ +------------------------+
+| Backlog              | | Produção Hoje          |
++----------------------+ +------------------------+
+
++--------------------------------------------------+
+| Linha do Tempo (atrasos / execução)              |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Casos críticos                                   |
++--------------------------------------------------+
+
+
+---
+
+🌳 5. ÁRVORES DE DECISÃO (pra você não travar)
+
+🧠 Como começar?
+
+Se não sei por onde começar →
+    Comece com 3 KPIs + 1 gráfico + 1 tabela
+
+
+---
+
+🧱 Como organizar?
+
+Se tem muita informação →
+    Quebre em blocos (caixas)
+
+Se está confuso →
+    Coloque título em cada bloco
+
+
+---
+
+📊 Que gráfico usar?
+
+Se é evolução no tempo →
+    Linha
+
+Se é comparação →
+    Barra
+
+Se é composição →
+    Tabela primeiro (mais claro)
+
+
+---
+
+🔍 Está ficando feio?
+
+Se está bagunçado →
+    Alinhe tudo em colunas
+
+Se está poluído →
+    Remova 30% das coisas
+
+
+---
+
+🚀 BONUS — Template pronto (copia e usa)
+
++--------------------------------------------------+
+| [TÍTULO DO DASHBOARD]                            |
++--------------------------------------------------+
+
+[Filtros principais]
+
++-------------+ +-------------+ +-------------+
+| KPI 1       | | KPI 2       | | KPI 3       |
++-------------+ +-------------+ +-------------+
+
++--------------------------------------------------+
+| Visual principal                                 |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Detalhamento                                     |
++--------------------------------------------------+
+
+
+---
+
+⚡ RESUMO FINAL (pra fixar)
+
+Se você lembrar só disso:
+
+👉 ASCII wireframe = caixas + hierarquia + fluxo
+
+E sempre seguir:
+
+Topo → resumo
+Meio → análise
+Base → detalhe
+
+
+---
+
+Se quiser, posso te montar:
+
+🔥 biblioteca de componentes ASCII (tipo design system)
+
+🎯 templates específicos pra cobrança (seu contexto)
+
+⚙️ versão equivalente em PowerPoint pronta pra usar
+
+
+Só me fala 👍
+
+
+---------------
+
+
+
+
+
+
+
+
+Perfeito — vou te entregar isso no formato mais útil possível: biblioteca reutilizável + templates prontos pro seu contexto de cobrança.
+
+Tudo no estilo copiar → colar → adaptar.
+
+
+---
+
+🎯 1. MONEY SHOT
+
+👉 Você não precisa “desenhar do zero”.
+
+Você precisa de:
+
+componentes padrão
+
+combinações (templates)
+
+
+
+Isso vira seu design system ASCII.
+
+
+---
+
+🧠 2. PADRÃO UNIVERSAL
+
+Tudo que você vai montar segue isso:
+
+HEADER
+↓
+FILTROS
+↓
+KPIs
+↓
+ANÁLISE (gráfico)
+↓
+DETALHE (tabela)
+
+Agora vamos transformar isso em peças reutilizáveis.
+
+
+---
+
+🧱 3. BIBLIOTECA DE COMPONENTES ASCII
+
+🔷 1. HEADER
+
++--------------------------------------------------+
+| [TÍTULO DO DASHBOARD]                            |
+| Subtítulo / contexto                             |
++--------------------------------------------------+
+
+
+---
+
+🔍 2. FILTROS
+
+[Filtros]
+Safra: [202401]   |   Escritório: [Todos]
+Fila:  [1-4]      |   Faixa: [0-90]
+
+Versão compacta:
+
+[Safra: 202401] [Escritório: Todos] [Fila: 1-4]
+
+
+---
+
+💰 3. KPI CARD
+
++-------------+
+| Caixa       |
+| R$ 1.2MM    |
+| +12% vs ant |
++-------------+
+
+
+---
+
+📊 4. GRID DE KPIs
+
++-------------+ +-------------+ +-------------+
+| Caixa       | | Eficiência  | | Carteira    |
+| R$ 1.2MM    | | 12.5%       | | R$ 10MM     |
++-------------+ +-------------+ +-------------+
+
+
+---
+
+📈 5. GRÁFICO (placeholder)
+
++--------------------------------------------------+
+| Evolução do Caixa                                |
+|                                                  |
+|      (linha do tempo / curva / barras)           |
+|                                                  |
++--------------------------------------------------+
+
+
+---
+
+📉 6. WATERFALL (seu caso é MUITO útil)
+
++--------------------------------------------------+
+| Decomposição do Caixa                            |
+| Caixa M-1 → +Volume → +Ticket → Caixa M         |
++--------------------------------------------------+
+
+
+---
+
+🧮 7. TABELA ANALÍTICA
+
++--------------------------------------------------+
+| Escr | Caixa | Eficiência | Volume | Ticket      |
++--------------------------------------------------+
+| A    | 100k  | 10%        | 200    | 500         |
+| B    | 80k   | 8%         | 150    | 530         |
++--------------------------------------------------+
+
+
+---
+
+🔽 8. DRILL DOWN
+
+GERAL
+  ↓
+FILA
+  ↓
+ESCRITÓRIO
+  ↓
+CONTRATO
+
+Ou visual:
+
++------------------+
+| Geral            |
++------------------+
+        ↓
++------------------+
+| Fila             |
++------------------+
+        ↓
++------------------+
+| Escritório       |
++------------------+
+
+
+---
+
+⚠️ 9. ALERTA / INSIGHT
+
+[!] Eficiência caiu -2pp
+[!] Volume caiu na fila 3
+
+
+---
+
+🎯 10. CALL TO ACTION
+
+[Ação sugerida]
+→ Aumentar emissão fila 2
+→ Revisar escritório B
+
+
+---
+
+⚡ 4. TEMPLATES PRONTOS (COBRANÇA)
+
+Agora o ouro 🔥
+
+
+---
+
+🟥 TEMPLATE 1 — VISÃO EXECUTIVA (comitê)
+
+👉 responde: “Estamos melhor ou pior?”
+
++--------------------------------------------------+
+| PERFORMANCE COBRANÇA                             |
++--------------------------------------------------+
+
+[Safra: 202401] [Escritório: Todos]
+
++-------------+ +-------------+ +-------------+
+| Caixa       | | Eficiência  | | Carteira    |
+| R$ 1.2MM    | | 12.5%       | | R$ 10MM     |
++-------------+ +-------------+ +-------------+
+
++--------------------------------------------------+
+| Evolução da Eficiência                           |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Decomposição                                     |
+| Volume vs Ticket                                 |
++--------------------------------------------------+
+
+[!] Eficiência caiu -1.2pp
+[!] Principal driver: Volume
+
+[Ação]
+→ Aumentar cobertura fila 1-2
+
+
+---
+
+🟧 TEMPLATE 2 — DIAGNÓSTICO (gerencial)
+
+👉 responde: “onde está o problema?”
+
++--------------------------------------------------+
+| DIAGNÓSTICO DE PERFORMANCE                      |
++--------------------------------------------------+
+
+[Filtros]
+
++-------------+ +-------------+ +-------------+
+| Caixa       | | Volume      | | Ticket      |
++-------------+ +-------------+ +-------------+
+
++--------------------------------------------------+
+| Quebra por Fila                                 |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Quebra por Faixa de Atraso                      |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Ranking Escritórios                             |
++--------------------------------------------------+
+
+[!] Fila 3 com queda forte
+[!] Escritório X abaixo do p25
+
+
+---
+
+🟩 TEMPLATE 3 — OPERAÇÃO (execução real)
+
+👉 responde: “o que fazer hoje?”
+
++--------------------------------------------------+
+| EXECUÇÃO DIÁRIA                                 |
++--------------------------------------------------+
+
++----------------------+ +------------------------+
+| Backlog              | | Produção Hoje          |
+| 12k casos            | | 1.2k ações             |
++----------------------+ +------------------------+
+
++--------------------------------------------------+
+| Linha do Tempo (execução vs meta)               |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Casos Críticos                                 |
+| ID | Fila | Atraso | Valor                     |
++--------------------------------------------------+
+
+[Ação]
+→ Priorizar backlog > 60 dias
+→ Reforçar equipe fila 2
+
+
+---
+
+🟪 TEMPLATE 4 — SAFRA / CURA
+
+👉 responde: “está curando ou quebrando?”
+
++--------------------------------------------------+
+| ANÁLISE DE SAFRA                                |
++--------------------------------------------------+
+
+[Safra: 202401]
+
++-------------+ +-------------+ +-------------+
+| Cure Rate   | | Break Rate  | | MOB Atual   |
++-------------+ +-------------+ +-------------+
+
++--------------------------------------------------+
+| Curva de Cura por MOB                           |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Comparação entre safras                         |
++--------------------------------------------------+
+
+[!] Safra 202401 pior que 202310
+
+
+---
+
+🟦 TEMPLATE 5 — CENÁRIOS (muito avançado / seu nível)
+
+👉 responde: “e se eu mexer nisso?”
+
++--------------------------------------------------+
+| SIMULAÇÃO DE CENÁRIOS                           |
++--------------------------------------------------+
+
+[Modo: GUIADO]
+
++-------------+ +-------------+ +-------------+
+| Caixa Atual | | Caixa Sim   | | Impacto     |
++-------------+ +-------------+ +-------------+
+
++--------------------------------------------------+
+| Alavancas                                       |
+| Emissão | Conversão | Ticket                    |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Comparação (Atual vs P50 vs P75)                |
++--------------------------------------------------+
+
+[Ação]
+→ Melhor alavanca: Conversão
+
+
+---
+
+🌳 5. ÁRVORES DE DECISÃO (como usar isso)
+
+🧠 Qual template usar?
+
+Se é comitê →
+    Template executivo
+
+Se quer entender problema →
+    Diagnóstico
+
+Se quer agir →
+    Operação
+
+Se é carteira ao longo do tempo →
+    Safra
+
+Se quer simular →
+    Cenários
+
+
+---
+
+🧱 Como montar rápido?
+
+1. Copia template
+2. Remove 30%
+3. Preenche com nomes reais
+4. Pronto
+
+
+---
+
+🔥 Regra de ouro
+
+Se demorou mais de 10 min →
+    você está complicando demais
+
+
+---
+
+🚀 Se quiser evoluir
+
+Posso te entregar próximo nível:
+
+🎨 versão disso em PowerPoint pronto
+
+📊 versão mapeada direto pra QuickSight
+
+🧠 padrão de nomenclatura de blocos (camada semântica)
+
+⚙️ ligação direta com suas tabelas gold
+
+
+Só me fala 👍
+
+
+
+
+------------------
+
+
+
+
+
+
+
+Perfeito — agora vamos subir o nível: ASCII com “cara de produto”.
+
+A ideia aqui é te dar um kit visual rápido pra você sair de “caixa simples” → wireframe que comunica insight.
+
+Tudo ainda no estilo mínimo eficaz.
+
+
+---
+
+🎯 1. MONEY SHOT
+
+👉 Você não precisa de muitos ícones.
+
+Se dominar esses 5 tipos, já resolve quase tudo:
+
+Status      → ▲ ▼ ● ■
+Tendência   → ↗ ↘ →
+Alerta      → ! ⚠
+Ação        → →
+Estrutura   → ─ │ ┌ ┐ └ ┘
+
+
+---
+
+🧠 2. PADRÃO UNIVERSAL
+
+Sempre pense:
+
+DADO + CONTEXTO + DIREÇÃO + AÇÃO
+
+Exemplo:
+
+Caixa: R$1.2MM ▲ +12%  → OK
+Eficiência: 10% ▼ -2pp → ATENÇÃO
+
+
+---
+
+🧱 3. BIBLIOTECA VISUAL ASCII (NÍVEL PRO)
+
+🔺 1. INDICADORES DE TENDÊNCIA
+
+▲ +12%    → subindo
+▼ -8%     → caindo
+→ 0%      → estável
+↗         → tendência positiva
+↘         → tendência negativa
+
+
+---
+
+🎯 2. STATUS (semáforo)
+
+● OK        (bom)
+◐ MÉDIO     (atenção)
+○ RUIM      (crítico)
+■ BLOQUEADO
+
+Versão mais explícita:
+
+[OK]     [WARN]     [CRIT]
+
+
+---
+
+⚠️ 3. ALERTAS
+
+[!] Queda de eficiência
+[⚠] Fila 3 deteriorando
+[X] Meta não atingida
+
+
+---
+
+🔁 4. FLUXO / PIPELINE
+
+Entrada → Processamento → Saída
+
+Carteira → Emissão → Pagamento → Caixa
+
+Com quebra:
+
+Carteira
+   ↓
+Emissão
+   ↓
+Pagamento
+   ↓
+Caixa
+
+
+---
+
+📊 5. BARRAS (proporção)
+
+Eficiência:
+████████░░ 80%
+
+Conversão:
+█████░░░░░ 50%
+
+
+---
+
+📈 6. MINI GRÁFICO (sparkline manual)
+
+Jan  Feb  Mar  Abr
+▁▂▃▅▇
+
+Ou:
+
+Caixa: ▁▃▅▇▆▅
+
+
+---
+
+🧮 7. COMPARAÇÃO LADO A LADO
+
+Atual   | Anterior
+--------+---------
+1.2MM   | 1.0MM ▲
+
+
+---
+
+🧠 8. DRIVER (muito importante no seu caso)
+
+Impacto no Caixa:
+
+Volume   ▲ +200k
+Ticket   ▼ -50k
+
+Total    ▲ +150k
+
+
+---
+
+🎛️ 9. CONTROLES (simulação)
+
+[ + Emissão ]   [+5%]
+[ + Conversão ] [+2pp]
+[ + Ticket ]    [+10%]
+
+
+---
+
+📌 10. TAGS / SEGMENTAÇÃO
+
+[Fila 1] [Alta renda] [>360 dias]
+
+
+---
+
+🔍 11. DRILL PATH VISUAL
+
+GERAL → FILA → ESCRITÓRIO → CONTRATO
+
+Ou:
+
+[GERAL]
+   ↓
+[FILA]
+   ↓
+[ESCRITÓRIO]
+
+
+---
+
+🧱 12. CAIXA COM DESTAQUE
+
++----------------------+
+| ⭐ CAIXA TOTAL       |
+| R$ 1.2MM ▲ +12%      |
++----------------------+
+
+
+---
+
+⚡ 4. EXEMPLO TURBINADO (COBRANÇA REAL)
+
+Agora junta tudo:
+
++--------------------------------------------------+
+| PERFORMANCE COBRANÇA                             |
++--------------------------------------------------+
+
+[Safra: 202401] [Fila: 1-4] [Escritório: Todos]
+
++-------------+ +-------------+ +-------------+
+| ⭐ Caixa     | | Eficiência  | | Carteira    |
+| R$ 1.2MM ▲  | | 10% ▼ -2pp  | | R$ 10MM     |
+| +12% vs M-1 | | [⚠]         | |             |
++-------------+ +-------------+ +-------------+
+
++--------------------------------------------------+
+| Tendência do Caixa                               |
+| ▁▃▅▇▆▅                                           |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Drivers                                          |
+| Volume   ▲ +200k                                 |
+| Ticket   ▼ -50k                                  |
+| Total    ▲ +150k                                 |
++--------------------------------------------------+
+
++--------------------------------------------------+
+| Eficiência por Fila                              |
+| F1  ████████░░ 80%  ●                            |
+| F2  ██████░░░░ 60%  ◐                            |
+| F3  ███░░░░░░░ 30%  ○                            |
++--------------------------------------------------+
+
+[⚠] Fila 3 deteriorando
+[!] Queda puxada por volume
+
+[Ação]
+→ Aumentar emissão F1/F2
+→ Revisar estratégia F3
+
+
+---
+
+🌳 5. ÁRVORES DE DECISÃO (visual)
+
+🎯 Quero enriquecer o wireframe
+
+Se está muito seco →
+    Adicione ▲ ▼ (tendência)
+
+Se não explica o porquê →
+    Adicione drivers
+
+Se não gera ação →
+    Adicione bloco [Ação]
+
+
+---
+
+🎨 Quero parecer mais “profissional”
+
+Se parece texto simples →
+    Use:
+        █ barras
+        ▁ sparklines
+        ● status
+
+
+---
+
+🧠 Regra de ouro
+
+Se o gestor bate o olho e entende em 5s →
+    está perfeito
+
+Se precisa explicar →
+    está ruim
+
+
+---
+
+🚀 Próximo nível (se quiser)
+
+Posso te montar:
+
+🔥 versão disso em PowerPoint com layout pronto
+
+📊 equivalente direto em QuickSight (com campos calculados)
+
+🧠 tradução disso pra camada semântica (gold → dashboard)
+
+
+Só falar 👍
