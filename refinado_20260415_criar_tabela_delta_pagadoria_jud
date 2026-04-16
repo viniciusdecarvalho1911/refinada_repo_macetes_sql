@@ -1231,3 +1231,268 @@ Se você quiser, no próximo passo eu posso transformar essa nota em uma versão
 `06_sql_staging.sql`
 `07_sql_merge.sql`
 `08_sql_agregado_comissao.sql`
+
+------------------------------------
+
+Claro — aqui vai um **exemplo prático de preenchimento da tabela manual**, já pensando no cenário em que:
+
+* o solicitante **pode não saber** `tipo_carteira`
+* o solicitante **pode não saber** `esteira`
+* essas colunas podem vir vazias
+* a ação pode ser `INSERT`, `UPDATE` ou `DELETE`
+
+---
+
+# Exemplo de layout da tabela manual
+
+## Colunas
+
+```text
+acao_ajuste
+motivo_ajuste
+pasta
+contrato
+produto
+tipo_carteira
+esteira
+escritorio
+vl_pagamento
+vl_caixa
+vl_regul
+dt_pagamento
+fl_elegivel_meta_regul
+fl_elegivel_comissao_caixa
+observacao
+usuario_solicitante
+```
+
+---
+
+# Exemplo preenchido
+
+```csv
+acao_ajuste,motivo_ajuste,pasta,contrato,produto,tipo_carteira,esteira,escritorio,vl_pagamento,vl_caixa,vl_regul,dt_pagamento,fl_elegivel_meta_regul,fl_elegivel_comissao_caixa,observacao,usuario_solicitante
+INSERT,Inclusão de pagamento não capturado,PASTA_001,CTR_1001,PROD_A,,,ESC_A,1500.00,1200.00,1500.00,2026-04-10,1,1,Pagamento confirmado manualmente,joao.silva
+UPDATE,Correção de valor de caixa,PASTA_002,CTR_1002,PROD_B,CARTEIRA_INTERMEDIARIA,,ESC_B,980.00,850.00,980.00,2026-04-12,1,1,Ajuste solicitado pelo financeiro,maria.souza
+UPDATE,Corrigir elegibilidade: só comissão,PASTA_003,CTR_1003,PROD_C,,ESTEIRA_MEDIO_RISCO,ESC_C,2000.00,1700.00,2000.00,2026-04-08,0,1,Linha deve entrar só em comissão,carlos.lima
+DELETE,Remoção de pagamento indevido,PASTA_004,CTR_1004,PROD_D,,,ESC_D,500.00,400.00,500.00,2026-04-05,0,0,Pagamento lançado em duplicidade,ana.costa
+INSERT,Inclusão de pagamento sem classificação conhecida,PASTA_005,CTR_1005,PROD_E,,,ESC_E,750.00,600.00,750.00,2026-04-18,1,1,Solicitante não soube informar carteira e esteira,paula.rocha
+UPDATE,Ajuste manual com carteira conhecida e esteira desconhecida,PASTA_006,CTR_1006,PROD_F,CARTEIRA_AVANCADA,,ESC_F,3200.00,2500.00,3200.00,2026-04-20,1,1,Esteira deve ser descoberta no processo,ricardo.melo
+UPDATE,Ajuste manual com esteira conhecida e carteira desconhecida,PASTA_007,CTR_1007,PROD_G,,ESTEIRA_ALTO_RISCO,ESC_G,1100.00,900.00,1100.00,2026-04-22,1,1,Carteira deve ser descoberta na OPC/vijud,fernanda.alves
+```
+
+---
+
+# Como ler cada linha
+
+## Linha 1
+
+```text
+INSERT ... tipo_carteira vazio, esteira vazia
+```
+
+Significa:
+
+* inserir uma nova linha
+* `tipo_carteira` deve ser descoberta
+* `esteira` deve ser descoberta
+* entra em meta e comissão
+
+---
+
+## Linha 2
+
+```text
+UPDATE ... tipo_carteira preenchida, esteira vazia
+```
+
+Significa:
+
+* atualizar uma linha existente
+* usar `tipo_carteira` do manual
+* tentar descobrir `esteira`
+* entra em meta e comissão
+
+---
+
+## Linha 3
+
+```text
+UPDATE ... tipo_carteira vazia, esteira preenchida
+fl_elegivel_meta_regul = 0
+fl_elegivel_comissao_caixa = 1
+```
+
+Significa:
+
+* atualizar uma linha existente
+* descobrir `tipo_carteira`
+* usar `esteira` do manual
+* **não** entra na meta
+* entra só em comissão
+
+---
+
+## Linha 4
+
+```text
+DELETE ...
+```
+
+Significa:
+
+* remover uma linha existente
+* flags de elegibilidade ficam irrelevantes na prática
+* o importante é a chave da linha (`pasta`, `contrato`, `produto`)
+
+---
+
+## Linha 5
+
+```text
+INSERT ... tudo de classificação vazio
+```
+
+Significa:
+
+* inserir nova linha
+* precisa descobrir `tipo_carteira`
+* precisa descobrir `esteira`
+* se não descobrir, a linha deve ser barrada antes do merge
+
+---
+
+# Exemplo em formato de tabela
+
+| acao_ajuste | motivo_ajuste                                     | pasta     | contrato | produto | tipo_carteira          | esteira             | escritorio | vl_pagamento | vl_caixa | vl_regul | dt_pagamento | fl_elegivel_meta_regul | fl_elegivel_comissao_caixa | observacao                                        | usuario_solicitante |
+| ----------- | ------------------------------------------------- | --------- | -------- | ------- | ---------------------- | ------------------- | ---------: | -----------: | -------: | -------: | ------------ | ---------------------: | -------------------------: | ------------------------------------------------- | ------------------- |
+| INSERT      | Inclusão de pagamento não capturado               | PASTA_001 | CTR_1001 | PROD_A  |                        |                     |      ESC_A |      1500.00 |  1200.00 |  1500.00 | 2026-04-10   |                      1 |                          1 | Pagamento confirmado manualmente                  | joao.silva          |
+| UPDATE      | Correção de valor de caixa                        | PASTA_002 | CTR_1002 | PROD_B  | CARTEIRA_INTERMEDIARIA |                     |      ESC_B |       980.00 |   850.00 |   980.00 | 2026-04-12   |                      1 |                          1 | Ajuste solicitado pelo financeiro                 | maria.souza         |
+| UPDATE      | Corrigir elegibilidade: só comissão               | PASTA_003 | CTR_1003 | PROD_C  |                        | ESTEIRA_MEDIO_RISCO |      ESC_C |      2000.00 |  1700.00 |  2000.00 | 2026-04-08   |                      0 |                          1 | Linha deve entrar só em comissão                  | carlos.lima         |
+| DELETE      | Remoção de pagamento indevido                     | PASTA_004 | CTR_1004 | PROD_D  |                        |                     |      ESC_D |       500.00 |   400.00 |   500.00 | 2026-04-05   |                      0 |                          0 | Pagamento lançado em duplicidade                  | ana.costa           |
+| INSERT      | Inclusão de pagamento sem classificação conhecida | PASTA_005 | CTR_1005 | PROD_E  |                        |                     |      ESC_E |       750.00 |   600.00 |   750.00 | 2026-04-18   |                      1 |                          1 | Solicitante não soube informar carteira e esteira | paula.rocha         |
+
+---
+
+# Regras simples para o usuário preencher
+
+## Obrigatório preencher
+
+```text
+acao_ajuste
+pasta
+contrato
+produto
+dt_pagamento
+```
+
+## Quase sempre deve preencher
+
+```text
+motivo_ajuste
+vl_pagamento
+vl_caixa
+vl_regul
+usuario_solicitante
+```
+
+## Pode deixar vazio
+
+```text
+tipo_carteira
+esteira
+```
+
+Porque o processo tenta descobrir depois.
+
+## Flags
+
+Use:
+
+```text
+1 = sim
+0 = não
+```
+
+Exemplos:
+
+* entra em meta e comissão → `1,1`
+* entra só em comissão → `0,1`
+* não entra em nenhum → `0,0`
+
+---
+
+# Exemplo dos 3 cenários de elegibilidade
+
+## 1. Entra em meta e comissão
+
+```csv
+UPDATE,Ajuste completo,PASTA_010,CTR_2001,PROD_X,,,ESC_X,1000.00,800.00,1000.00,2026-04-15,1,1,Ajuste padrão,pedro.lima
+```
+
+## 2. Entra só em comissão
+
+```csv
+UPDATE,Só comissão,PASTA_011,CTR_2002,PROD_Y,,,ESC_Y,1000.00,800.00,1000.00,2026-04-15,0,1,A linha não deve compor meta,pedro.lima
+```
+
+## 3. Não entra em nenhum
+
+```csv
+UPDATE,Fora de meta e comissão,PASTA_012,CTR_2003,PROD_Z,,,ESC_Z,1000.00,800.00,1000.00,2026-04-15,0,0,Apenas ajuste operacional,pedro.lima
+```
+
+---
+
+# Boas práticas para quem preencher
+
+## 1. Não inventar `tipo_carteira` ou `esteira`
+
+Se não souber, deixe vazio.
+
+## 2. Sempre preencher `motivo_ajuste`
+
+Isso ajuda auditoria e troubleshooting.
+
+## 3. Usar valores monetários com ponto decimal
+
+Exemplo:
+
+```text
+1500.00
+```
+
+## 4. Usar data no formato
+
+```text
+YYYY-MM-DD
+```
+
+Exemplo:
+
+```text
+2026-04-10
+```
+
+## 5. Um ajuste por linha
+
+Não juntar vários casos numa mesma linha.
+
+---
+
+# Exemplo de linha “ideal” para analista júnior
+
+Quando ele sabe pouco, o preenchimento mínimo seguro seria assim:
+
+```csv
+UPDATE,Ajuste solicitado pela operação,PASTA_020,CTR_3001,PROD_H,,,ESC_H,1800.00,1400.00,1800.00,2026-04-25,1,1,Usuário não soube informar carteira/esteira,bruno.santos
+```
+
+Esse é um ótimo exemplo porque:
+
+* a chave está preenchida
+* os valores estão preenchidos
+* as flags estão preenchidas
+* `tipo_carteira` e `esteira` ficam para o processo descobrir
+
+Se quiser, eu posso montar agora um **template de CSV pronto para copiar e colar no Excel**.
