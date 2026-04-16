@@ -1496,3 +1496,433 @@ Esse é um ótimo exemplo porque:
 * `tipo_carteira` e `esteira` ficam para o processo descobrir
 
 Se quiser, eu posso montar agora um **template de CSV pronto para copiar e colar no Excel**.
+
+
+-------------------------------------------------------------
+
+
+Lide com isso **na `silver_padronizado`**, não no bronze nem no gold. Pelo seu próprio material, parsing de data, `try_cast`, normalização e criação de colunas temporais canônicas são responsabilidade dessa camada.  
+
+## Regra prática
+
+No bronze/CSV:
+
+* deixe tudo como `string`
+
+Na silver:
+
+* normalize `dt_pagamento`
+* normalize `vl_pagamento`, `vl_caixa`, `vl_regul`
+* só depois converta para `date` e `decimal`
+
+Isso evita quebrar a ingestão quando o arquivo vier “sujo”, e está alinhado com o padrão do seu template de `view_silver_padronizado`, que cria colunas temporais canônicas e usa cast/parsing na camada de padronização.  
+
+# 1. Como tratar datas em formatos diferentes
+
+Os formatos mais comuns que podem vir no CSV são:
+
+```text
+2026-04-25
+25/04/2026
+25-04-2026
+20260425
+2026/04/25
+```
+
+## Estratégia segura
+
+Crie uma expressão que tente vários formatos, em ordem.
+
+### Exemplo de coluna `dt_pagamento_date`
+
+```sql
+coalesce(
+    try_cast(dt_pagamento as date),
+    try_cast(date_parse(dt_pagamento, '%d/%m/%Y') as date),
+    try_cast(date_parse(dt_pagamento, '%d-%m-%Y') as date),
+    try_cast(date_parse(dt_pagamento, '%Y%m%d') as date),
+    try_cast(date_parse(dt_pagamento, '%Y/%m/%d') as date)
+) as dt_pagamento_date
+```
+
+## Por que isso funciona?
+
+Porque:
+
+* `try_cast` e `date_parse` tentam interpretar o texto
+* `coalesce` pega a primeira tentativa válida
+* se nenhuma funcionar, o resultado vira `null` em vez de quebrar a query
+
+Isso segue exatamente a lógica de “como ler a fonte sem quebrar?” que seu material coloca em `silver_padronizado`. 
+
+---
+
+# 2. Como tratar valores monetários com vírgula e ponto
+
+Os casos mais comuns são:
+
+```text
+1500.00
+1500,00
+1.500,00
+1,500.00
+1500
+```
+
+O problema é que `replace(vl, ',', '.')` sozinho **não basta**, porque:
+
+* `1.500,00` viraria `1.500.00`
+* isso continua inválido
+
+## Estratégia segura
+
+Primeiro descubra o padrão, depois normalize.
+
+### Regra mental
+
+## Caso A — tem ponto e vírgula
+
+Exemplo:
+
+```text
+1.500,00
+```
+
+Nesse caso:
+
+* `.` é separador de milhar
+* `,` é decimal
+
+Então faça:
+
+1. remover `.`
+2. trocar `,` por `.`
+
+Resultado:
+
+```text
+1500.00
+```
+
+## Caso B — só tem vírgula
+
+Exemplo:
+
+```text
+1500,00
+```
+
+Nesse caso:
+
+* `,` é decimal
+
+Então faça:
+
+1. trocar `,` por `.`
+
+Resultado:
+
+```text
+1500.00
+```
+
+## Caso C — só tem ponto
+
+Exemplo:
+
+```text
+1500.00
+```
+
+Nesse caso:
+
+* já está bom
+
+---
+
+# 3. Expressão robusta para números
+
+Use algo assim:
+
+```sql
+try_cast(
+    case
+        when vl_pagamento like '%,%' and vl_pagamento like '%.%' then
+            replace(replace(trim(vl_pagamento), '.', ''), ',', '.')
+        when vl_pagamento like '%,%' then
+            replace(trim(vl_pagamento), ',', '.')
+        else
+            trim(vl_pagamento)
+    end
+as decimal(18,2)) as vl_pagamento
+```
+
+Repita a mesma lógica para:
+
+* `vl_caixa`
+* `vl_regul`
+
+Isso é uma evolução do padrão simples de `try_cast(replace(...))` que você já vinha usando no silver padronizado. O seu material já indica `try_cast` como mecanismo correto de leitura robusta, e o template oficial reforça que esse tipo de normalização vive no `silver_padronizado`.  
+
+---
+
+# 4. Exemplo completo na sua `view_silver_padronizado`
+
+Aqui está uma versão mais robusta do trecho da nota:
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_pagamentos_ajuste_manual AS
+SELECT
+    upper(trim(acao_ajuste)) AS acao_ajuste,
+    trim(motivo_ajuste)      AS motivo_ajuste,
+
+    trim(pasta)              AS pasta,
+    trim(contrato)           AS contrato,
+    trim(produto)            AS produto,
+
+    nullif(trim(tipo_carteira), '') AS tipo_carteira_informada,
+    nullif(trim(esteira), '')       AS esteira_informada,
+    trim(escritorio)                AS escritorio,
+
+    try_cast(
+        case
+            when vl_pagamento like '%,%' and vl_pagamento like '%.%' then
+                replace(replace(trim(vl_pagamento), '.', ''), ',', '.')
+            when vl_pagamento like '%,%' then
+                replace(trim(vl_pagamento), ',', '.')
+            else
+                trim(vl_pagamento)
+        end
+    as decimal(18,2)) as vl_pagamento,
+
+    try_cast(
+        case
+            when vl_caixa like '%,%' and vl_caixa like '%.%' then
+                replace(replace(trim(vl_caixa), '.', ''), ',', '.')
+            when vl_caixa like '%,%' then
+                replace(trim(vl_caixa), ',', '.')
+            else
+                trim(vl_caixa)
+        end
+    as decimal(18,2)) as vl_caixa,
+
+    try_cast(
+        case
+            when vl_regul like '%,%' and vl_regul like '%.%' then
+                replace(replace(trim(vl_regul), '.', ''), ',', '.')
+            when vl_regul like '%,%' then
+                replace(trim(vl_regul), ',', '.')
+            else
+                trim(vl_regul)
+        end
+    as decimal(18,2)) as vl_regul,
+
+    coalesce(
+        try_cast(dt_pagamento as date),
+        try_cast(date_parse(dt_pagamento, '%d/%m/%Y') as date),
+        try_cast(date_parse(dt_pagamento, '%d-%m-%Y') as date),
+        try_cast(date_parse(dt_pagamento, '%Y%m%d') as date),
+        try_cast(date_parse(dt_pagamento, '%Y/%m/%d') as date)
+    ) as dt_pagamento,
+
+    cast(
+        date_format(
+            coalesce(
+                try_cast(dt_pagamento as date),
+                try_cast(date_parse(dt_pagamento, '%d/%m/%Y') as date),
+                try_cast(date_parse(dt_pagamento, '%d-%m-%Y') as date),
+                try_cast(date_parse(dt_pagamento, '%Y%m%d') as date),
+                try_cast(date_parse(dt_pagamento, '%Y/%m/%d') as date)
+            ),
+            '%Y%m'
+        ) as integer
+    ) as anomes_ref,
+
+    case
+        when trim(fl_elegivel_meta_regul) in ('1','true','TRUE','S','SIM') then true
+        else false
+    end AS fl_elegivel_meta_regul,
+
+    case
+        when trim(fl_elegivel_comissao_caixa) in ('1','true','TRUE','S','SIM') then true
+        else false
+    end AS fl_elegivel_comissao_caixa,
+
+    case
+        when nullif(trim(tipo_carteira), '') is null then true
+        else false
+    end AS fl_tipo_carteira_pendente,
+
+    case
+        when nullif(trim(esteira), '') is null then true
+        else false
+    end AS fl_esteira_pendente,
+
+    case
+        when coalesce(
+            try_cast(dt_pagamento as date),
+            try_cast(date_parse(dt_pagamento, '%d/%m/%Y') as date),
+            try_cast(date_parse(dt_pagamento, '%d-%m-%Y') as date),
+            try_cast(date_parse(dt_pagamento, '%Y%m%d') as date),
+            try_cast(date_parse(dt_pagamento, '%Y/%m/%d') as date)
+        ) is null then true
+        else false
+    end as fl_dt_pagamento_invalida,
+
+    case
+        when try_cast(
+            case
+                when vl_pagamento like '%,%' and vl_pagamento like '%.%' then
+                    replace(replace(trim(vl_pagamento), '.', ''), ',', '.')
+                when vl_pagamento like '%,%' then
+                    replace(trim(vl_pagamento), ',', '.')
+                else
+                    trim(vl_pagamento)
+            end
+        as decimal(18,2)) is null then true
+        else false
+    end as fl_vl_pagamento_invalido,
+
+    trim(observacao)          AS observacao,
+    trim(usuario_solicitante) AS usuario_solicitante,
+
+    current_timestamp         AS dt_ingestao_modelo
+FROM workspace_db.tabela_bronze_fonte_manual_cobranca_pagamentos_ajuste
+WHERE pasta IS NOT NULL
+  AND contrato IS NOT NULL
+  AND produto IS NOT NULL;
+```
+
+---
+
+# 5. Melhor prática extra: guardar o original e o padronizado
+
+Isso ajuda muito em troubleshooting.
+
+Exemplo:
+
+```sql
+dt_pagamento                      as dt_pagamento_raw,
+coalesce(...)                     as dt_pagamento,
+
+vl_pagamento                      as vl_pagamento_raw,
+try_cast(case ... end as decimal(18,2)) as vl_pagamento
+```
+
+Assim você mantém:
+
+* o valor original do CSV
+* o valor interpretado pelo pipeline
+
+Quando der problema, fica fácil mostrar:
+
+> “o arquivo veio assim, e o processo tentou interpretar assado”.
+
+---
+
+# 6. Melhor prática extra: criar flags de erro
+
+Para um analista júnior, isso ajuda muito.
+
+Sugestão:
+
+* `fl_dt_pagamento_invalida`
+* `fl_vl_pagamento_invalido`
+* `fl_vl_caixa_invalido`
+* `fl_vl_regul_invalido`
+
+Depois você pode bloquear essas linhas na staging.
+
+Exemplo:
+
+```sql
+where fl_dt_pagamento_invalida = false
+  and fl_vl_pagamento_invalido = false
+```
+
+---
+
+# 7. Regra simples para lembrar
+
+## Data
+
+Use `coalesce` com várias tentativas de parse.
+
+## Valor monetário
+
+Use:
+
+* remove milhar
+* padroniza decimal para ponto
+* `try_cast`
+
+## Onde fazer isso
+
+Sempre em:
+
+```text
+view_silver_padronizado_*
+```
+
+porque essa camada existe justamente para:
+
+* `try_cast`
+* parsing de data
+* normalização
+* leitura robusta da fonte  
+
+---
+
+# 8. Exemplo rápido de entrada e saída
+
+## Entrada no CSV
+
+```text
+dt_pagamento = 25/04/2026
+vl_pagamento = 1.500,00
+vl_caixa = 1200.00
+vl_regul = 1,800.50
+```
+
+## Saída esperada na silver
+
+```text
+dt_pagamento = 2026-04-25
+vl_pagamento = 1500.00
+vl_caixa = 1200.00
+vl_regul = 1800.50
+```
+
+---
+
+# 9. Cuidados
+
+O caso mais perigoso é este:
+
+```text
+1,800.50
+```
+
+Esse formato é “americano”:
+
+* vírgula como milhar
+* ponto como decimal
+
+Já este:
+
+```text
+1.800,50
+```
+
+é “brasileiro”:
+
+* ponto como milhar
+* vírgula como decimal
+
+Se os dois podem aparecer misturados no mesmo arquivo, o ideal é adotar uma regra mais forte:
+
+* detectar qual símbolo aparece por último
+* tratar o último símbolo como decimal
+
+Se você quiser, eu posso te devolver uma **função/expressão ainda mais robusta** para lidar com esses dois formatos misturados no mesmo campo sem ambiguidade.
+
