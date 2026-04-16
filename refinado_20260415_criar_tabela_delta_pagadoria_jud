@@ -1,0 +1,1233 @@
+Perfeito. Abaixo está a **nota recriada**, agora refletindo a regra real de descoberta de `tipo_carteira` e `esteira`:
+
+* `tipo_carteira` **não vem mais do CSV como obrigatório**
+* `tipo_carteira` deve ser derivado da **faixa de atraso**, usando a base **OPC**
+* `esteira` deve ser derivada de **risco_ser**
+* a ordem de fallback deve ser:
+
+```text
+1. se veio preenchido no manual, usar manual
+2. se não veio, tentar descobrir na VIJUD do mês informado
+3. se não achou na VIJUD, descobrir na OPC
+```
+
+Além disso, o desenho continua respeitando seu padrão oficial de arquitetura `bronze_fonte → silver_padronizado → silver_integrado → gold`, em que `silver_padronizado` resolve leitura técnica, `silver_integrado` resolve junções, enriquecimento e fallback entre fontes, e `gold` guarda a verdade oficial e os números defendidos pelo negócio.   
+
+---
+
+# Implementação guiada — ajuste manual de pagamentos consolidados via CSV + descoberta de `tipo_carteira` e `esteira`
+
+## 1. Objetivo
+
+Construir um fluxo em que:
+
+1. um usuário sobe um **CSV manual de ajuste**
+2. esse CSV entra no lake como **bronze**
+3. ele é limpo e tipado numa **view silver padronizada**
+4. o processo tenta descobrir automaticamente `tipo_carteira` e `esteira`
+5. ele gera uma **staging técnica de delta**
+6. essa staging atualiza a base oficial de pagamentos via `MERGE`
+7. depois disso, a **comissão é recalculada**
+
+Além disso, o fluxo precisa suportar:
+
+* linha que conta para **meta de regul**
+* linha que conta para **comissão sobre caixa**
+* linha em que `tipo_carteira` e `esteira` podem vir vazios no CSV
+* descoberta de `tipo_carteira` por **atraso máximo**
+* descoberta de `esteira` por **risco_ser**
+
+---
+
+# 2. Ideia principal, em linguagem simples
+
+Pense assim:
+
+## Existe uma base oficial
+
+Essa base é a verdade atual dos pagamentos:
+
+```text
+iceberg_gold_fato_pagadoria
+```
+
+## Existe um CSV manual
+
+Esse CSV **não é a verdade oficial**.
+
+Ele serve só para pedir mudanças, como:
+
+* inserir linha nova
+* corrigir linha existente
+* apagar linha existente
+
+## O usuário não sabe tudo
+
+Às vezes ele sabe:
+
+* pasta
+* contrato
+* produto
+* valor
+* data
+
+Mas **não sabe**:
+
+* `tipo_carteira`
+* `esteira`
+
+Então o processo precisa tentar descobrir isso sozinho.
+
+## Existe uma staging
+
+A staging pega o CSV já limpo, tenta enriquecer o que falta, valida a consistência e traduz isso para algo que o banco consegue aplicar com `MERGE`.
+
+---
+
+# 3. Fluxo completo
+
+```text
+CSV manual
+   ↓
+tabela_bronze_fonte_manual_cobranca_pagamentos_ajuste
+   ↓
+view_silver_padronizado_cobranca_pagamentos_ajuste_manual
+   ↓
+view_silver_integrado_cobranca_pagamentos_ajuste_enriquecido
+   ↓
+view_gold_staging_cobranca_pagamentos_consolidados_delta
+   ↓
+view_gold_staging_cobranca_pagamentos_consolidados_delta_pronto
+   ↓
+MERGE em iceberg_gold_fato_pagadoria
+   ↓
+recalcular agregado mensal de pagadoria / comissão
+```
+
+## O que cada camada faz
+
+### Bronze
+
+Recebe o CSV cru, sem confiar nos tipos.
+
+### Silver padronizado
+
+Limpa, tipa, cria `anomes_ref`, padroniza texto, converte flags e marca campos pendentes.
+
+### Silver integrado
+
+Resolve:
+
+* enriquecimento
+* fallback entre fontes
+* descoberta de `tipo_carteira`
+* descoberta de `esteira`
+
+Esse é exatamente o tipo de responsabilidade esperado para `silver_integrado`: junções, enriquecimento, fallback entre fontes e elegibilidade técnica.  
+
+### Staging delta
+
+Traduz o ajuste para ação técnica:
+
+* `INSERT`
+* `UPDATE`
+* `DELETE`
+* `NOOP`
+
+### Gold fato
+
+É a base oficial do pagamento.
+
+### Gold agregado
+
+É onde nasce meta, atingimento e comissão.
+
+---
+
+# 4. Regra de negócio: duas elegibilidades
+
+Agora existe uma separação importante.
+
+## 4.1 Flag 1 — elegível para compor meta
+
+Nome:
+
+```text
+fl_elegivel_meta_regul
+```
+
+Essa flag responde:
+
+> “Esse pagamento entra no cálculo da meta?”
+
+Se for `true`, o `vl_regul` entra no numerador da meta.
+
+---
+
+## 4.2 Flag 2 — elegível para compor comissão
+
+Nome:
+
+```text
+fl_elegivel_comissao_caixa
+```
+
+Essa flag responde:
+
+> “Esse pagamento entra na base comissionável?”
+
+Se for `true`, o `vl_caixa` entra na base usada para calcular comissão.
+
+---
+
+# 5. Os 3 cenários possíveis de elegibilidade
+
+## Cenário A — entra em meta e em comissão
+
+```text
+fl_elegivel_meta_regul = true
+fl_elegivel_comissao_caixa = true
+```
+
+Resultado:
+
+* `vl_regul` entra na meta
+* `vl_caixa` entra na comissão
+
+---
+
+## Cenário B — entra só em comissão
+
+```text
+fl_elegivel_meta_regul = false
+fl_elegivel_comissao_caixa = true
+```
+
+Resultado:
+
+* `vl_regul` **não** entra na meta
+* `vl_caixa` entra na comissão
+
+Esse é o caso especial mais importante.
+
+---
+
+## Cenário C — não entra em nenhum dos dois
+
+```text
+fl_elegivel_meta_regul = false
+fl_elegivel_comissao_caixa = false
+```
+
+Resultado:
+
+* não entra na meta
+* não entra na comissão
+* pode continuar armazenado na base oficial, se fizer sentido operacional
+
+---
+
+# 6. Fórmula mental correta
+
+A comissão depende de **duas bases diferentes**.
+
+## Base da meta
+
+```text
+vl_regul_meta_base
+```
+
+É a soma de `vl_regul` apenas das linhas elegíveis para meta.
+
+## Base comissionável
+
+```text
+vl_caixa_comissionavel
+```
+
+É a soma de `vl_caixa` apenas das linhas elegíveis para comissão.
+
+## Fórmulas finais
+
+```text
+vl_regul_meta_base      = soma(vl_regul onde fl_elegivel_meta_regul = true)
+vl_caixa_comissionavel  = soma(vl_caixa onde fl_elegivel_comissao_caixa = true)
+
+perc_atingimento = vl_regul_meta_base / vl_meta
+vl_comissao      = vl_caixa_comissionavel * perc_comissao
+```
+
+## Ponto mais importante
+
+O `perc_comissao` vem do **atingimento da meta**, mas o valor comissionável pode incluir linhas que **não participaram da meta**.
+
+---
+
+# 7. Estrutura do CSV manual
+
+O CSV deve ter estas colunas:
+
+```text
+acao_ajuste
+motivo_ajuste
+pasta
+contrato
+produto
+tipo_carteira
+esteira
+escritorio
+vl_pagamento
+vl_caixa
+vl_regul
+dt_pagamento
+fl_elegivel_meta_regul
+fl_elegivel_comissao_caixa
+observacao
+usuario_solicitante
+```
+
+## Importante
+
+`tipo_carteira` e `esteira` **não são obrigatórios**.
+
+Podem vir vazios.
+
+## Colunas obrigatórias
+
+```text
+acao_ajuste
+pasta
+contrato
+produto
+dt_pagamento
+```
+
+## Colunas muito recomendadas
+
+```text
+motivo_ajuste
+observacao
+usuario_solicitante
+```
+
+## Flags novas
+
+```text
+fl_elegivel_meta_regul
+fl_elegivel_comissao_caixa
+```
+
+## Valor recomendado para as flags no CSV
+
+Use:
+
+```text
+0 / 1
+```
+
+Exemplo:
+
+```text
+1 = true
+0 = false
+```
+
+---
+
+# 8. Significado da coluna `acao_ajuste`
+
+Ela deve vir preenchida no CSV com um destes valores:
+
+```text
+INSERT
+UPDATE
+DELETE
+```
+
+## Significado
+
+* `INSERT` = inserir nova linha
+* `UPDATE` = alterar linha existente
+* `DELETE` = remover linha existente
+
+---
+
+# 9. Regra real para descobrir `tipo_carteira`
+
+Agora vem a parte crítica.
+
+## 9.1 Como descobrir `tipo_carteira`
+
+`tipo_carteira` vem da **faixa de atraso**.
+
+Mas a faixa de atraso não vem direto do CSV.
+Ela precisa ser descoberta na base **OPC**.
+
+## 9.2 Lógica correta
+
+### Passo 1
+
+Usar `contrato + produto` para encontrar:
+
+```text
+cod_idef_pessoa
+```
+
+### Passo 2
+
+Com o `cod_idef_pessoa`, olhar a base OPC em **todas as partições** desde:
+
+* o **primeiro anomesdia do mês preenchido no CSV**
+* até o **anomesdia mais recente desse mesmo mês**
+
+### Passo 3
+
+Dentro dessa janela, capturar:
+
+```text
+max(ind_atr_ctr)
+```
+
+Ou seja:
+
+* olhar toda a janela do mês
+* encontrar o maior atraso da pessoa
+* usar esse maior atraso como base para classificar a faixa
+
+### Passo 4
+
+Transformar o atraso em `tipo_carteira` via `CASE WHEN`
+
+Exemplo conceitual:
+
+```sql
+case
+    when max_ind_atr_ctr between 0 and 30 then 'CARTEIRA_RECENTE'
+    when max_ind_atr_ctr between 31 and 90 then 'CARTEIRA_INTERMEDIARIA'
+    when max_ind_atr_ctr > 90 then 'CARTEIRA_AVANCADA'
+    else 'CARTEIRA_NAO_CLASSIFICADA'
+end
+```
+
+## 9.3 Regra de fallback
+
+A ordem deve ser:
+
+```text
+1. se tipo_carteira veio preenchido no manual, usar manual
+2. se não veio, tentar descobrir na VIJUD do mês informado
+3. se não achou na VIJUD, descobrir pela OPC usando max(ind_atr_ctr)
+```
+
+---
+
+# 10. Regra real para descobrir `esteira`
+
+## 10.1 Como descobrir `esteira`
+
+A lógica é igual, mas usando `risco_ser`.
+
+## 10.2 Lógica correta
+
+### Passo 1
+
+Usar `contrato + produto` para tentar encontrar a informação.
+
+### Passo 2
+
+Se não vier do manual, tentar na **VIJUD** do mês preenchido.
+
+### Passo 3
+
+Se não achar na VIJUD, usar a **OPC** e derivar a esteira a partir de:
+
+```text
+risco_ser
+```
+
+### Passo 4
+
+Transformar `risco_ser` em `esteira` via `CASE WHEN`
+
+Exemplo conceitual:
+
+```sql
+case
+    when risco_ser in ('AA','A') then 'ESTEIRA_BAIXO_RISCO'
+    when risco_ser in ('B','C') then 'ESTEIRA_MEDIO_RISCO'
+    when risco_ser in ('D','E','F') then 'ESTEIRA_ALTO_RISCO'
+    else 'ESTEIRA_NAO_CLASSIFICADA'
+end
+```
+
+## 10.3 Regra de fallback
+
+A ordem deve ser:
+
+```text
+1. se esteira veio preenchida no manual, usar manual
+2. se não veio, tentar descobrir na VIJUD do mês informado
+3. se não achou na VIJUD, descobrir na OPC via risco_ser
+```
+
+---
+
+# 11. Regra de coalesce obrigatória
+
+Essa é a regra-mãe.
+
+Para os dois campos, a lógica tem que ser:
+
+```sql
+coalesce(valor_manual, valor_vijud, valor_opc)
+```
+
+## Para `tipo_carteira`
+
+```sql
+coalesce(
+    tipo_carteira_informada_manual,
+    tipo_carteira_descoberta_vijud,
+    tipo_carteira_descoberta_opc
+) as tipo_carteira_final
+```
+
+## Para `esteira`
+
+```sql
+coalesce(
+    esteira_informada_manual,
+    esteira_descoberta_vijud,
+    esteira_descoberta_opc
+) as esteira_final
+```
+
+Isso está totalmente alinhado com a régua de `silver_integrado`: responder “como unir?”, “qual fonte ganha?” e “como enriquecer?”.  
+
+---
+
+# 12. Nome das tabelas e views
+
+## Recomendação final
+
+```text
+tabela_bronze_fonte_manual_cobranca_pagamentos_ajuste
+view_silver_padronizado_cobranca_pagamentos_ajuste_manual
+view_silver_integrado_cobranca_pagamentos_ajuste_enriquecido
+view_gold_staging_cobranca_pagamentos_consolidados_delta
+view_gold_staging_cobranca_pagamentos_consolidados_delta_pronto
+iceberg_gold_fato_pagadoria
+view_gold_agregado_pagadoria_mensal_base
+view_gold_agregado_pagadoria_mensal_com_meta
+view_gold_agregado_pagadoria_mensal_comissao
+view_gold_mart_cobranca_pagadoria_quicksight
+```
+
+O naming segue o contrato oficial: bronze para entrada, silver padronizado para leitura técnica, silver integrado para enriquecimento, gold para fato/agregado/mart.  
+
+---
+
+# 13. Passo 1 — criar a tabela bronze que lê o CSV no S3
+
+Essa tabela só lê o arquivo cru.
+
+## SQL
+
+```sql
+CREATE EXTERNAL TABLE IF NOT EXISTS workspace_db.tabela_bronze_fonte_manual_cobranca_pagamentos_ajuste (
+    acao_ajuste                 string,
+    motivo_ajuste               string,
+    pasta                       string,
+    contrato                    string,
+    produto                     string,
+    tipo_carteira               string,
+    esteira                     string,
+    escritorio                  string,
+    vl_pagamento                string,
+    vl_caixa                    string,
+    vl_regul                    string,
+    dt_pagamento                string,
+    fl_elegivel_meta_regul      string,
+    fl_elegivel_comissao_caixa  string,
+    observacao                  string,
+    usuario_solicitante         string
+)
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+WITH SERDEPROPERTIES (
+    'separatorChar' = ',',
+    'quoteChar'     = '\"',
+    'escapeChar'    = '\\'
+)
+STORED AS TEXTFILE
+LOCATION 's3://SEU-BUCKET/manual/pagamentos_ajuste/';
+```
+
+## Por que tudo é string?
+
+Porque bronze deve ser tolerante a erro de CSV.
+A limpeza vem depois.
+
+---
+
+# 14. Passo 2 — criar a view silver padronizada
+
+Essa camada limpa e tipa o CSV.
+
+Além disso, ela marca se `tipo_carteira` ou `esteira` vieram ausentes.
+
+## SQL
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_pagamentos_ajuste_manual AS
+SELECT
+    upper(trim(acao_ajuste)) AS acao_ajuste,
+    trim(motivo_ajuste)      AS motivo_ajuste,
+
+    trim(pasta)              AS pasta,
+    trim(contrato)           AS contrato,
+    trim(produto)            AS produto,
+
+    nullif(trim(tipo_carteira), '') AS tipo_carteira_informada,
+    nullif(trim(esteira), '')       AS esteira_informada,
+    trim(escritorio)                AS escritorio,
+
+    try_cast(replace(vl_pagamento, ',', '.') as decimal(18,2)) AS vl_pagamento,
+    try_cast(replace(vl_caixa, ',', '.') as decimal(18,2))     AS vl_caixa,
+    try_cast(replace(vl_regul, ',', '.') as decimal(18,2))     AS vl_regul,
+
+    cast(dt_pagamento as date) AS dt_pagamento,
+    cast(date_format(cast(dt_pagamento as date), '%Y%m') as integer) AS anomes_ref,
+
+    case
+        when trim(fl_elegivel_meta_regul) in ('1','true','TRUE','S','SIM') then true
+        else false
+    end AS fl_elegivel_meta_regul,
+
+    case
+        when trim(fl_elegivel_comissao_caixa) in ('1','true','TRUE','S','SIM') then true
+        else false
+    end AS fl_elegivel_comissao_caixa,
+
+    case
+        when nullif(trim(tipo_carteira), '') is null then true
+        else false
+    end AS fl_tipo_carteira_pendente,
+
+    case
+        when nullif(trim(esteira), '') is null then true
+        else false
+    end AS fl_esteira_pendente,
+
+    trim(observacao)          AS observacao,
+    trim(usuario_solicitante) AS usuario_solicitante,
+
+    current_timestamp         AS dt_ingestao_modelo
+FROM workspace_db.tabela_bronze_fonte_manual_cobranca_pagamentos_ajuste
+WHERE pasta IS NOT NULL
+  AND contrato IS NOT NULL
+  AND produto IS NOT NULL;
+```
+
+---
+
+# 15. Passo 3 — criar a view silver integrada enriquecida
+
+Aqui o processo tenta descobrir `tipo_carteira` e `esteira`.
+
+## 15.1 Ideia da query
+
+Ela precisa ter 4 blocos:
+
+### Bloco A — manual
+
+O que veio no CSV
+
+### Bloco B — VIJUD do mês
+
+Busca por `contrato + produto` na partição do mês informado
+
+### Bloco C — OPC
+
+Busca por `cod_idef_pessoa`, encontra o maior atraso e o risco
+
+### Bloco D — coalesce final
+
+Escolhe manual → vijud → opc
+
+---
+
+## 15.2 Janela de partição da OPC
+
+A OPC precisa ser consultada da seguinte forma:
+
+* pegar o `anomes_ref` preenchido na linha manual
+* calcular:
+
+  * `primeiro_anomesdia_do_mes`
+  * `ultimo_anomesdia_disponivel_do_mes`
+
+Depois consultar **todas as partições** entre esses dois limites.
+
+---
+
+## 15.3 SQL conceitual
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_cobranca_pagamentos_ajuste_enriquecido AS
+WITH manual AS (
+    SELECT *
+    FROM workspace_db.view_silver_padronizado_cobranca_pagamentos_ajuste_manual
+),
+
+vijud_mes AS (
+    SELECT
+        contrato,
+        produto,
+        p_anomes,
+        tipo_carteira AS tipo_carteira_vijud,
+        esteira       AS esteira_vijud
+    FROM workspace_db.view_silver_padronizado_juridico_vijud_inicio_mes
+),
+
+contrato_pessoa AS (
+    SELECT
+        contrato,
+        produto,
+        cod_idef_pessoa
+    FROM workspace_db.alguma_base_contrato_produto_pessoa
+),
+
+opc_base AS (
+    SELECT
+        o.p_anomesdia,
+        o.cod_idef_pessoa,
+        o.ind_atr_ctr,
+        o.risco_ser
+    FROM workspace_db.tabela_bronze_fonte_opc o
+),
+
+opc_resumo AS (
+    SELECT
+        m.contrato,
+        m.produto,
+        cp.cod_idef_pessoa,
+        max(o.ind_atr_ctr) AS max_ind_atr_ctr,
+        max_by(o.risco_ser, o.p_anomesdia) AS risco_ser_ref
+    FROM manual m
+    LEFT JOIN contrato_pessoa cp
+      ON  m.contrato = cp.contrato
+      AND m.produto  = cp.produto
+    LEFT JOIN opc_base o
+      ON  cp.cod_idef_pessoa = o.cod_idef_pessoa
+      AND o.p_anomesdia BETWEEN cast(cast(m.anomes_ref as varchar) || '01' as bigint)
+                            AND cast(date_format(last_day_of_month(cast(cast(m.anomes_ref as varchar) || '01' as date)), '%Y%m%d') as bigint)
+    GROUP BY 1,2,3
+),
+
+enriquecido AS (
+    SELECT
+        m.acao_ajuste,
+        m.motivo_ajuste,
+        m.pasta,
+        m.contrato,
+        m.produto,
+
+        coalesce(
+            m.tipo_carteira_informada,
+            v.tipo_carteira_vijud,
+            case
+                when o.max_ind_atr_ctr between 0 and 30 then 'CARTEIRA_RECENTE'
+                when o.max_ind_atr_ctr between 31 and 90 then 'CARTEIRA_INTERMEDIARIA'
+                when o.max_ind_atr_ctr > 90 then 'CARTEIRA_AVANCADA'
+                else null
+            end
+        ) AS tipo_carteira_final,
+
+        coalesce(
+            m.esteira_informada,
+            v.esteira_vijud,
+            case
+                when o.risco_ser_ref in ('AA','A') then 'ESTEIRA_BAIXO_RISCO'
+                when o.risco_ser_ref in ('B','C') then 'ESTEIRA_MEDIO_RISCO'
+                when o.risco_ser_ref in ('D','E','F') then 'ESTEIRA_ALTO_RISCO'
+                else null
+            end
+        ) AS esteira_final,
+
+        m.escritorio,
+        m.vl_pagamento,
+        m.vl_caixa,
+        m.vl_regul,
+        m.dt_pagamento,
+        m.anomes_ref,
+        m.fl_elegivel_meta_regul,
+        m.fl_elegivel_comissao_caixa,
+        m.observacao,
+        m.usuario_solicitante,
+
+        case
+            when coalesce(
+                m.tipo_carteira_informada,
+                v.tipo_carteira_vijud,
+                case
+                    when o.max_ind_atr_ctr between 0 and 30 then 'CARTEIRA_RECENTE'
+                    when o.max_ind_atr_ctr between 31 and 90 then 'CARTEIRA_INTERMEDIARIA'
+                    when o.max_ind_atr_ctr > 90 then 'CARTEIRA_AVANCADA'
+                    else null
+                end
+            ) is null then true
+            else false
+        end AS fl_tipo_carteira_nao_resolvida,
+
+        case
+            when coalesce(
+                m.esteira_informada,
+                v.esteira_vijud,
+                case
+                    when o.risco_ser_ref in ('AA','A') then 'ESTEIRA_BAIXO_RISCO'
+                    when o.risco_ser_ref in ('B','C') then 'ESTEIRA_MEDIO_RISCO'
+                    when o.risco_ser_ref in ('D','E','F') then 'ESTEIRA_ALTO_RISCO'
+                    else null
+                end
+            ) is null then true
+            else false
+        end AS fl_esteira_nao_resolvida
+
+    FROM manual m
+    LEFT JOIN vijud_mes v
+      ON  m.contrato = v.contrato
+      AND m.produto  = v.produto
+      AND m.anomes_ref = v.p_anomes
+    LEFT JOIN opc_resumo o
+      ON  m.contrato = o.contrato
+      AND m.produto  = o.produto
+)
+SELECT *
+FROM enriquecido;
+```
+
+---
+
+# 16. Como interpretar as flags de descoberta
+
+## `fl_tipo_carteira_pendente`
+
+Quer dizer:
+
+> o usuário não informou `tipo_carteira` no CSV
+
+## `fl_esteira_pendente`
+
+Quer dizer:
+
+> o usuário não informou `esteira` no CSV
+
+## `fl_tipo_carteira_nao_resolvida`
+
+Quer dizer:
+
+> o processo tentou descobrir `tipo_carteira`, mas não conseguiu
+
+## `fl_esteira_nao_resolvida`
+
+Quer dizer:
+
+> o processo tentou descobrir `esteira`, mas não conseguiu
+
+---
+
+# 17. Passo 4 — criar a staging delta
+
+Agora a staging usa os valores finais resolvidos.
+
+## SQL
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_staging_cobranca_pagamentos_consolidados_delta AS
+WITH ajuste AS (
+    SELECT
+        acao_ajuste,
+        motivo_ajuste,
+        pasta,
+        contrato,
+        produto,
+        tipo_carteira_final,
+        esteira_final,
+        escritorio,
+        vl_pagamento,
+        vl_caixa,
+        vl_regul,
+        dt_pagamento,
+        anomes_ref,
+        fl_elegivel_meta_regul,
+        fl_elegivel_comissao_caixa,
+        observacao,
+        usuario_solicitante,
+        fl_tipo_carteira_nao_resolvida,
+        fl_esteira_nao_resolvida,
+        md5(
+            concat(
+                coalesce(tipo_carteira_final, ''),
+                '|', coalesce(esteira_final, ''),
+                '|', coalesce(escritorio, ''),
+                '|', coalesce(cast(vl_pagamento as varchar), ''),
+                '|', coalesce(cast(vl_caixa as varchar), ''),
+                '|', coalesce(cast(vl_regul as varchar), ''),
+                '|', coalesce(cast(dt_pagamento as varchar), ''),
+                '|', coalesce(cast(fl_elegivel_meta_regul as varchar), ''),
+                '|', coalesce(cast(fl_elegivel_comissao_caixa as varchar), '')
+            )
+        ) AS hash_payload
+    FROM workspace_db.view_silver_integrado_cobranca_pagamentos_ajuste_enriquecido
+),
+atual AS (
+    SELECT
+        pasta,
+        contrato,
+        produto
+    FROM workspace_db.iceberg_gold_fato_pagadoria
+)
+SELECT
+    CASE
+        WHEN a.acao_ajuste IN ('INSERT','UPDATE','DELETE') THEN a.acao_ajuste
+        ELSE 'NOOP'
+    END AS acao_merge,
+
+    a.motivo_ajuste AS motivo_acao,
+    a.pasta,
+    a.contrato,
+    a.produto,
+    a.tipo_carteira_final AS tipo_carteira,
+    a.esteira_final       AS esteira,
+    a.escritorio,
+    a.vl_pagamento,
+    a.vl_caixa,
+    a.vl_regul,
+    a.dt_pagamento,
+    a.anomes_ref,
+    a.fl_elegivel_meta_regul,
+    a.fl_elegivel_comissao_caixa,
+    a.observacao,
+    a.usuario_solicitante,
+    a.hash_payload,
+    current_timestamp AS dt_processamento,
+    'exec_manual_csv_001' AS id_execucao,
+
+    CASE
+        WHEN a.fl_tipo_carteira_nao_resolvida THEN 'ERRO_TIPO_CARTEIRA_NAO_DEFINIDA'
+        WHEN a.fl_esteira_nao_resolvida THEN 'ERRO_ESTEIRA_NAO_DEFINIDA'
+        WHEN a.acao_ajuste = 'INSERT' AND t.pasta IS NOT NULL THEN 'ERRO_INSERT_JA_EXISTE'
+        WHEN a.acao_ajuste IN ('UPDATE','DELETE') AND t.pasta IS NULL THEN 'ERRO_ALVO_NAO_EXISTE'
+        ELSE 'OK'
+    END AS status_validacao
+FROM ajuste a
+LEFT JOIN atual t
+  ON  a.pasta    = t.pasta
+  AND a.contrato = t.contrato
+  AND a.produto  = t.produto;
+```
+
+---
+
+# 18. Passo 5 — criar a staging pronta para uso
+
+Essa view filtra só o que pode ser aplicado.
+
+## SQL
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_staging_cobranca_pagamentos_consolidados_delta_pronto AS
+SELECT *
+FROM workspace_db.view_gold_staging_cobranca_pagamentos_consolidados_delta
+WHERE status_validacao = 'OK'
+  AND acao_merge <> 'NOOP';
+```
+
+---
+
+# 19. Passo 6 — aplicar o MERGE no fato oficial
+
+Agora a base oficial é atualizada.
+
+## SQL
+
+```sql
+MERGE INTO workspace_db.iceberg_gold_fato_pagadoria t
+USING workspace_db.view_gold_staging_cobranca_pagamentos_consolidados_delta_pronto s
+ON  t.pasta    = s.pasta
+AND t.contrato = s.contrato
+AND t.produto  = s.produto
+
+WHEN MATCHED AND s.acao_merge = 'DELETE' THEN
+    DELETE
+
+WHEN MATCHED AND s.acao_merge = 'UPDATE' THEN
+    UPDATE SET
+        tipo_carteira               = s.tipo_carteira,
+        esteira                     = s.esteira,
+        escritorio                  = s.escritorio,
+        vl_pagamento                = s.vl_pagamento,
+        vl_caixa                    = s.vl_caixa,
+        vl_regul                    = s.vl_regul,
+        dt_pagamento                = s.dt_pagamento,
+        p_anomes                    = s.anomes_ref,
+        fl_elegivel_meta_regul      = s.fl_elegivel_meta_regul,
+        fl_elegivel_comissao_caixa  = s.fl_elegivel_comissao_caixa,
+        id_execucao                 = s.id_execucao,
+        dt_carga                    = s.dt_processamento
+
+WHEN NOT MATCHED AND s.acao_merge = 'INSERT' THEN
+    INSERT (
+        pasta,
+        contrato,
+        produto,
+        tipo_carteira,
+        esteira,
+        escritorio,
+        vl_pagamento,
+        vl_caixa,
+        vl_regul,
+        dt_pagamento,
+        p_anomes,
+        fl_elegivel_meta_regul,
+        fl_elegivel_comissao_caixa,
+        id_execucao,
+        dt_carga
+    )
+    VALUES (
+        s.pasta,
+        s.contrato,
+        s.produto,
+        s.tipo_carteira,
+        s.esteira,
+        s.escritorio,
+        s.vl_pagamento,
+        s.vl_caixa,
+        s.vl_regul,
+        s.dt_pagamento,
+        s.anomes_ref,
+        s.fl_elegivel_meta_regul,
+        s.fl_elegivel_comissao_caixa,
+        s.id_execucao,
+        s.dt_processamento
+    );
+```
+
+Athena com Iceberg suporta `MERGE`, e isso encaixa exatamente no padrão de fato incremental do seu stack. 
+
+---
+
+# 20. Passo 7 — recalcular o agregado mensal
+
+Depois do merge, a comissão não é mexida manualmente.
+
+## 20.1 Base mensal
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_agregado_pagadoria_mensal_base AS
+SELECT
+    p.p_anomes AS anomes_ref,
+    p.tipo_carteira,
+    p.esteira,
+    p.escritorio,
+
+    sum(case when p.fl_elegivel_meta_regul then p.vl_regul else 0 end) AS vl_regul_meta_base,
+    sum(case when p.fl_elegivel_comissao_caixa then p.vl_caixa else 0 end) AS vl_caixa_comissionavel
+FROM workspace_db.iceberg_gold_fato_pagadoria p
+GROUP BY 1,2,3,4;
+```
+
+## 20.2 Aplicar meta
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_agregado_pagadoria_mensal_com_meta AS
+SELECT
+    b.anomes_ref,
+    b.tipo_carteira,
+    b.esteira,
+    b.escritorio,
+    b.vl_regul_meta_base,
+    b.vl_caixa_comissionavel,
+    m.vl_meta,
+    case
+        when m.vl_meta = 0 then null
+        else b.vl_regul_meta_base / m.vl_meta
+    end AS perc_atingimento
+FROM workspace_db.view_gold_agregado_pagadoria_mensal_base b
+LEFT JOIN workspace_db.tabela_bronze_fonte_cobranca_meta_escritorio m
+  ON  b.anomes_ref     = m.anomes_ref
+  AND b.tipo_carteira  = m.tipo_carteira
+  AND b.esteira        = m.esteira
+  AND b.escritorio     = m.escritorio;
+```
+
+## 20.3 Aplicar gate de comissão
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_agregado_pagadoria_mensal_comissao AS
+SELECT
+    a.*,
+    g.perc_comissao,
+    a.vl_caixa_comissionavel * g.perc_comissao AS vl_comissao
+FROM workspace_db.view_gold_agregado_pagadoria_mensal_com_meta a
+LEFT JOIN workspace_db.tabela_bronze_fonte_cobranca_gate_comissionamento g
+  ON  a.tipo_carteira = g.tipo_carteira
+  AND a.esteira       = g.esteira
+  AND a.perc_atingimento >= g.faixa_min
+  AND a.perc_atingimento <  g.faixa_max;
+```
+
+Como regra de negócio que muda com faixa e parâmetro, esse gate de comissão é um bom candidato a tabela de regra, não `CASE` espalhado.  
+
+---
+
+# 21. Como descobrir quais meses precisam ser recalculados
+
+```sql
+SELECT DISTINCT anomes_ref
+FROM workspace_db.view_gold_staging_cobranca_pagamentos_consolidados_delta_pronto;
+```
+
+Esses são os meses impactados.
+
+---
+
+# 22. Checklist de implementação para analista júnior
+
+## Etapa 1
+
+Criar a tabela bronze que lê o CSV.
+
+## Etapa 2
+
+Criar a view silver padronizada.
+
+## Etapa 3
+
+Testar se a silver está convertendo corretamente:
+
+* data
+* número
+* flags
+* campos pendentes
+
+## Etapa 4
+
+Criar a silver integrada enriquecida.
+
+## Etapa 5
+
+Testar se `tipo_carteira` está sendo descoberta corretamente:
+
+* manual
+* vijud
+* opc por `max(ind_atr_ctr)`
+
+## Etapa 6
+
+Testar se `esteira` está sendo descoberta corretamente:
+
+* manual
+* vijud
+* opc por `risco_ser`
+
+## Etapa 7
+
+Criar a staging delta.
+
+## Etapa 8
+
+Validar se a staging está marcando corretamente:
+
+* `INSERT`
+* `UPDATE`
+* `DELETE`
+* `OK`
+* erro de tipo_carteira
+* erro de esteira
+
+## Etapa 9
+
+Criar a staging pronta.
+
+## Etapa 10
+
+Executar o `MERGE`.
+
+## Etapa 11
+
+Recalcular o agregado mensal.
+
+## Etapa 12
+
+Validar:
+
+* valor de meta
+* valor comissionável
+* percentual de atingimento
+* comissão final
+
+---
+
+# 23. Erros comuns
+
+## 1. Exigir `tipo_carteira` e `esteira` do usuário final
+
+Errado. O processo deve descobrir quando possível.
+
+## 2. Consultar OPC só em um dia do mês
+
+Errado. A regra correta é olhar a janela do mês e pegar o **maior atraso**.
+
+## 3. Tentar descobrir `tipo_carteira` direto do contrato
+
+Errado. Primeiro precisa encontrar `cod_idef_pessoa`.
+
+## 4. Tentar fazer merge com linha não resolvida
+
+Errado. Linha com `tipo_carteira` ou `esteira` não resolvida deve ser barrada.
+
+## 5. Misturar meta e comissão
+
+Errado. Uma linha pode entrar na comissão e não entrar na meta.
+
+---
+
+# 24. Resumo final
+
+## O que está sendo implementado
+
+Um mecanismo controlado de ajuste manual de pagamentos, com atualização da base oficial e recálculo da comissão, mesmo quando o usuário não sabe `tipo_carteira` e `esteira`.
+
+## O que é mais importante lembrar
+
+* CSV manual é entrada técnica
+* `tipo_carteira` e `esteira` podem vir vazios
+* o processo tenta descobrir esses campos
+* a ordem é: **manual → vijud → opc**
+* `tipo_carteira` vem de `max(ind_atr_ctr)`
+* `esteira` vem de `risco_ser`
+* se não descobrir, a linha não entra no merge
+* base oficial continua sendo gold
+* meta e comissão têm elegibilidades diferentes
+* comissão sempre deve ser recalculada depois do merge
+
+## Fórmula final
+
+```text
+vl_regul_meta_base      = soma(vl_regul onde fl_elegivel_meta_regul = true)
+vl_caixa_comissionavel  = soma(vl_caixa onde fl_elegivel_comissao_caixa = true)
+
+perc_atingimento = vl_regul_meta_base / vl_meta
+vl_comissao      = vl_caixa_comissionavel * perc_comissao
+```
+
+Se você quiser, no próximo passo eu posso transformar essa nota em uma versão ainda mais operacional, já separada em:
+`01_visao_geral.md`
+`02_layout_csv.md`
+`03_sql_bronze.sql`
+`04_sql_silver_padronizado.sql`
+`05_sql_silver_integrado_enriquecido.sql`
+`06_sql_staging.sql`
+`07_sql_merge.sql`
+`08_sql_agregado_comissao.sql`
