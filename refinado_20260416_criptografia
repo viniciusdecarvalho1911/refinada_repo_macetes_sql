@@ -1,0 +1,14 @@
+import sys
+import base64
+
+KEY = "juvini"  # mesma chave
+
+def xor_bytes(data, key):
+    key_bytes = key.encode()
+    return bytes([b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(data)])
+
+input_text = '''AxgGBhwdSgYPGmQABwUZGxpJCBQFDFhdYH89LDdJV1VUBAcHAhQpCgYIHBApGgsKGBACCExJSlZWHRwGGwATSQ8YHxx8YwoMDFUOBhw2CAwCDB1BDhQCCEJJARAPQFRjSlVWSQUMEyoUEBoMGVVLSQUME1sTBw0GDhBeQGRJSlVWGwsdHwcYSQwQHhAFQTULSitWAgsQNRcPHQsaMRxWTE4FDxteAgsQNRcPHQsaQyhWDwEbShxaSQxJAxtWDAAcBxAECBoMQhEXHQ9AN1x8YwcHGgACNhoMEgFWVE4aEwZYGhoNAxtYGwsIDl1fYwsHCQcPGRoMDlVLSRYGGCoUEBoMGV0fBx4cHioCDBYdRBAYCgEND11UHBoPR01UQEJJITAvQGQGHwEGHBpJV1UUCB0MXEFYHBwFGRQQDDELXEETBw0GDhBeDAAKGAwGHQsNQ1sSDA0GDhBeSxsdDFhOS0djYAUEAAAdQhoDHR4cHlw='''
+decoded = base64.urlsafe_b64decode(input_text.encode("utf-8"))
+decrypted = xor_bytes(decoded, KEY)
+
+print(decrypted.decode("utf-8"))
