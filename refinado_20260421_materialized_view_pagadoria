@@ -1,0 +1,1478 @@
+---
+title: Nota Técnica — MV falsa na Bronze até Gold para Pagadoria
+id: PAG-ARQ-001
+status: oficial
+tipo: nota_tecnica
+tema: pagadoria
+dominio: cobranca
+stack:
+  - athena
+  - iceberg
+  - glue
+  - step_functions
+  - eventbridge
+atualizado_em: 2026-04-21
+---
+
+# 🎯 Objetivo
+
+Explicar e entregar, de forma operacional, um desenho completo de **materialized views falsas** na bronze para o processo de pagadoria, seguindo o fluxo:
+
+```text
+bronze_origem
+  ↓
+bronze_mv_falsa
+  ↓
+silver_padronizado
+  ↓
+silver_integrado
+  ↓
+gold_fato_pagadoria
+```
+
+Além da explicação, esta nota inclui:
+
+- DDL das MVs falsas em Iceberg
+- SQL de detecção de partições alteradas
+- SQL de invalidar + inserir
+- views silver consumindo apenas a versão válida da MV falsa
+- integração até `iceberg_gold_fato_pagadoria`
+- state machine do Step Functions
+- passo a passo de execução para quem não domina AWS
+
+---
+
+# 🧠 Ideia central
+
+## Em uma frase
+
+A MV falsa é uma **tabela Iceberg intermediária**, atualizada por partição, que serve para **acelerar, estabilizar e baratear** o consumo das fontes bronze sem colocar a verdade final de negócio nessa camada.
+
+## Modelo mental simples
+
+```text
+Tabela origem no Athena
+↓
+Descobrir quais partições mudaram
+↓
+Invalidar a versão antiga dessas partições na MV falsa
+↓
+Inserir a nova versão válida
+↓
+Silver lê apenas fl_valido = true
+↓
+Gold calcula a verdade oficial da pagadoria
+```
+
+## Tradução para leigos
+
+Pense assim:
+
+- a **origem** é a pasta com os arquivos “como chegaram”
+- a **MV falsa** é uma cópia organizada e reaproveitável do que realmente interessa naquele momento
+- a **silver** arruma nomes, datas e tipos
+- a **gold** calcula o número oficial que será defendido em reunião
+
+---
+
+# 🧱 Princípio de arquitetura
+
+## O que a bronze MV falsa deve fazer
+
+Ela deve ficar restrita a quatro papéis:
+
+1. deduplicar bruto recorrente
+2. filtrar sujeira técnica óbvia
+3. pré-consolidar leituras caras e repetidas
+4. congelar uma versão operacional reusável da bronze
+
+## O que ela não deve fazer
+
+Não deve conter:
+
+- cálculo oficial de caixa
+- cálculo oficial de regul
+- comissão final
+- regra executiva de negócio
+- semântica final para dashboard executivo
+
+## Regra prática
+
+```text
+Bronze MV falsa = aceleração e estabilização
+Silver = contrato técnico + integração
+Gold = verdade oficial
+```
+
+---
+
+# 🗺️ Desenho completo da pagadoria
+
+```text
+tabela_bronze_fonte_sap_boletos
+    ↓
+iceberg_bronze_fonte_cobranca_boletos_mv
+    ↓
+view_silver_padronizado_cobranca_boletos
+
+
+tabela_bronze_fonte_legado_debito_conta
+    ↓
+iceberg_bronze_fonte_cobranca_debito_conta_mv
+    ↓
+view_silver_padronizado_cobranca_debito_conta
+
+
+tabela_bronze_fonte_backoffice_fluxo_apartado
+    ↓
+iceberg_bronze_fonte_cobranca_fluxo_apartado_mv
+    ↓
+view_silver_padronizado_cobranca_fluxo_apartado
+
+
+tabela_bronze_fonte_cobranca_carteira_vigor
+    ↓
+iceberg_bronze_fonte_cobranca_carteira_vigor_mv
+    ↓
+view_silver_padronizado_cobranca_carteira_vigor
+
+
+tabela_bronze_fonte_cobranca_colchao
+    ↓
+view_silver_padronizado_cobranca_colchao
+
+
+tabela_bronze_fonte_juridico_vijud_inicio_mes
+    ↓
+view_silver_padronizado_juridico_vijud_inicio_mes
+
+
+tabela_bronze_fonte_cobranca_proposta_negocio
+    ↓
+view_silver_padronizado_cobranca_proposta_negocio
+
+
+view_silver_padronizado_*
+    ↓
+view_silver_integrado_cobranca_pagamentos_consolidados
+    ↓
+iceberg_gold_fato_pagadoria
+```
+
+---
+
+# 1. 📦 Convenções adotadas
+
+## Database
+
+Nesta nota, tudo foi montado em `workspace_db` para ficar aderente ao seu stack.
+
+## Workgroup e bucket de saída
+
+Substitua os placeholders:
+
+- `SEU_WORKGROUP_ATHENA`
+- `s3://SEU-BUCKET-ATHENA-RESULTS/`
+- `s3://SEU-BUCKET-LAKEHOUSE/...`
+
+## Execução
+
+A state machine passa estes parâmetros:
+
+- `id_execucao`
+- `dt_referencia`
+- `workgroup`
+- `output_location`
+
+---
+
+# 2. 🟤 DDL das bronze MVs falsas
+
+> Abaixo estão as 4 MVs falsas principais. Elas seguem a mesma ideia: guardar a versão válida da partição, preservar histórico com `fl_valido`, e permitir refresh incremental.
+
+## 2.1 Boletos
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv (
+    contrato                   varchar,
+    produto                    varchar,
+    cnpj_raiz                  varchar,
+    escritorio                 varchar,
+    boleto                     varchar,
+
+    dt_ref_yyyymmdd            integer,
+    mes_ref_yyyymm             integer,
+
+    vl_pago                    decimal(18,2),
+    vl_desconto_boleto         decimal(18,2),
+    flag_cancelado             integer,
+
+    particao_tabela_origem     varchar,
+    data_particao_execucao     timestamp,
+    fl_valido                  boolean,
+    dt_ingestao_modelo         timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    write_compression = 'SNAPPY',
+    partitioning = ARRAY['fl_valido', 'mes_ref_yyyymm'],
+    location = 's3://SEU-BUCKET-LAKEHOUSE/workspace_db/iceberg_bronze_fonte_cobranca_boletos_mv/'
+);
+```
+
+## 2.2 Débito em conta
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_bronze_fonte_cobranca_debito_conta_mv (
+    contrato                   varchar,
+    produto                    varchar,
+    cnpj_raiz                  varchar,
+    escritorio                 varchar,
+
+    dt_ref_yyyymmdd            integer,
+    mes_ref_yyyymm             integer,
+
+    vl_pago                    decimal(18,2),
+
+    particao_tabela_origem     varchar,
+    data_particao_execucao     timestamp,
+    fl_valido                  boolean,
+    dt_ingestao_modelo         timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    write_compression = 'SNAPPY',
+    partitioning = ARRAY['fl_valido', 'mes_ref_yyyymm'],
+    location = 's3://SEU-BUCKET-LAKEHOUSE/workspace_db/iceberg_bronze_fonte_cobranca_debito_conta_mv/'
+);
+```
+
+## 2.3 Fluxo apartado / backoffice
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_bronze_fonte_cobranca_fluxo_apartado_mv (
+    contrato                   varchar,
+    produto                    varchar,
+    cnpj_raiz                  varchar,
+    escritorio                 varchar,
+
+    dt_ref_yyyymmdd            integer,
+    mes_ref_yyyymm             integer,
+
+    vl_pago                    decimal(18,2),
+    tp_acordo                  varchar,
+
+    particao_tabela_origem     varchar,
+    data_particao_execucao     timestamp,
+    fl_valido                  boolean,
+    dt_ingestao_modelo         timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    write_compression = 'SNAPPY',
+    partitioning = ARRAY['fl_valido', 'mes_ref_yyyymm'],
+    location = 's3://SEU-BUCKET-LAKEHOUSE/workspace_db/iceberg_bronze_fonte_cobranca_fluxo_apartado_mv/'
+);
+```
+
+## 2.4 Carteira vigor
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_bronze_fonte_cobranca_carteira_vigor_mv (
+    contrato                   varchar,
+    produto                    varchar,
+    cnpj_raiz                  varchar,
+    escritorio                 varchar,
+    anomes                     integer,
+
+    particao_tabela_origem     varchar,
+    data_particao_execucao     timestamp,
+    fl_valido                  boolean,
+    dt_ingestao_modelo         timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    write_compression = 'SNAPPY',
+    partitioning = ARRAY['fl_valido', 'anomes'],
+    location = 's3://SEU-BUCKET-LAKEHOUSE/workspace_db/iceberg_bronze_fonte_cobranca_carteira_vigor_mv/'
+);
+```
+
+---
+
+# 3. 🔍 SQL de detecção de partições alteradas
+
+## Ideia
+
+A query abaixo compara:
+
+- o `max("$file_modified_time")` da origem
+- com a `data_particao_execucao` mais recente da MV falsa válida
+
+E devolve **somente as partições candidatas a refresh**.
+
+## 3.1 Exemplo — boletos
+
+```sql
+WITH particoes_origem AS (
+    SELECT
+        cast(dt_ref as varchar) AS particao_tabela_origem,
+        max("$file_modified_time") AS data_max_atualizacao
+    FROM workspace_db.tabela_bronze_fonte_sap_boletos
+    GROUP BY 1
+),
+
+particoes_mv AS (
+    SELECT
+        particao_tabela_origem,
+        max(data_particao_execucao) AS data_ultima_execucao
+    FROM workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv
+    WHERE fl_valido = true
+    GROUP BY 1
+)
+
+SELECT
+    o.particao_tabela_origem,
+    o.data_max_atualizacao,
+    coalesce(m.data_ultima_execucao, timestamp '1900-01-01') AS data_ultima_execucao_mv,
+    CASE
+        WHEN m.particao_tabela_origem IS NULL THEN 'NOVA_PARTICAO'
+        WHEN o.data_max_atualizacao > m.data_ultima_execucao THEN 'PARTICAO_ALTERADA'
+        ELSE 'SEM_MUDANCA'
+    END AS status_refresh
+FROM particoes_origem o
+LEFT JOIN particoes_mv m
+    ON o.particao_tabela_origem = m.particao_tabela_origem
+WHERE m.particao_tabela_origem IS NULL
+   OR o.data_max_atualizacao > m.data_ultima_execucao;
+```
+
+## 3.2 Query de precheck leve
+
+Use esta query quando quiser apenas saber se vale a pena continuar:
+
+```sql
+SELECT count(*) AS qtd_particoes_candidatas
+FROM (
+    WITH particoes_origem AS (
+        SELECT
+            cast(dt_ref as varchar) AS particao_tabela_origem,
+            max("$file_modified_time") AS data_max_atualizacao
+        FROM workspace_db.tabela_bronze_fonte_sap_boletos
+        GROUP BY 1
+    ),
+    particoes_mv AS (
+        SELECT
+            particao_tabela_origem,
+            max(data_particao_execucao) AS data_ultima_execucao
+        FROM workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv
+        WHERE fl_valido = true
+        GROUP BY 1
+    )
+    SELECT 1
+    FROM particoes_origem o
+    LEFT JOIN particoes_mv m
+        ON o.particao_tabela_origem = m.particao_tabela_origem
+    WHERE m.particao_tabela_origem IS NULL
+       OR o.data_max_atualizacao > m.data_ultima_execucao
+);
+```
+
+---
+
+# 4. 🔄 SQL de invalidar + inserir
+
+## Estratégia recomendada
+
+Em vez de depender de um único `MERGE` “mágico”, a estratégia desta nota é:
+
+1. descobrir partições candidatas
+2. invalidar a versão antiga
+3. inserir a nova versão válida
+
+Isso é mais simples de entender, mais previsível para operação e mais aderente ao comportamento SCD2.
+
+## 4.1 Invalidar partições antigas — boletos
+
+```sql
+UPDATE workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv
+SET
+    fl_valido = false,
+    data_particao_execucao = current_timestamp
+WHERE fl_valido = true
+  AND particao_tabela_origem IN (
+
+    WITH particoes_origem AS (
+        SELECT
+            cast(dt_ref as varchar) AS particao_tabela_origem,
+            max("$file_modified_time") AS data_max_atualizacao
+        FROM workspace_db.tabela_bronze_fonte_sap_boletos
+        GROUP BY 1
+    ),
+    particoes_mv AS (
+        SELECT
+            particao_tabela_origem,
+            max(data_particao_execucao) AS data_ultima_execucao
+        FROM workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv
+        WHERE fl_valido = true
+        GROUP BY 1
+    )
+    SELECT o.particao_tabela_origem
+    FROM particoes_origem o
+    LEFT JOIN particoes_mv m
+        ON o.particao_tabela_origem = m.particao_tabela_origem
+    WHERE m.particao_tabela_origem IS NULL
+       OR o.data_max_atualizacao > m.data_ultima_execucao
+);
+```
+
+## 4.2 Inserir a nova versão válida — boletos
+
+```sql
+INSERT INTO workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv (
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+    boleto,
+    dt_ref_yyyymmdd,
+    mes_ref_yyyymm,
+    vl_pago,
+    vl_desconto_boleto,
+    flag_cancelado,
+    particao_tabela_origem,
+    data_particao_execucao,
+    fl_valido,
+    dt_ingestao_modelo,
+    id_execucao
+)
+WITH particoes_origem AS (
+    SELECT
+        cast(dt_ref as varchar) AS particao_tabela_origem,
+        max("$file_modified_time") AS data_max_atualizacao
+    FROM workspace_db.tabela_bronze_fonte_sap_boletos
+    GROUP BY 1
+),
+
+particoes_mv AS (
+    SELECT
+        particao_tabela_origem,
+        max(data_particao_execucao) AS data_ultima_execucao
+    FROM workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv
+    WHERE fl_valido = true
+    GROUP BY 1
+),
+
+particoes_candidatas AS (
+    SELECT o.particao_tabela_origem
+    FROM particoes_origem o
+    LEFT JOIN particoes_mv m
+        ON o.particao_tabela_origem = m.particao_tabela_origem
+    WHERE m.particao_tabela_origem IS NULL
+       OR o.data_max_atualizacao > m.data_ultima_execucao
+),
+
+base_deduplicada AS (
+    SELECT
+        cast(dt_ref as varchar) AS particao_tabela_origem,
+        contrato,
+        produto,
+        cnpj_raiz,
+        escritorio,
+        boleto,
+        dt_ref AS dt_ref_yyyymmdd,
+        cast(substr(cast(dt_ref as varchar), 1, 6) as integer) AS mes_ref_yyyymm,
+        try_cast(vl_pago as decimal(18,2)) AS vl_pago,
+        try_cast(vl_desconto_boleto as decimal(18,2)) AS vl_desconto_boleto,
+        coalesce(flag_cancelado, 0) AS flag_cancelado,
+        row_number() over (
+            partition by contrato, produto, boleto, dt_ref
+            order by "$file_modified_time" desc
+        ) AS rn
+    FROM workspace_db.tabela_bronze_fonte_sap_boletos
+)
+SELECT
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+    boleto,
+    dt_ref_yyyymmdd,
+    mes_ref_yyyymm,
+    vl_pago,
+    vl_desconto_boleto,
+    flag_cancelado,
+    particao_tabela_origem,
+    current_timestamp AS data_particao_execucao,
+    true AS fl_valido,
+    current_timestamp AS dt_ingestao_modelo,
+    '{{ID_EXECUCAO}}' AS id_execucao
+FROM base_deduplicada b
+INNER JOIN particoes_candidatas p
+    ON b.particao_tabela_origem = p.particao_tabela_origem
+WHERE rn = 1;
+```
+
+## 4.3 Padrão para as outras MVs falsas
+
+A lógica é a mesma. Só mudam:
+
+- tabela origem
+- partição origem
+- colunas do insert
+- regra de deduplicação mínima
+
+---
+
+# 5. 🔵 Views silver padronizado lendo a MV falsa válida
+
+## 5.1 Boletos
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_boletos AS
+SELECT
+    particao_tabela_origem AS p_particao_tabela_origem,
+    mes_ref_yyyymm,
+    dt_ref_yyyymmdd,
+    cast(date_parse(cast(dt_ref_yyyymmdd as varchar), '%Y%m%d') as date) AS dt_ref_date,
+    cast(date_parse(cast(dt_ref_yyyymmdd as varchar), '%Y%m%d') as timestamp) AS ts_ref,
+
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+
+    boleto,
+    vl_pago,
+    vl_desconto_boleto,
+    coalesce(flag_cancelado, 0) AS flag_cancelado,
+
+    'BOLETO' AS origem_pagamento,
+    cast(null as varchar) AS tp_acordo,
+
+    current_timestamp AS dt_ingestao_modelo,
+    id_execucao,
+
+    md5(
+        concat(
+            coalesce(cast(contrato as varchar), ''),
+            '|', coalesce(cast(produto as varchar), ''),
+            '|', coalesce(cast(dt_ref_yyyymmdd as varchar), '')
+        )
+    ) AS hash_chave_negocio,
+
+    md5(
+        concat(
+            coalesce(cast(boleto as varchar), ''),
+            '|', coalesce(cast(vl_pago as varchar), ''),
+            '|', coalesce(cast(vl_desconto_boleto as varchar), ''),
+            '|', coalesce(cast(flag_cancelado as varchar), '')
+        )
+    ) AS hash_atributos
+FROM workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv
+WHERE fl_valido = true;
+```
+
+## 5.2 Débito em conta
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_debito_conta AS
+SELECT
+    particao_tabela_origem AS p_particao_tabela_origem,
+    mes_ref_yyyymm,
+    dt_ref_yyyymmdd,
+    cast(date_parse(cast(dt_ref_yyyymmdd as varchar), '%Y%m%d') as date) AS dt_ref_date,
+    cast(date_parse(cast(dt_ref_yyyymmdd as varchar), '%Y%m%d') as timestamp) AS ts_ref,
+
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+
+    cast(null as varchar) AS boleto,
+    vl_pago,
+    cast(null as decimal(18,2)) AS vl_desconto_boleto,
+
+    'DEBITO_CONTA' AS origem_pagamento,
+    cast(null as varchar) AS tp_acordo,
+
+    current_timestamp AS dt_ingestao_modelo,
+    id_execucao
+FROM workspace_db.iceberg_bronze_fonte_cobranca_debito_conta_mv
+WHERE fl_valido = true;
+```
+
+## 5.3 Fluxo apartado
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_fluxo_apartado AS
+SELECT
+    particao_tabela_origem AS p_particao_tabela_origem,
+    mes_ref_yyyymm,
+    dt_ref_yyyymmdd,
+    cast(date_parse(cast(dt_ref_yyyymmdd as varchar), '%Y%m%d') as date) AS dt_ref_date,
+    cast(date_parse(cast(dt_ref_yyyymmdd as varchar), '%Y%m%d') as timestamp) AS ts_ref,
+
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+
+    cast(null as varchar) AS boleto,
+    vl_pago,
+    cast(null as decimal(18,2)) AS vl_desconto_boleto,
+
+    'BACKOFFICE' AS origem_pagamento,
+    tp_acordo,
+
+    current_timestamp AS dt_ingestao_modelo,
+    id_execucao
+FROM workspace_db.iceberg_bronze_fonte_cobranca_fluxo_apartado_mv
+WHERE fl_valido = true;
+```
+
+## 5.4 Carteira vigor
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_carteira_vigor AS
+SELECT
+    particao_tabela_origem AS p_particao_tabela_origem,
+    anomes,
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+    current_timestamp AS dt_ingestao_modelo,
+    id_execucao
+FROM workspace_db.iceberg_bronze_fonte_cobranca_carteira_vigor_mv
+WHERE fl_valido = true;
+```
+
+---
+
+# 6. 🟢 Silver integrado — pagamentos consolidados
+
+> Esta view consolida pagamentos a partir das fontes padronizadas, resolve precedência entre origens e filtra a carteira elegível.
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados AS
+WITH carteira_vigor AS (
+    SELECT
+        anomes,
+        contrato,
+        produto,
+        cnpj_raiz,
+        escritorio
+    FROM workspace_db.view_silver_padronizado_cobranca_carteira_vigor
+),
+
+colchao AS (
+    SELECT
+        anomes,
+        contrato,
+        produto
+    FROM workspace_db.view_silver_padronizado_cobranca_colchao
+),
+
+vijud AS (
+    SELECT
+        anomes,
+        contrato,
+        produto
+    FROM workspace_db.view_silver_padronizado_juridico_vijud_inicio_mes
+),
+
+carteira_elegivel AS (
+    SELECT
+        v.anomes,
+        v.contrato,
+        v.produto,
+        v.cnpj_raiz,
+        v.escritorio
+    FROM carteira_vigor v
+    LEFT JOIN colchao c
+        ON v.anomes = c.anomes
+       AND v.contrato = c.contrato
+       AND v.produto = c.produto
+    LEFT JOIN vijud j
+        ON v.anomes = j.anomes
+       AND v.contrato = j.contrato
+       AND v.produto = j.produto
+    WHERE c.contrato IS NULL
+      AND j.contrato IS NULL
+),
+
+pagamentos_union AS (
+    SELECT
+        b.mes_ref_yyyymm,
+        b.dt_ref_yyyymmdd,
+        b.dt_ref_date,
+        b.ts_ref,
+        b.contrato,
+        b.produto,
+        b.cnpj_raiz,
+        b.escritorio,
+        b.boleto,
+        b.vl_pago,
+        b.vl_desconto_boleto,
+        b.origem_pagamento,
+        b.tp_acordo,
+        1 AS prioridade_origem
+    FROM workspace_db.view_silver_padronizado_cobranca_boletos b
+    WHERE coalesce(b.flag_cancelado, 0) = 0
+
+    UNION ALL
+
+    SELECT
+        d.mes_ref_yyyymm,
+        d.dt_ref_yyyymmdd,
+        d.dt_ref_date,
+        d.ts_ref,
+        d.contrato,
+        d.produto,
+        d.cnpj_raiz,
+        d.escritorio,
+        d.boleto,
+        d.vl_pago,
+        d.vl_desconto_boleto,
+        d.origem_pagamento,
+        d.tp_acordo,
+        2 AS prioridade_origem
+    FROM workspace_db.view_silver_padronizado_cobranca_debito_conta d
+
+    UNION ALL
+
+    SELECT
+        f.mes_ref_yyyymm,
+        f.dt_ref_yyyymmdd,
+        f.dt_ref_date,
+        f.ts_ref,
+        f.contrato,
+        f.produto,
+        f.cnpj_raiz,
+        f.escritorio,
+        f.boleto,
+        f.vl_pago,
+        f.vl_desconto_boleto,
+        f.origem_pagamento,
+        f.tp_acordo,
+        3 AS prioridade_origem
+    FROM workspace_db.view_silver_padronizado_cobranca_fluxo_apartado f
+),
+
+pagamentos_dedup AS (
+    SELECT *
+    FROM (
+        SELECT
+            p.*,
+            row_number() over (
+                partition by contrato, produto, dt_ref_yyyymmdd, vl_pago
+                order by prioridade_origem
+            ) AS rn
+        FROM pagamentos_union p
+    ) x
+    WHERE rn = 1
+),
+
+pn AS (
+    SELECT
+        contrato,
+        produto,
+        dt_ref_yyyymmdd,
+        tp_acordo,
+        perc_desconto_final
+    FROM workspace_db.view_silver_padronizado_cobranca_proposta_negocio
+)
+
+SELECT
+    p.mes_ref_yyyymm,
+    p.dt_ref_yyyymmdd,
+    p.dt_ref_date,
+    p.ts_ref,
+
+    p.contrato,
+    p.produto,
+    p.cnpj_raiz,
+    coalesce(e.escritorio, p.escritorio) AS escritorio,
+    p.boleto,
+
+    p.origem_pagamento,
+    coalesce(p.tp_acordo, pn.tp_acordo) AS tp_acordo,
+    p.vl_pago,
+    p.vl_desconto_boleto,
+    pn.perc_desconto_final,
+
+    md5(
+        concat(
+            coalesce(cast(p.contrato as varchar), ''),
+            '|', coalesce(cast(p.produto as varchar), ''),
+            '|', coalesce(cast(p.dt_ref_yyyymmdd as varchar), ''),
+            '|', coalesce(cast(p.origem_pagamento as varchar), '')
+        )
+    ) AS hash_chave_pagadoria
+FROM pagamentos_dedup p
+INNER JOIN carteira_elegivel e
+    ON p.mes_ref_yyyymm = e.anomes
+   AND p.contrato = e.contrato
+   AND p.produto = e.produto
+LEFT JOIN pn
+    ON p.contrato = pn.contrato
+   AND p.produto = pn.produto
+   AND p.dt_ref_yyyymmdd = pn.dt_ref_yyyymmdd;
+```
+
+---
+
+# 7. 🟡 Gold — fato pagadoria
+
+## 7.1 DDL
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_pagadoria (
+    mes_ref_yyyymm             integer,
+    dt_ref_yyyymmdd            integer,
+    dt_ref_date                date,
+    ts_ref                     timestamp,
+
+    contrato                   varchar,
+    produto                    varchar,
+    cnpj_raiz                  varchar,
+    escritorio                 varchar,
+    boleto                     varchar,
+    origem_pagamento           varchar,
+    tp_acordo                  varchar,
+
+    vl_pago                    decimal(18,2),
+    perc_desconto_final        decimal(18,4),
+    vl_caixa                   decimal(18,2),
+    vl_regul                   decimal(18,2),
+
+    hash_chave_pagadoria       varchar,
+    versao_regra               varchar,
+    dt_carga                   timestamp,
+    id_execucao                varchar
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    write_compression = 'SNAPPY',
+    partitioning = ARRAY['mes_ref_yyyymm', 'dt_ref_date'],
+    location = 's3://SEU-BUCKET-LAKEHOUSE/workspace_db/iceberg_gold_fato_pagadoria/'
+);
+```
+
+## 7.2 MERGE incremental
+
+```sql
+MERGE INTO workspace_db.iceberg_gold_fato_pagadoria t
+USING (
+    SELECT
+        mes_ref_yyyymm,
+        dt_ref_yyyymmdd,
+        dt_ref_date,
+        ts_ref,
+        contrato,
+        produto,
+        cnpj_raiz,
+        escritorio,
+        boleto,
+        origem_pagamento,
+        tp_acordo,
+        vl_pago,
+        perc_desconto_final,
+
+        CASE
+            WHEN coalesce(tp_acordo, 'A_VISTA') = 'A_VISTA' THEN vl_pago
+            ELSE cast(0 as decimal(18,2))
+        END AS vl_caixa,
+
+        CASE
+            WHEN coalesce(tp_acordo, 'A_VISTA') = 'A_VISTA' THEN vl_pago
+            ELSE vl_pago
+        END AS vl_regul,
+
+        hash_chave_pagadoria,
+        'v1_pagadoria_mv_falsa' AS versao_regra,
+        current_timestamp AS dt_carga,
+        '{{ID_EXECUCAO}}' AS id_execucao
+    FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+    WHERE mes_ref_yyyymm >= cast(date_format(date_add('day', -7, current_date), '%Y%m') as integer)
+) s
+ON t.contrato = s.contrato
+AND t.produto = s.produto
+AND t.dt_ref_yyyymmdd = s.dt_ref_yyyymmdd
+AND t.origem_pagamento = s.origem_pagamento
+WHEN MATCHED THEN UPDATE SET
+    mes_ref_yyyymm       = s.mes_ref_yyyymm,
+    dt_ref_date          = s.dt_ref_date,
+    ts_ref               = s.ts_ref,
+    cnpj_raiz            = s.cnpj_raiz,
+    escritorio           = s.escritorio,
+    boleto               = s.boleto,
+    tp_acordo            = s.tp_acordo,
+    vl_pago              = s.vl_pago,
+    perc_desconto_final  = s.perc_desconto_final,
+    vl_caixa             = s.vl_caixa,
+    vl_regul             = s.vl_regul,
+    hash_chave_pagadoria = s.hash_chave_pagadoria,
+    versao_regra         = s.versao_regra,
+    dt_carga             = s.dt_carga,
+    id_execucao          = s.id_execucao
+WHEN NOT MATCHED THEN INSERT (
+    mes_ref_yyyymm,
+    dt_ref_yyyymmdd,
+    dt_ref_date,
+    ts_ref,
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+    boleto,
+    origem_pagamento,
+    tp_acordo,
+    vl_pago,
+    perc_desconto_final,
+    vl_caixa,
+    vl_regul,
+    hash_chave_pagadoria,
+    versao_regra,
+    dt_carga,
+    id_execucao
+)
+VALUES (
+    s.mes_ref_yyyymm,
+    s.dt_ref_yyyymmdd,
+    s.dt_ref_date,
+    s.ts_ref,
+    s.contrato,
+    s.produto,
+    s.cnpj_raiz,
+    s.escritorio,
+    s.boleto,
+    s.origem_pagamento,
+    s.tp_acordo,
+    s.vl_pago,
+    s.perc_desconto_final,
+    s.vl_caixa,
+    s.vl_regul,
+    s.hash_chave_pagadoria,
+    s.versao_regra,
+    s.dt_carga,
+    s.id_execucao
+);
+```
+
+---
+
+# 8. ⚙️ Orquestração com Step Functions
+
+## Desenho lógico
+
+```text
+EventBridge
+   ↓
+Step Functions
+   ↓
+Precheck leve
+   ↓
+Detectar partições alteradas
+   ↓
+Choice: tem partição?
+   ↓
+Invalidar MV falsa
+   ↓
+Inserir nova versão válida
+   ↓
+Atualizar silver/gold dependentes
+   ↓
+Rodar testes
+   ↓
+Fim
+```
+
+## Por que isso existe
+
+Porque Step Functions deve orquestrar e Athena deve executar o SQL.
+
+Em português simples:
+
+- o **Athena** faz o trabalho de dados
+- o **Step Functions** decide a ordem e trata sucesso/falha
+- o **EventBridge** agenda quando isso deve começar
+
+---
+
+# 9. 🧾 State machine completa — exemplo funcional
+
+> Esta versão está focada em uma MV falsa principal: boletos. O padrão é reaproveitável para as demais.
+
+```json
+{
+  "Comment": "MV falsa de boletos + refresh gold pagadoria",
+  "StartAt": "DefinirContexto",
+  "States": {
+    "DefinirContexto": {
+      "Type": "Pass",
+      "Parameters": {
+        "athena": {
+          "workgroup.$": "$.workgroup",
+          "output_location.$": "$.output_location",
+          "database": "workspace_db"
+        },
+        "id_execucao.$": "$$.Execution.Id",
+        "dt_referencia.$": "$.dt_referencia"
+      },
+      "ResultPath": "$",
+      "Next": "PrecheckBoletos"
+    },
+    "PrecheckBoletos": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "WorkGroup.$": "$.athena.workgroup",
+        "QueryExecutionContext": {
+          "Database": "workspace_db"
+        },
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.athena.output_location"
+        },
+        "QueryString": "SELECT count(*) AS qtd_particoes_candidatas FROM ( WITH particoes_origem AS ( SELECT cast(dt_ref as varchar) AS particao_tabela_origem, max(\"$file_modified_time\") AS data_max_atualizacao FROM workspace_db.tabela_bronze_fonte_sap_boletos GROUP BY 1 ), particoes_mv AS ( SELECT particao_tabela_origem, max(data_particao_execucao) AS data_ultima_execucao FROM workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv WHERE fl_valido = true GROUP BY 1 ) SELECT 1 FROM particoes_origem o LEFT JOIN particoes_mv m ON o.particao_tabela_origem = m.particao_tabela_origem WHERE m.particao_tabela_origem IS NULL OR o.data_max_atualizacao > m.data_ultima_execucao )"
+      },
+      "ResultPath": "$.precheck_boletos",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "FalhaTecnica"
+        }
+      ],
+      "Next": "LerPrecheckBoletos"
+    },
+    "LerPrecheckBoletos": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:getQueryResults",
+      "Parameters": {
+        "QueryExecutionId.$": "$.precheck_boletos.QueryExecution.QueryExecutionId"
+      },
+      "ResultPath": "$.precheck_lido",
+      "Next": "TemParticaoCandidata"
+    },
+    "TemParticaoCandidata": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.precheck_lido.ResultSet.Rows[1].Data[0].VarCharValue",
+          "StringEquals": "0",
+          "Next": "SemMudanca"
+        }
+      ],
+      "Default": "InvalidarBoletos"
+    },
+    "InvalidarBoletos": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "WorkGroup.$": "$.athena.workgroup",
+        "QueryExecutionContext": {
+          "Database": "workspace_db"
+        },
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.athena.output_location"
+        },
+        "QueryString": "UPDATE workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv SET fl_valido = false, data_particao_execucao = current_timestamp WHERE fl_valido = true AND particao_tabela_origem IN ( WITH particoes_origem AS ( SELECT cast(dt_ref as varchar) AS particao_tabela_origem, max(\"$file_modified_time\") AS data_max_atualizacao FROM workspace_db.tabela_bronze_fonte_sap_boletos GROUP BY 1 ), particoes_mv AS ( SELECT particao_tabela_origem, max(data_particao_execucao) AS data_ultima_execucao FROM workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv WHERE fl_valido = true GROUP BY 1 ) SELECT o.particao_tabela_origem FROM particoes_origem o LEFT JOIN particoes_mv m ON o.particao_tabela_origem = m.particao_tabela_origem WHERE m.particao_tabela_origem IS NULL OR o.data_max_atualizacao > m.data_ultima_execucao )"
+      },
+      "ResultPath": "$.invalidacao_boletos",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "FalhaTecnica"
+        }
+      ],
+      "Next": "InserirBoletos"
+    },
+    "InserirBoletos": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "WorkGroup.$": "$.athena.workgroup",
+        "QueryExecutionContext": {
+          "Database": "workspace_db"
+        },
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.athena.output_location"
+        },
+        "QueryString": "INSERT INTO workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv ( contrato, produto, cnpj_raiz, escritorio, boleto, dt_ref_yyyymmdd, mes_ref_yyyymm, vl_pago, vl_desconto_boleto, flag_cancelado, particao_tabela_origem, data_particao_execucao, fl_valido, dt_ingestao_modelo, id_execucao ) WITH particoes_origem AS ( SELECT cast(dt_ref as varchar) AS particao_tabela_origem, max(\"$file_modified_time\") AS data_max_atualizacao FROM workspace_db.tabela_bronze_fonte_sap_boletos GROUP BY 1 ), particoes_mv AS ( SELECT particao_tabela_origem, max(data_particao_execucao) AS data_ultima_execucao FROM workspace_db.iceberg_bronze_fonte_cobranca_boletos_mv WHERE fl_valido = true GROUP BY 1 ), particoes_candidatas AS ( SELECT o.particao_tabela_origem FROM particoes_origem o LEFT JOIN particoes_mv m ON o.particao_tabela_origem = m.particao_tabela_origem WHERE m.particao_tabela_origem IS NULL OR o.data_max_atualizacao > m.data_ultima_execucao ), base_deduplicada AS ( SELECT cast(dt_ref as varchar) AS particao_tabela_origem, contrato, produto, cnpj_raiz, escritorio, boleto, dt_ref AS dt_ref_yyyymmdd, cast(substr(cast(dt_ref as varchar), 1, 6) as integer) AS mes_ref_yyyymm, try_cast(vl_pago as decimal(18,2)) AS vl_pago, try_cast(vl_desconto_boleto as decimal(18,2)) AS vl_desconto_boleto, coalesce(flag_cancelado, 0) AS flag_cancelado, row_number() over ( partition by contrato, produto, boleto, dt_ref order by \"$file_modified_time\" desc ) AS rn FROM workspace_db.tabela_bronze_fonte_sap_boletos ) SELECT contrato, produto, cnpj_raiz, escritorio, boleto, dt_ref_yyyymmdd, mes_ref_yyyymm, vl_pago, vl_desconto_boleto, flag_cancelado, particao_tabela_origem, current_timestamp AS data_particao_execucao, true AS fl_valido, current_timestamp AS dt_ingestao_modelo, '$$.Execution.Id' AS id_execucao FROM base_deduplicada b INNER JOIN particoes_candidatas p ON b.particao_tabela_origem = p.particao_tabela_origem WHERE rn = 1"
+      },
+      "ResultPath": "$.insert_boletos",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "FalhaTecnica"
+        }
+      ],
+      "Next": "AtualizarGoldPagadoria"
+    },
+    "AtualizarGoldPagadoria": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "WorkGroup.$": "$.athena.workgroup",
+        "QueryExecutionContext": {
+          "Database": "workspace_db"
+        },
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.athena.output_location"
+        },
+        "QueryString": "MERGE INTO workspace_db.iceberg_gold_fato_pagadoria t USING ( SELECT mes_ref_yyyymm, dt_ref_yyyymmdd, dt_ref_date, ts_ref, contrato, produto, cnpj_raiz, escritorio, boleto, origem_pagamento, tp_acordo, vl_pago, perc_desconto_final, CASE WHEN coalesce(tp_acordo, 'A_VISTA') = 'A_VISTA' THEN vl_pago ELSE cast(0 as decimal(18,2)) END AS vl_caixa, CASE WHEN coalesce(tp_acordo, 'A_VISTA') = 'A_VISTA' THEN vl_pago ELSE vl_pago END AS vl_regul, hash_chave_pagadoria, 'v1_pagadoria_mv_falsa' AS versao_regra, current_timestamp AS dt_carga, '$$.Execution.Id' AS id_execucao FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados WHERE mes_ref_yyyymm >= cast(date_format(date_add('day', -7, current_date), '%Y%m') as integer) ) s ON t.contrato = s.contrato AND t.produto = s.produto AND t.dt_ref_yyyymmdd = s.dt_ref_yyyymmdd AND t.origem_pagamento = s.origem_pagamento WHEN MATCHED THEN UPDATE SET mes_ref_yyyymm = s.mes_ref_yyyymm, dt_ref_date = s.dt_ref_date, ts_ref = s.ts_ref, cnpj_raiz = s.cnpj_raiz, escritorio = s.escritorio, boleto = s.boleto, tp_acordo = s.tp_acordo, vl_pago = s.vl_pago, perc_desconto_final = s.perc_desconto_final, vl_caixa = s.vl_caixa, vl_regul = s.vl_regul, hash_chave_pagadoria = s.hash_chave_pagadoria, versao_regra = s.versao_regra, dt_carga = s.dt_carga, id_execucao = s.id_execucao WHEN NOT MATCHED THEN INSERT ( mes_ref_yyyymm, dt_ref_yyyymmdd, dt_ref_date, ts_ref, contrato, produto, cnpj_raiz, escritorio, boleto, origem_pagamento, tp_acordo, vl_pago, perc_desconto_final, vl_caixa, vl_regul, hash_chave_pagadoria, versao_regra, dt_carga, id_execucao ) VALUES ( s.mes_ref_yyyymm, s.dt_ref_yyyymmdd, s.dt_ref_date, s.ts_ref, s.contrato, s.produto, s.cnpj_raiz, s.escritorio, s.boleto, s.origem_pagamento, s.tp_acordo, s.vl_pago, s.perc_desconto_final, s.vl_caixa, s.vl_regul, s.hash_chave_pagadoria, s.versao_regra, s.dt_carga, s.id_execucao )"
+      },
+      "ResultPath": "$.gold_pagadoria",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "FalhaTecnica"
+        }
+      ],
+      "Next": "TesteDuplicidadeGold"
+    },
+    "TesteDuplicidadeGold": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "WorkGroup.$": "$.athena.workgroup",
+        "QueryExecutionContext": {
+          "Database": "workspace_db"
+        },
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.athena.output_location"
+        },
+        "QueryString": "SELECT count(*) AS qtd_erros FROM ( SELECT mes_ref_yyyymm, contrato, produto, dt_ref_yyyymmdd, origem_pagamento FROM workspace_db.iceberg_gold_fato_pagadoria GROUP BY 1,2,3,4,5 HAVING count(*) > 1 )"
+      },
+      "ResultPath": "$.teste_duplicidade",
+      "Next": "LerTesteDuplicidade"
+    },
+    "LerTesteDuplicidade": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:getQueryResults",
+      "Parameters": {
+        "QueryExecutionId.$": "$.teste_duplicidade.QueryExecution.QueryExecutionId"
+      },
+      "ResultPath": "$.teste_duplicidade_lido",
+      "Next": "TesteAprovado"
+    },
+    "TesteAprovado": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.teste_duplicidade_lido.ResultSet.Rows[1].Data[0].VarCharValue",
+          "StringEquals": "0",
+          "Next": "Sucesso"
+        }
+      ],
+      "Default": "FalhaNegocio"
+    },
+    "SemMudanca": {
+      "Type": "Succeed"
+    },
+    "Sucesso": {
+      "Type": "Succeed"
+    },
+    "FalhaNegocio": {
+      "Type": "Fail",
+      "Error": "FalhaRegraNegocio",
+      "Cause": "Teste de duplicidade falhou na gold pagadoria"
+    },
+    "FalhaTecnica": {
+      "Type": "Fail",
+      "Error": "FalhaTecnicaPipeline",
+      "Cause": "Erro técnico ao executar SQL no Athena"
+    }
+  }
+}
+```
+
+---
+
+# 10. ⏰ Agendamento com EventBridge
+
+## Regra simples
+
+Agende a state machine para rodar, por exemplo, a cada 15 minutos:
+
+```text
+cron(0/15 8-22 ? * MON-FRI *)
+```
+
+Exemplo de leitura:
+
+- de 15 em 15 minutos
+- das 8h às 22h
+- segunda a sexta
+
+## Entrada sugerida da execução
+
+```json
+{
+  "workgroup": "SEU_WORKGROUP_ATHENA",
+  "output_location": "s3://SEU-BUCKET-ATHENA-RESULTS/",
+  "dt_referencia": "2026-04-21"
+}
+```
+
+---
+
+# 11. ✅ Como executar na prática
+
+## Ordem recomendada de implantação
+
+### Etapa 1 — criar as tabelas Iceberg
+
+Criar primeiro:
+
+- `iceberg_bronze_fonte_cobranca_boletos_mv`
+- `iceberg_bronze_fonte_cobranca_debito_conta_mv`
+- `iceberg_bronze_fonte_cobranca_fluxo_apartado_mv`
+- `iceberg_bronze_fonte_cobranca_carteira_vigor_mv`
+- `iceberg_gold_fato_pagadoria`
+
+### Etapa 2 — criar as views silver
+
+Criar:
+
+- `view_silver_padronizado_cobranca_boletos`
+- `view_silver_padronizado_cobranca_debito_conta`
+- `view_silver_padronizado_cobranca_fluxo_apartado`
+- `view_silver_padronizado_cobranca_carteira_vigor`
+- `view_silver_integrado_cobranca_pagamentos_consolidados`
+
+### Etapa 3 — rodar uma carga manual de bootstrap
+
+Antes de automatizar, faça uma carga manual:
+
+1. rode o `INSERT` inicial da MV falsa
+2. valide a contagem por partição
+3. valide se `fl_valido = true` está coerente
+4. valide a silver padronizado
+5. valide a silver integrado
+6. rode o `MERGE` da gold
+7. teste se os números fazem sentido
+
+### Etapa 4 — subir a state machine
+
+Depois que o fluxo manual funcionar:
+
+1. criar a state machine
+2. apontar para o workgroup correto
+3. apontar para o bucket de resultados
+4. rodar uma execução manual
+5. verificar cada estado
+6. só depois ativar o EventBridge
+
+---
+
+# 12. 🧪 Testes mínimos recomendados
+
+## 12.1 Duplicidade da gold
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT
+        mes_ref_yyyymm,
+        contrato,
+        produto,
+        dt_ref_yyyymmdd,
+        origem_pagamento
+    FROM workspace_db.iceberg_gold_fato_pagadoria
+    GROUP BY 1,2,3,4,5
+    HAVING count(*) > 1
+);
+```
+
+## 12.2 Null em chave crítica
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_pagadoria
+WHERE contrato IS NULL
+   OR produto IS NULL
+   OR dt_ref_yyyymmdd IS NULL;
+```
+
+## 12.3 Valor negativo indevido
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_pagadoria
+WHERE vl_pago < 0;
+```
+
+## 12.4 Tabela vazia indevida
+
+```sql
+SELECT
+    CASE WHEN count(*) = 0 THEN 1 ELSE 0 END AS qtd_erros
+FROM workspace_db.iceberg_gold_fato_pagadoria
+WHERE mes_ref_yyyymm = cast(date_format(current_date, '%Y%m') as integer);
+```
+
+---
+
+# 13. ⚠️ Riscos e cuidados
+
+## 13.1 Erro clássico
+
+Colocar regra de negócio final dentro da bronze MV falsa.
+
+### Efeito
+
+A bronze vira uma silver escondida.
+
+### Consequência
+
+Ninguém mais sabe onde está a verdade.
+
+---
+
+## 13.2 Erro clássico
+
+Filtrar a silver pela data derivada em vez da partição física.
+
+### Efeito
+
+Scan maior do que o necessário.
+
+### Regra
+
+Sempre que possível, filtre também a partição física ou a coluna que preserva o pruning.
+
+---
+
+## 13.3 Erro clássico
+
+Tentar resolver tudo com um único MERGE gigante.
+
+### Efeito
+
+Mais custo, mais dificuldade de debug, menos previsibilidade.
+
+### Preferência desta nota
+
+- precheck leve
+- detecção de partições
+- invalidar
+- inserir
+- depois atualizar downstream
+
+---
+
+# 14. 💡 Leitura final para leigos
+
+## O que esse sistema faz
+
+Ele observa se a origem mudou.
+
+Se mudou:
+
+- marca como antiga a versão anterior daquela partição
+- grava a versão nova
+- recalcula a parte oficial da pagadoria
+- testa se o resultado ficou coerente
+
+Se não mudou:
+
+- encerra rápido
+- quase não gasta custo
+
+## O ganho real
+
+Você deixa de reprocessar tudo toda hora.
+
+Em vez disso, reprocessa só o pedaço que mudou.
+
+---
+
+# 15. 🚀 Recomendação prática de implantação
+
+## Comece por 3 fontes
+
+Se a meta é ganhar velocidade sem aumentar caos, comece por:
+
+1. boletos
+2. débito em conta
+3. fluxo apartado
+
+## Depois expanda
+
+Na segunda onda, incluir:
+
+4. carteira vigor
+5. colchão
+6. vijud início do mês
+7. proposta de negócio
+
+## Motivo
+
+Essa abordagem reduz risco, facilita debug e permite provar valor cedo.
+
+---
+
+# 16. 📌 Resumo executivo
+
+```text
+A MV falsa na bronze não substitui silver nem gold.
+Ela reduz custo e estabiliza a leitura das fontes.
+Silver organiza e integra.
+Gold calcula a verdade oficial.
+Step Functions orquestra.
+Athena executa.
+EventBridge agenda.
+```
+
+---
+
+# 17. Próximos passos sugeridos
+
+- adaptar os nomes reais das tabelas bronze
+- gerar a versão multi-fonte da state machine
+- adicionar tabela de controle de testes
+- adicionar agregado mensal de pagadoria
+- adicionar mart final de consumo para QuickSight
