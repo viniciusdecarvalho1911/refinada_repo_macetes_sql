@@ -98,8 +98,12 @@ INSERE um novo registro válido
 # 💻 SQL base (MERGE SCD2)
 
 ```sql
-MERGE INTO mv_db.mv_falsa t
-USING (
+
+UPDATE mv_db.mv_falsa
+SET
+    fl_valido = false
+WHERE fl_valido = true
+  AND particao_tabela_origem IN (
 
     WITH particoes_origem AS (
         SELECT
@@ -116,60 +120,63 @@ USING (
         FROM mv_db.mv_falsa
         WHERE fl_valido = true
         GROUP BY 1
-    ),
-
-    particoes_candidatas AS (
-        SELECT
-            o.particao_tabela_origem,
-            o.data_max_atualizacao,
-            coalesce(m.data_ultima_execucao, timestamp '1900-01-01') AS data_ultima_execucao
-        FROM particoes_origem o
-        LEFT JOIN particoes_mv m
-            ON o.particao_tabela_origem = m.particao_tabela_origem
-        WHERE o.data_max_atualizacao > coalesce(m.data_ultima_execucao, timestamp '1900-01-01')
-    ),
-
-    source AS (
-        SELECT
-            s.atributo1,
-            s.atributo2,
-            s.atributo3,
-            cast(s.particao_tabela_origem as varchar) AS particao_tabela_origem,
-            current_timestamp AS data_particao_execucao,
-            true AS fl_valido
-        FROM origem_db.tabela_origem s
-        INNER JOIN particoes_candidatas p
-            ON cast(s.particao_tabela_origem as varchar) = p.particao_tabela_origem
     )
 
-    SELECT * FROM source
+    SELECT
+        o.particao_tabela_origem
+    FROM particoes_origem o
+    LEFT JOIN particoes_mv m
+        ON o.particao_tabela_origem = m.particao_tabela_origem
+    WHERE o.data_max_atualizacao > coalesce(m.data_ultima_execucao, timestamp '1900-01-01')
+);
 
-) s
 
-ON t.particao_tabela_origem = s.particao_tabela_origem
-AND t.fl_valido = true
+INSERT INTO mv_db.mv_falsa (
+    atributo1,
+    atributo2,
+    atributo3,
+    particao_tabela_origem,
+    data_particao_execucao,
+    fl_valido
+)
+WITH particoes_origem AS (
+    SELECT
+        cast(particao_tabela_origem as varchar) AS particao_tabela_origem,
+        max("$file_modified_time") AS data_max_atualizacao
+    FROM origem_db.tabela_origem
+    GROUP BY 1
+),
 
-WHEN MATCHED THEN
-    UPDATE SET
-        fl_valido = false
-
-WHEN NOT MATCHED THEN
-    INSERT (
-        atributo1,
-        atributo2,
-        atributo3,
+particoes_mv AS (
+    SELECT
         particao_tabela_origem,
-        data_particao_execucao,
-        fl_valido
-    )
-    VALUES (
-        s.atributo1,
-        s.atributo2,
-        s.atributo3,
-        s.particao_tabela_origem,
-        s.data_particao_execucao,
-        s.fl_valido
-    );
+        max(data_particao_execucao) AS data_ultima_execucao
+    FROM mv_db.mv_falsa
+    WHERE fl_valido = true
+    GROUP BY 1
+),
+
+particoes_candidatas AS (
+    SELECT
+        o.particao_tabela_origem
+    FROM particoes_origem o
+    LEFT JOIN particoes_mv m
+        ON o.particao_tabela_origem = m.particao_tabela_origem
+    WHERE o.data_max_atualizacao > coalesce(m.data_ultima_execucao, timestamp '1900-01-01')
+)
+
+SELECT
+    s.atributo1,
+    s.atributo2,
+    s.atributo3,
+    cast(s.particao_tabela_origem as varchar) AS particao_tabela_origem,
+    current_timestamp AS data_particao_execucao,
+    true AS fl_valido
+FROM origem_db.tabela_origem s
+INNER JOIN particoes_candidatas p
+    ON cast(s.particao_tabela_origem as varchar) = p.particao_tabela_origem;
+
+
 ```
 
 ---
