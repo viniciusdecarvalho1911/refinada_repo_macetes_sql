@@ -1,0 +1,689 @@
+
+## 🎯 Objetivo
+
+Definir um **contrato único de arquitetura e nomenclatura** que:
+
+- organiza o fluxo de dados
+    
+- padroniza nomes
+    
+- elimina ambiguidade
+    
+- garante reuso
+    
+- facilita lineage
+    
+- separa verdade vs consumo
+    
+
+---
+
+# 🧠 Princípio central
+
+A arquitetura combina:
+
+```text
+CAMADA (medallion)
++
+TIPO LÓGICO (analytics engineering)
++
+MATERIALIZAÇÃO (físico)
+```
+
+E segue a regra:
+
+```text
+<materializacao>_<camada>_<tipo_logico>_<dominio>_<entidade>[_<contexto>]
+```
+
+---
+
+# 🏗️ Arquitetura completa
+
+```text
+BRONZE
+  fontes cruas
+
+SILVER_PADRONIZADO
+  limpeza e padronização
+
+SILVER_INTEGRADO
+  resolução, deduplicação e integração
+
+GOLD_FATO
+  eventos e medidas oficiais
+
+GOLD_DIMENSAO
+  contexto oficial e SCD2
+
+GOLD_MART
+  consumo analítico e BI
+
+SEMANTICA
+  métricas e nomes oficiais
+
+REGRAS
+  prioridade, exceção, parâmetros
+
+CONTROLE
+  execução, auditoria, lineage
+
+TESTES
+  qualidade e contrato do dado
+
+QUARENTENA
+  registros rejeitados ou conflitantes
+
+SNAPSHOT
+  fotos históricas de referência
+
+SANDBOX
+  exploração e protótipo
+```
+
+---
+
+# 📌 Exemplos por camada
+
+## 🟤 BRONZE
+
+```text
+tabela_bronze_fonte_sap_boletos
+tabela_bronze_fonte_legado_debito_conta
+tabela_bronze_fonte_bd_pagamentos
+tabela_bronze_fonte_spec_pagamentos
+```
+
+Exemplo de conteúdo:
+
+```text
+contrato = "001234"
+produto = "A"
+cnpj = "00123456000199"
+vl_pago = "100.50" (string ainda)
+```
+
+👉 Sem regra de negócio, sem padronização
+
+---
+
+## 🔵 SILVER_PADRONIZADO
+
+```text
+view_silver_padronizado_pagadoria_boletos
+view_silver_padronizado_pagadoria_debito_conta
+```
+
+Exemplo:
+
+```sql
+SELECT
+  contrato AS contrato_raw,
+  try_cast(contrato AS bigint) AS cd_contrato,
+  upper(regexp_replace(cnpj, '[^0-9A-Z]', '')) AS cd_cnpj,
+  cast(vl_pago AS decimal(18,2)) AS vl_pago,
+  dt_ref AS p_dt_ref
+FROM tabela_bronze_fonte_sap_boletos
+```
+
+👉 Aqui nasce o **contrato técnico do dado**
+
+---
+
+## 🟢 SILVER_INTEGRADO
+
+```text
+view_silver_integrado_pagadoria_pagamentos_candidatos
+view_silver_integrado_pagadoria_pagamentos_resolvidos
+```
+
+Exemplo:
+
+```sql
+SELECT *
+FROM (
+  SELECT *,
+    row_number() over (
+      partition by cd_contrato, cd_produto, dt_pagamento
+      order by prioridade_origem
+    ) as rn
+  FROM pagamentos_union
+)
+WHERE rn = 1
+```
+
+👉 Resolve:
+
+- duplicidade
+    
+- conflito de origem
+    
+- fallback
+    
+
+---
+
+## 🟡 GOLD_FATO
+
+```text
+iceberg_gold_fato_pagadoria_pagamento
+```
+
+Exemplo:
+
+```sql
+SELECT
+  cd_contrato,
+  cd_produto,
+  cd_cnpj,
+  dt_pagamento,
+  vl_pago,
+  CASE 
+    WHEN tp_acordo = 'AVISTA' THEN vl_pago
+    ELSE 0
+  END AS vl_caixa
+FROM silver_integrado
+```
+
+👉 Representa evento oficial
+
+---
+
+## 🟡 GOLD_DIMENSAO
+
+```text
+iceberg_gold_dimensao_cliente_cnpj_scd2
+```
+
+Exemplo:
+
+```text
+cd_cnpj
+nm_empresa
+segmento
+risco_total
+dt_inicio_vigencia
+dt_fim_vigencia
+fl_vigente
+```
+
+👉 Representa contexto histórico
+
+---
+
+## 🟡 GOLD_MART
+
+```text
+view_gold_mart_pagadoria_quicksight
+```
+
+Exemplo:
+
+```sql
+SELECT
+  anomes,
+  escritorio,
+  SUM(vl_caixa) AS caixa,
+  SUM(vl_meta) AS meta,
+  SUM(vl_caixa)/SUM(vl_meta) AS atingimento
+FROM iceberg_gold_fato_pagadoria_pagamento
+GROUP BY 1,2
+```
+
+👉 Produto pronto para BI
+
+---
+
+## 🧠 SEMANTICA
+
+```text
+view_semantica_pagadoria
+```
+
+Exemplo:
+
+```sql
+SELECT
+  vl_pago AS caixa,
+  vl_regul,
+  vl_meta,
+  vl_regul / vl_meta AS atingimento
+FROM fato
+```
+
+👉 Evita lógica duplicada no BI
+
+---
+
+## ⚙️ REGRAS
+
+```text
+tabela_regra_pagadoria_prioridade_origem_pagamento
+```
+
+Exemplo:
+
+```text
+origem | prioridade
+BOLETO | 1
+DEBITO | 2
+BD     | 3
+SPEC   | 4
+```
+
+---
+
+## 📊 CONTROLE
+
+```text
+controle_tb_execucao_modelo
+controle_tb_resultado_teste
+```
+
+Exemplo:
+
+```text
+id_execucao | modelo | status | dt_inicio | dt_fim
+```
+
+---
+
+## 🧪 TESTES
+
+```text
+teste_gold_fato_pagadoria_pagamento__grain
+```
+
+Exemplo:
+
+```sql
+SELECT COUNT(*)
+FROM (
+  SELECT cd_contrato, cd_produto
+  FROM fato
+  GROUP BY 1,2
+  HAVING COUNT(*) > 1
+)
+```
+
+---
+
+## 🚨 QUARENTENA
+
+```text
+quarentena_conflito_cnpj
+```
+
+Exemplo:
+
+```text
+contrato | produto | cnpj_fonte1 | cnpj_fonte2
+```
+
+👉 Não entra no gold até resolver
+
+---
+
+## 📸 SNAPSHOT
+
+```text
+snapshot_dim_contrato_produto_cnpj_mes
+```
+
+Exemplo:
+
+```text
+anomes | contrato | produto | cnpj
+202501 | 123      | A       | 111
+```
+
+👉 Congela histórico
+
+---
+
+## 🧪 SANDBOX
+
+```text
+sandbox_debug_pagamentos
+```
+
+Exemplo:
+
+```sql
+SELECT *
+FROM silver_integrado
+WHERE cd_contrato = 123
+```
+
+👉 Debug e validação
+
+---
+
+# 🔥 Camadas auxiliares (críticas)
+
+## 🧪 SANDBOX
+
+Uso:
+
+- exploração
+    
+- debug
+    
+- validação
+    
+
+```text
+sandbox_pagadoria_simulacao
+sandbox_validacao_excel
+sandbox_debug_pagamentos
+```
+
+🚫 Nunca alimentar produção diretamente
+
+---
+
+## 🚨 QUARENTENA
+
+Uso:
+
+- erros críticos
+    
+- inconsistência entre fontes
+    
+
+```text
+quarentena_pagamentos_sem_contrato
+quarentena_cnpj_invalido
+quarentena_conflito_cnpj
+quarentena_pagamento_duplicado
+```
+
+---
+
+## 📊 GOLD_MART (produto analítico)
+
+Separado de fato/dimensão
+
+```text
+gold_mart_pagadoria_escritorio_mes
+gold_mart_pagadoria_cliente_mes
+gold_mart_pagadoria_produto_mes
+gold_mart_pagadoria_comissao
+gold_mart_pagadoria_quicksight
+```
+
+👉 Fato/dimensão = verdade  
+👉 Mart = consumo
+
+---
+
+## 🧠 SEMANTICA
+
+Camada de métricas oficiais
+
+```text
+view_semantica_pagadoria
+view_semantica_regularizacao
+view_semantica_quebra_share
+```
+
+Métricas:
+
+```text
+caixa
+regularizacao
+meta_regularizacao
+atingimento_regularizacao
+quebra
+meta_quebra
+ganho_share
+perda_share
+```
+
+---
+
+## 📸 SNAPSHOT
+
+Uso:
+
+- congelar estado do tempo
+    
+
+```text
+snapshot_carteira_inicio_mes
+snapshot_cliente_cnpj_mes
+snapshot_metas_mes
+snapshot_dim_contrato_produto_cnpj_mes
+```
+
+---
+
+# 🧩 Vocabulário oficial
+
+## Materialização
+
+```text
+view
+tabela
+iceberg
+```
+
+## Camadas
+
+```text
+bronze
+silver
+gold
+controle
+regra
+teste
+quarentena
+snapshot
+sandbox
+```
+
+## Tipos lógicos
+
+```text
+fonte
+padronizado
+integrado
+fato
+dimensao
+mart
+agregado
+resultado
+parametro
+excecao
+auditoria
+```
+
+---
+
+# 📐 Naming por camada
+
+## 🟤 Bronze
+
+```text
+tabela_bronze_fonte_<sistema>_<entidade>
+```
+
+---
+
+## 🔵 Silver padronizado
+
+```text
+view_silver_padronizado_<dominio>_<entidade>
+```
+
+---
+
+## 🟢 Silver integrado
+
+```text
+view_silver_integrado_<dominio>_<entidade_ou_regra>
+```
+
+---
+
+## 🟡 Gold fato
+
+```text
+iceberg_gold_fato_<dominio>_<processo>
+```
+
+---
+
+## 🟡 Gold dimensão
+
+```text
+iceberg_gold_dimensao_<dominio>_<entidade>[_scd2]
+```
+
+---
+
+## 🟡 Gold mart
+
+```text
+view_gold_mart_<dominio>_<produto>
+```
+
+---
+
+## ⚙️ Regras
+
+```text
+tabela_regra_<dominio>_<tipo>
+```
+
+---
+
+## 🧪 Testes
+
+```text
+teste_<camada>_<modelo>__<regra>
+```
+
+---
+
+## 📊 Controle
+
+```text
+controle_<tipo>_<objeto>
+```
+
+---
+
+# 🧱 Naming de colunas
+
+## Identificadores
+
+```text
+cd_contrato
+cd_produto
+cd_boleto
+cd_cnpj
+cd_escritorio
+```
+
+## Surrogate keys
+
+```text
+sk_cliente
+sk_produto
+```
+
+## Valores
+
+```text
+vl_pago
+vl_caixa
+vl_regul
+vl_quebra
+```
+
+## Quantidades
+
+```text
+qtd_pagamentos
+qtd_boletos
+```
+
+## Flags
+
+```text
+fl_valido
+fl_vigente
+fl_conflito
+```
+
+## Datas
+
+```text
+dt_pagamento
+dt_inicio_vigencia
+dt_carga
+```
+
+## Partições
+
+```text
+p_anomes
+p_dt_ref
+```
+
+---
+
+# 🎯 Regra final de design
+
+Todo nome deve responder:
+
+```text
+Como está materializado?
+Em qual camada está?
+Qual função lógica exerce?
+Qual domínio/entidade representa?
+```
+
+---
+
+# 🧠 Insight mais importante
+
+```text
+Gold ≠ consumo
+Mart = produto final
+```
+
+Se você errar isso:
+
+- QuickSight vira caos
+    
+- lógica se duplica
+    
+- ninguém confia no dado
+    
+
+---
+
+# 🚀 Regra de ouro
+
+```text
+Se está sendo consumido → deveria ser mart
+Se é verdade oficial → deveria ser gold
+Se é transformação → silver
+Se é origem → bronze
+```
+
+---
+
+# 📌 TL;DR
+
+Você não está criando tabelas.
+
+Você está criando:
+
+```text
+um sistema de dados governado
+```
+
+---
