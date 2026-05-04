@@ -1,0 +1,37 @@
+```sql
+CREATE TABLE gold_db.stg_dim_cliente_scd2_delta
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    location = 's3://lakehouse/gold/stg_dim_cliente_scd2_delta/'
+) AS
+SELECT
+    cliente_id,
+    nome,
+    endereco,
+    segmento,
+    status_cliente,
+    ts_inicio_vigencia,
+
+    xxhash64(
+        to_utf8(concat(
+            'dim_cliente',
+            '|', cast(cliente_id as varchar),
+            '|', cast(ts_inicio_vigencia as varchar)
+        ))
+    ) AS sk_cliente,
+
+    md5(
+        to_utf8(concat(
+            coalesce(nome, ''),
+            '|', coalesce(endereco, ''),
+            '|', coalesce(segmento, ''),
+            '|', coalesce(status_cliente, '')
+        ))
+    ) AS hash_atributos
+FROM silver_db.view_silver_integrado_cliente
+WHERE p_anomes IN (
+    SELECT p_anomes
+    FROM ctrl_db.tb_particoes_alteradas
+);
+```
