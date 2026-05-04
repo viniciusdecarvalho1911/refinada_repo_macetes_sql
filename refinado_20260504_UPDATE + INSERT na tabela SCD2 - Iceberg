@@ -1,0 +1,38 @@
+# Passo 1: Update
+```sql
+UPDATE gold_db.iceberg_gold_dimensao_cliente d
+SET
+    ts_fim_vigencia = current_timestamp,
+    fl_atual = false
+WHERE fl_atual = true
+  AND EXISTS (
+      SELECT 1
+      FROM gold_db.stg_dim_cliente_scd2_delta s
+      WHERE s.cliente_id = d.cliente_id
+        AND s.hash_atributos <> d.hash_atributos
+  );
+```
+
+# Passo 2: Insert
+
+```sql
+INSERT INTO gold_db.iceberg_gold_dimensao_cliente
+SELECT
+    s.sk_cliente,
+    s.cliente_id,
+    s.nome,
+    s.endereco,
+    s.segmento,
+    s.status_cliente,
+    s.ts_inicio_vigencia,
+    cast(null as timestamp) AS ts_fim_vigencia,
+    true AS fl_atual,
+    s.hash_atributos,
+    current_timestamp AS dt_ingestao_modelo
+FROM gold_db.tabela_silver_integrado_cliente_scd2_delta s
+LEFT JOIN gold_db.iceberg_gold_dimensao_cliente d
+  ON s.cliente_id = d.cliente_id
+ AND d.fl_atual = true
+WHERE d.cliente_id IS NULL
+   OR s.hash_atributos <> d.hash_atributos;
+   ```
