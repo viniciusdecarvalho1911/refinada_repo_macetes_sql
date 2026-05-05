@@ -1,0 +1,774 @@
+Sim. Sem `escritorio`, sua análise vira:
+
+> **como o pool de contratos se comporta ao longo do tempo**, separando entrada, saída, permanência, faixa de atraso, saldo e dias disponíveis.
+
+A base mínima:
+
+```text
+contrato
+produto
+cliente_id
+saldo
+dias_atraso_contrato
+dias_atraso_cliente
+flag_incluso_dia -- inclusao / exclusao / nunca_distribuido
+anomesdia
+anomes
+```
+
+---
+
+# 1. Silver integrada: normalizar a base
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_cobranca_pool_diario AS
+WITH base AS (
+    SELECT
+        contrato,
+        produto,
+        cliente_id,
+
+        cast(saldo as decimal(18,2)) AS saldo,
+
+        cast(dias_atraso_contrato as integer) AS dias_atraso_contrato,
+        cast(dias_atraso_cliente as integer) AS dias_atraso_cliente,
+
+        lower(trim(flag_incluso_dia)) AS flag_incluso_dia,
+
+        cast(anomesdia as integer) AS anomesdia,
+        cast(substr(cast(anomesdia as varchar), 1, 6) as integer) AS anomes,
+
+        cast(date_parse(cast(anomesdia as varchar), '%Y%m%d') as date) AS dt_ref_date
+
+    FROM workspace_db.sua_tabela_base
+    WHERE cast(anomesdia as integer) >= 20260101
+),
+
+classificada AS (
+    SELECT
+        *,
+
+        CASE
+            WHEN flag_incluso_dia = 'exclusao' THEN 0
+            ELSE 1
+        END AS fl_ativo_no_dia,
+
+        CASE
+            WHEN flag_incluso_dia = 'inclusao' THEN 1
+            ELSE 0
+        END AS fl_inclusao_dia,
+
+        CASE
+            WHEN flag_incluso_dia = 'exclusao' THEN 1
+            ELSE 0
+        END AS fl_exclusao_dia,
+
+        CASE
+            WHEN flag_incluso_dia = 'nunca distribuido' THEN 1
+            WHEN flag_incluso_dia = 'nunca_distribuido' THEN 1
+            ELSE 0
+        END AS fl_nunca_distribuido,
+
+        CASE
+            WHEN dias_atraso_contrato BETWEEN 0 AND 30 THEN '000_030'
+            WHEN dias_atraso_contrato BETWEEN 31 AND 60 THEN '031_060'
+            WHEN dias_atraso_contrato BETWEEN 61 AND 90 THEN '061_090'
+            WHEN dias_atraso_contrato BETWEEN 91 AND 180 THEN '091_180'
+            WHEN dias_atraso_contrato BETWEEN 181 AND 360 THEN '181_360'
+            WHEN dias_atraso_contrato > 360 THEN '361_plus'
+            ELSE 'sem_faixa'
+        END AS faixa_atraso_contrato,
+
+        CASE
+            WHEN dias_atraso_cliente BETWEEN 0 AND 30 THEN '000_030'
+            WHEN dias_atraso_cliente BETWEEN 31 AND 60 THEN '031_060'
+            WHEN dias_atraso_cliente BETWEEN 61 AND 90 THEN '061_090'
+            WHEN dias_atraso_cliente BETWEEN 91 AND 180 THEN '091_180'
+            WHEN dias_atraso_cliente BETWEEN 181 AND 360 THEN '181_360'
+            WHEN dias_atraso_cliente > 360 THEN '361_plus'
+            ELSE 'sem_faixa'
+        END AS faixa_atraso_cliente,
+
+        concat(
+            cast(contrato as varchar),
+            '|',
+            cast(produto as varchar)
+        ) AS chave_contrato_produto
+
+    FROM base
+)
+
+SELECT *
+FROM classificada;
+```
+
+---
+
+# 2. Fato de eventos: detectar mudança dia a dia
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_cobranca_evento_pool
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    partitioning = ARRAY['anomes']
+) AS
+WITH base AS (
+    SELECT
+        *,
+        lag(anomesdia) OVER (
+            PARTITION BY contrato, produto
+            ORDER BY anomesdia
+        ) AS anomesdia_anterior,
+
+        lag(saldo) OVER (
+            PARTITION BY contrato, produto
+            ORDER BY anomesdia
+        ) AS saldo_anterior,
+
+        lag(faixa_atraso_contrato) OVER (
+            PARTITION BY contrato, produto
+            ORDER BY anomesdia
+        ) AS faixa_atraso_contrato_anterior,
+
+        lag(faixa_atraso_cliente) OVER (
+            PARTITION BY contrato, produto
+            ORDER BY anomesdia
+        ) AS faixa_atraso_cliente_anterior,
+
+        lag(fl_ativo_no_dia) OVER (
+            PARTITION BY contrato, produto
+            ORDER BY anomesdia
+        ) AS fl_ativo_anterior
+
+    FROM workspace_db.view_silver_integrado_cobranca_pool_diario
+)
+
+SELECT
+    contrato,
+    produto,
+    cliente_id,
+    chave_contrato_produto,
+
+    anomesdia,
+    anomes,
+    dt_ref_date,
+
+    saldo_anterior,
+    saldo AS saldo_atual,
+
+    dias_atraso_contrato,
+    dias_atraso_cliente,
+
+    faixa_atraso_contrato_anterior,
+    faixa_atraso_contrato AS faixa_atraso_contrato_atual,
+
+    faixa_atraso_cliente_anterior,
+    faixa_atraso_cliente AS faixa_atraso_cliente_atual,
+
+    flag_incluso_dia,
+    fl_ativo_no_dia,
+    fl_inclusao_dia,
+    fl_exclusao_dia,
+    fl_nunca_distribuido,
+
+    CASE
+        WHEN anomesdia_anterior IS NULL THEN 'primeira_observacao'
+        WHEN flag_incluso_dia = 'inclusao' THEN 'inclusao'
+        WHEN flag_incluso_dia = 'exclusao' THEN 'exclusao'
+        WHEN flag_incluso_dia IN ('nunca distribuido', 'nunca_distribuido') THEN 'nunca_distribuido'
+        WHEN faixa_atraso_contrato_anterior <> faixa_atraso_contrato THEN 'mudanca_faixa_contrato'
+        WHEN faixa_atraso_cliente_anterior <> faixa_atraso_cliente THEN 'mudanca_faixa_cliente'
+        WHEN saldo_anterior <> saldo THEN 'mudanca_saldo'
+        ELSE 'permanencia'
+    END AS tipo_evento,
+
+    saldo - coalesce(saldo_anterior, 0) AS delta_saldo
+
+FROM base;
+```
+
+---
+
+# 3. Mart diária do pool
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_mart_cobranca_pool_diario AS
+SELECT
+    anomesdia,
+    anomes,
+    dt_ref_date,
+    faixa_atraso_contrato,
+    faixa_atraso_cliente,
+
+    count(DISTINCT chave_contrato_produto) AS qtd_contrato_produto,
+    count(DISTINCT contrato) AS qtd_contratos,
+    count(DISTINCT cliente_id) AS qtd_clientes,
+
+    sum(saldo) AS saldo_total,
+
+    sum(CASE WHEN fl_ativo_no_dia = 1 THEN saldo ELSE 0 END) AS saldo_ativo,
+    sum(CASE WHEN fl_inclusao_dia = 1 THEN saldo ELSE 0 END) AS saldo_inclusao,
+    sum(CASE WHEN fl_exclusao_dia = 1 THEN saldo ELSE 0 END) AS saldo_exclusao,
+    sum(CASE WHEN fl_nunca_distribuido = 1 THEN saldo ELSE 0 END) AS saldo_nunca_distribuido,
+
+    count(DISTINCT CASE WHEN fl_ativo_no_dia = 1 THEN chave_contrato_produto END) AS qtd_ativo,
+    count(DISTINCT CASE WHEN fl_inclusao_dia = 1 THEN chave_contrato_produto END) AS qtd_inclusao,
+    count(DISTINCT CASE WHEN fl_exclusao_dia = 1 THEN chave_contrato_produto END) AS qtd_exclusao,
+    count(DISTINCT CASE WHEN fl_nunca_distribuido = 1 THEN chave_contrato_produto END) AS qtd_nunca_distribuido
+
+FROM workspace_db.view_silver_integrado_cobranca_pool_diario
+GROUP BY 1,2,3,4,5;
+```
+
+---
+
+# 4. Mart mensal: saldo médio disponível e dias médios
+
+Essa responde bem sua pergunta de “quantos dias em média o saldo ficou disponível”.
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_mart_cobranca_pool_mensal AS
+WITH contrato_mes AS (
+    SELECT
+        anomes,
+        contrato,
+        produto,
+        cliente_id,
+        faixa_atraso_contrato,
+        faixa_atraso_cliente,
+
+        count(DISTINCT anomesdia) AS qtd_dias_observado,
+
+        count(DISTINCT CASE
+            WHEN fl_ativo_no_dia = 1 THEN anomesdia
+        END) AS qtd_dias_ativo,
+
+        avg(CASE
+            WHEN fl_ativo_no_dia = 1 THEN saldo
+        END) AS saldo_medio_ativo,
+
+        max(saldo) AS saldo_maximo_mes,
+        min(saldo) AS saldo_minimo_mes,
+
+        max(fl_inclusao_dia) AS fl_teve_inclusao_mes,
+        max(fl_exclusao_dia) AS fl_teve_exclusao_mes,
+        max(fl_nunca_distribuido) AS fl_nunca_distribuido_mes
+
+    FROM workspace_db.view_silver_integrado_cobranca_pool_diario
+    GROUP BY 1,2,3,4,5,6
+)
+
+SELECT
+    anomes,
+    faixa_atraso_contrato,
+    faixa_atraso_cliente,
+
+    count(DISTINCT concat(cast(contrato as varchar), '|', cast(produto as varchar))) AS qtd_contrato_produto,
+    count(DISTINCT contrato) AS qtd_contratos,
+    count(DISTINCT cliente_id) AS qtd_clientes,
+
+    sum(saldo_medio_ativo) AS saldo_medio_disponivel_mes,
+
+    avg(qtd_dias_ativo) AS media_dias_ativo_por_contrato,
+    approx_percentile(qtd_dias_ativo, 0.5) AS mediana_dias_ativo_por_contrato,
+
+    sum(CASE WHEN fl_teve_inclusao_mes = 1 THEN saldo_medio_ativo ELSE 0 END) AS saldo_incluido_mes,
+    sum(CASE WHEN fl_teve_exclusao_mes = 1 THEN saldo_medio_ativo ELSE 0 END) AS saldo_excluido_mes,
+    sum(CASE WHEN fl_nunca_distribuido_mes = 1 THEN saldo_medio_ativo ELSE 0 END) AS saldo_nunca_distribuido_mes,
+
+    count(DISTINCT CASE
+        WHEN fl_teve_inclusao_mes = 1
+        THEN concat(cast(contrato as varchar), '|', cast(produto as varchar))
+    END) AS qtd_incluidos_mes,
+
+    count(DISTINCT CASE
+        WHEN fl_teve_exclusao_mes = 1
+        THEN concat(cast(contrato as varchar), '|', cast(produto as varchar))
+    END) AS qtd_excluidos_mes,
+
+    count(DISTINCT CASE
+        WHEN fl_nunca_distribuido_mes = 1
+        THEN concat(cast(contrato as varchar), '|', cast(produto as varchar))
+    END) AS qtd_nunca_distribuidos_mes
+
+FROM contrato_mes
+GROUP BY 1,2,3;
+```
+
+---
+
+# 5. Mart de variação mês contra mês
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_mart_cobranca_variacao_pool_mensal AS
+WITH mensal AS (
+    SELECT
+        *
+    FROM workspace_db.view_gold_mart_cobranca_pool_mensal
+),
+
+comparado AS (
+    SELECT
+        *,
+
+        lag(saldo_medio_disponivel_mes) OVER (
+            PARTITION BY faixa_atraso_contrato, faixa_atraso_cliente
+            ORDER BY anomes
+        ) AS saldo_medio_disponivel_mes_ant,
+
+        lag(qtd_contrato_produto) OVER (
+            PARTITION BY faixa_atraso_contrato, faixa_atraso_cliente
+            ORDER BY anomes
+        ) AS qtd_contrato_produto_ant,
+
+        lag(media_dias_ativo_por_contrato) OVER (
+            PARTITION BY faixa_atraso_contrato, faixa_atraso_cliente
+            ORDER BY anomes
+        ) AS media_dias_ativo_ant
+
+    FROM mensal
+)
+
+SELECT
+    *,
+
+    saldo_medio_disponivel_mes - saldo_medio_disponivel_mes_ant AS delta_saldo_medio_disponivel,
+
+    qtd_contrato_produto - qtd_contrato_produto_ant AS delta_qtd_contrato_produto,
+
+    media_dias_ativo_por_contrato - media_dias_ativo_ant AS delta_media_dias_ativo
+
+FROM comparado;
+```
+
+---
+
+# 6. Mart de decomposição dos eventos
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_mart_cobranca_decomposicao_eventos_mensal AS
+SELECT
+    anomes,
+    faixa_atraso_contrato_atual AS faixa_atraso_contrato,
+    faixa_atraso_cliente_atual AS faixa_atraso_cliente,
+
+    count(*) AS qtd_eventos,
+
+    count(CASE WHEN tipo_evento = 'inclusao' THEN 1 END) AS qtd_evento_inclusao,
+    count(CASE WHEN tipo_evento = 'exclusao' THEN 1 END) AS qtd_evento_exclusao,
+    count(CASE WHEN tipo_evento = 'nunca_distribuido' THEN 1 END) AS qtd_evento_nunca_distribuido,
+    count(CASE WHEN tipo_evento = 'mudanca_faixa_contrato' THEN 1 END) AS qtd_evento_mudanca_faixa_contrato,
+    count(CASE WHEN tipo_evento = 'mudanca_faixa_cliente' THEN 1 END) AS qtd_evento_mudanca_faixa_cliente,
+    count(CASE WHEN tipo_evento = 'mudanca_saldo' THEN 1 END) AS qtd_evento_mudanca_saldo,
+
+    sum(CASE WHEN tipo_evento = 'inclusao' THEN saldo_atual ELSE 0 END) AS saldo_inclusao,
+    sum(CASE WHEN tipo_evento = 'exclusao' THEN saldo_atual ELSE 0 END) AS saldo_exclusao,
+    sum(CASE WHEN tipo_evento = 'nunca_distribuido' THEN saldo_atual ELSE 0 END) AS saldo_nunca_distribuido,
+    sum(CASE WHEN tipo_evento = 'mudanca_faixa_contrato' THEN saldo_atual ELSE 0 END) AS saldo_mudanca_faixa_contrato,
+    sum(CASE WHEN tipo_evento = 'mudanca_faixa_cliente' THEN saldo_atual ELSE 0 END) AS saldo_mudanca_faixa_cliente,
+    sum(CASE WHEN tipo_evento = 'mudanca_saldo' THEN delta_saldo ELSE 0 END) AS delta_saldo_evento
+
+FROM workspace_db.iceberg_gold_fato_cobranca_evento_pool
+GROUP BY 1,2,3;
+```
+
+---
+
+# Resultado prático
+
+Com essas tabelas você consegue explicar:
+
+```text
+A faixa 061_090 aumentou no mês porque:
+- entraram X contratos
+- saíram Y contratos
+- Z contratos migraram de faixa
+- o saldo médio disponível subiu/caiu
+- os contratos ficaram em média N dias ativos no mês
+```
+
+Sem escritório, a pergunta deixa de ser “para quem foi distribuído?” e vira:
+
+> **qual foi a composição, permanência e movimentação do pool de cobrança ao longo do tempo?**
+
+
+
+---------
+
+
+Sim. Você precisa criar uma **ordem numérica da faixa** e comparar:
+
+```text
+faixa_atual > faixa_anterior → piorou atraso
+faixa_atual < faixa_anterior → melhorou / retroagiu atraso
+faixa_atual = faixa_anterior → sem mudança
+```
+
+A melhor forma é fazer isso dentro da própria mart:
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_gold_mart_cobranca_decomposicao_eventos_mensal AS
+WITH eventos_classificados AS (
+    SELECT
+        *,
+
+        CASE faixa_atraso_contrato_anterior
+            WHEN '000_030' THEN 1
+            WHEN '031_060' THEN 2
+            WHEN '061_090' THEN 3
+            WHEN '091_180' THEN 4
+            WHEN '181_360' THEN 5
+            WHEN '361_plus' THEN 6
+            ELSE NULL
+        END AS rank_faixa_contrato_anterior,
+
+        CASE faixa_atraso_contrato_atual
+            WHEN '000_030' THEN 1
+            WHEN '031_060' THEN 2
+            WHEN '061_090' THEN 3
+            WHEN '091_180' THEN 4
+            WHEN '181_360' THEN 5
+            WHEN '361_plus' THEN 6
+            ELSE NULL
+        END AS rank_faixa_contrato_atual,
+
+        CASE faixa_atraso_cliente_anterior
+            WHEN '000_030' THEN 1
+            WHEN '031_060' THEN 2
+            WHEN '061_090' THEN 3
+            WHEN '091_180' THEN 4
+            WHEN '181_360' THEN 5
+            WHEN '361_plus' THEN 6
+            ELSE NULL
+        END AS rank_faixa_cliente_anterior,
+
+        CASE faixa_atraso_cliente_atual
+            WHEN '000_030' THEN 1
+            WHEN '031_060' THEN 2
+            WHEN '061_090' THEN 3
+            WHEN '091_180' THEN 4
+            WHEN '181_360' THEN 5
+            WHEN '361_plus' THEN 6
+            ELSE NULL
+        END AS rank_faixa_cliente_atual
+
+    FROM workspace_db.iceberg_gold_fato_cobranca_evento_pool
+),
+
+eventos_direcao AS (
+    SELECT
+        *,
+
+        CASE
+            WHEN tipo_evento = 'mudanca_faixa_contrato'
+             AND rank_faixa_contrato_atual > rank_faixa_contrato_anterior
+                THEN 'piorou_atraso_contrato'
+
+            WHEN tipo_evento = 'mudanca_faixa_contrato'
+             AND rank_faixa_contrato_atual < rank_faixa_contrato_anterior
+                THEN 'melhorou_atraso_contrato'
+
+            ELSE NULL
+        END AS direcao_mudanca_faixa_contrato,
+
+        CASE
+            WHEN tipo_evento = 'mudanca_faixa_cliente'
+             AND rank_faixa_cliente_atual > rank_faixa_cliente_anterior
+                THEN 'piorou_atraso_cliente'
+
+            WHEN tipo_evento = 'mudanca_faixa_cliente'
+             AND rank_faixa_cliente_atual < rank_faixa_cliente_anterior
+                THEN 'melhorou_atraso_cliente'
+
+            ELSE NULL
+        END AS direcao_mudanca_faixa_cliente
+
+    FROM eventos_classificados
+),
+
+contrato_mes AS (
+    SELECT
+        anomes,
+        contrato,
+        produto,
+        cliente_id,
+
+        max(faixa_atraso_contrato_atual) AS faixa_atraso_contrato,
+        max(faixa_atraso_cliente_atual)  AS faixa_atraso_cliente,
+
+        count(DISTINCT anomesdia) AS qtd_dias_observado,
+        avg(saldo_atual) AS saldo_medio_mes,
+
+        max(CASE WHEN tipo_evento = 'inclusao' THEN 1 ELSE 0 END) AS fl_inclusao_mes,
+        max(CASE WHEN tipo_evento = 'exclusao' THEN 1 ELSE 0 END) AS fl_exclusao_mes,
+        max(CASE WHEN tipo_evento = 'nunca_distribuido' THEN 1 ELSE 0 END) AS fl_nunca_distribuido_mes,
+        max(CASE WHEN tipo_evento = 'mudanca_saldo' THEN 1 ELSE 0 END) AS fl_mudanca_saldo_mes,
+
+        max(CASE WHEN direcao_mudanca_faixa_contrato = 'piorou_atraso_contrato' THEN 1 ELSE 0 END) AS fl_piorou_atraso_contrato_mes,
+        max(CASE WHEN direcao_mudanca_faixa_contrato = 'melhorou_atraso_contrato' THEN 1 ELSE 0 END) AS fl_melhorou_atraso_contrato_mes,
+
+        max(CASE WHEN direcao_mudanca_faixa_cliente = 'piorou_atraso_cliente' THEN 1 ELSE 0 END) AS fl_piorou_atraso_cliente_mes,
+        max(CASE WHEN direcao_mudanca_faixa_cliente = 'melhorou_atraso_cliente' THEN 1 ELSE 0 END) AS fl_melhorou_atraso_cliente_mes,
+
+        sum(CASE WHEN tipo_evento = 'mudanca_saldo' THEN delta_saldo ELSE 0 END) AS delta_saldo_mes
+
+    FROM eventos_direcao
+    GROUP BY 1,2,3,4
+)
+
+SELECT
+    anomes,
+    faixa_atraso_contrato,
+    faixa_atraso_cliente,
+
+    count(*) AS qtd_contrato_produto,
+    sum(qtd_dias_observado) AS qtd_contrato_dia,
+    avg(qtd_dias_observado) AS media_dias_observado,
+
+    sum(saldo_medio_mes) AS saldo_medio_mensal,
+    avg(saldo_medio_mes) AS ticket_medio_mensal,
+
+    count(CASE WHEN fl_inclusao_mes = 1 THEN 1 END) AS qtd_contrato_inclusao_mes,
+    count(CASE WHEN fl_exclusao_mes = 1 THEN 1 END) AS qtd_contrato_exclusao_mes,
+    count(CASE WHEN fl_nunca_distribuido_mes = 1 THEN 1 END) AS qtd_contrato_nunca_distribuido_mes,
+    count(CASE WHEN fl_mudanca_saldo_mes = 1 THEN 1 END) AS qtd_contrato_mudanca_saldo_mes,
+
+    count(CASE WHEN fl_piorou_atraso_contrato_mes = 1 THEN 1 END) AS qtd_contrato_piorou_atraso_contrato_mes,
+    count(CASE WHEN fl_melhorou_atraso_contrato_mes = 1 THEN 1 END) AS qtd_contrato_melhorou_atraso_contrato_mes,
+
+    count(CASE WHEN fl_piorou_atraso_cliente_mes = 1 THEN 1 END) AS qtd_contrato_piorou_atraso_cliente_mes,
+    count(CASE WHEN fl_melhorou_atraso_cliente_mes = 1 THEN 1 END) AS qtd_contrato_melhorou_atraso_cliente_mes,
+
+    sum(CASE WHEN fl_piorou_atraso_contrato_mes = 1 THEN saldo_medio_mes ELSE 0 END) AS saldo_medio_piorou_atraso_contrato_mes,
+    sum(CASE WHEN fl_melhorou_atraso_contrato_mes = 1 THEN saldo_medio_mes ELSE 0 END) AS saldo_medio_melhorou_atraso_contrato_mes,
+
+    sum(CASE WHEN fl_piorou_atraso_cliente_mes = 1 THEN saldo_medio_mes ELSE 0 END) AS saldo_medio_piorou_atraso_cliente_mes,
+    sum(CASE WHEN fl_melhorou_atraso_cliente_mes = 1 THEN saldo_medio_mes ELSE 0 END) AS saldo_medio_melhorou_atraso_cliente_mes,
+
+    sum(delta_saldo_mes) AS delta_saldo_mes
+
+FROM contrato_mes
+GROUP BY 1,2,3;
+```
+
+A lógica central é essa:
+
+```text
+061_090 → 091_180 = piorou atraso
+091_180 → 061_090 = melhorou/retroagiu atraso
+```
+
+Só cuidado com um ponto: `max(faixa_atraso_contrato_atual)` em texto pode não representar a maior faixa corretamente. O ideal é guardar também `rank_faixa_contrato_atual` e usar `max_by(faixa, rank)` ou agrupar pelo estado final do mês.
+
+
+--------------------------
+
+
+A ordem correta é esta:
+
+```text
+1. Base bruta
+2. Silver integrada diária
+3. Gold fato de eventos diário
+4. Mart contrato/produto/mês
+5. Mart mensal agregada
+6. Mart final de explicação
+```
+
+A receita é:
+
+---
+
+# 1. Criar a Silver diária
+
+Objetivo: padronizar datas, faixas e flags.
+
+```text
+view_silver_integrado_cobranca_pool_diario
+```
+
+Ela deve gerar:
+
+```text
+anomesdia
+anomes
+dt_ref_date
+contrato
+produto
+cliente_id
+saldo
+faixa_atraso_contrato
+faixa_atraso_cliente
+fl_inclusao_dia
+fl_exclusao_dia
+fl_nunca_distribuido
+chave_contrato_produto
+```
+
+Essa é sua “foto diária limpa”.
+
+---
+
+# 2. Criar o fato de eventos diário
+
+Objetivo: comparar o contrato/produto com o dia anterior.
+
+```text
+iceberg_gold_fato_cobranca_evento_pool
+```
+
+Ele usa `LAG()` para produzir:
+
+```text
+saldo_anterior
+saldo_atual
+faixa_atraso_contrato_anterior
+faixa_atraso_contrato_atual
+faixa_atraso_cliente_anterior
+faixa_atraso_cliente_atual
+tipo_evento
+delta_saldo
+```
+
+Aqui você detecta:
+
+```text
+inclusao
+exclusao
+nunca_distribuido
+mudanca_saldo
+mudanca_faixa_contrato
+mudanca_faixa_cliente
+permanencia
+```
+
+---
+
+# 3. Criar classificação de direção da faixa
+
+Pode ser dentro da mart ou como view auxiliar:
+
+```text
+view_gold_aux_cobranca_evento_pool_classificado
+```
+
+Ela adiciona:
+
+```text
+rank_faixa_contrato_anterior
+rank_faixa_contrato_atual
+direcao_mudanca_faixa_contrato
+
+rank_faixa_cliente_anterior
+rank_faixa_cliente_atual
+direcao_mudanca_faixa_cliente
+```
+
+Regra:
+
+```text
+rank atual > rank anterior → piorou atraso
+rank atual < rank anterior → melhorou/retroagiu atraso
+```
+
+---
+
+# 4. Criar contrato/produto/mês
+
+Objetivo: evitar somar o mesmo contrato repetido todo dia.
+
+```text
+view_gold_aux_cobranca_contrato_produto_mes
+```
+
+Grão:
+
+```text
+1 linha = 1 anomes + 1 contrato + 1 produto
+```
+
+Métricas:
+
+```text
+qtd_dias_observado
+saldo_medio_mes
+fl_inclusao_mes
+fl_exclusao_mes
+fl_piorou_atraso_contrato_mes
+fl_melhorou_atraso_contrato_mes
+fl_piorou_atraso_cliente_mes
+fl_melhorou_atraso_cliente_mes
+delta_saldo_mes
+```
+
+Essa é a etapa mais importante para não inflar saldo.
+
+---
+
+# 5. Criar mart mensal agregada
+
+```text
+view_gold_mart_cobranca_decomposicao_eventos_mensal
+```
+
+Grão:
+
+```text
+1 linha = anomes + faixa_atraso_contrato + faixa_atraso_cliente
+```
+
+Ela soma a partir do nível contrato/produto/mês:
+
+```text
+sum(saldo_medio_mes)
+count(contrato/produto)
+avg(qtd_dias_observado)
+qtd que pioraram atraso
+qtd que melhoraram atraso
+saldo médio que piorou
+saldo médio que melhorou
+```
+
+---
+
+# Receita curta
+
+```text
+base diária
+↓
+classificar faixas
+↓
+comparar com LAG
+↓
+gerar eventos
+↓
+rankear faixas
+↓
+classificar melhora/piora
+↓
+reduzir para contrato/produto/mês
+↓
+agregar para mart mensal
+```
+
+Em termos de criação:
+
+```sql
+-- 1
+CREATE OR REPLACE VIEW view_silver_integrado_cobranca_pool_diario AS ...
+
+-- 2
+CREATE TABLE iceberg_gold_fato_cobranca_evento_pool AS ...
+
+-- 3
+CREATE OR REPLACE VIEW view_gold_aux_cobranca_evento_pool_classificado AS ...
+
+-- 4
+CREATE OR REPLACE VIEW view_gold_aux_cobranca_contrato_produto_mes AS ...
+
+-- 5
+CREATE OR REPLACE VIEW view_gold_mart_cobranca_decomposicao_eventos_mensal AS ...
+```
+
+A lógica bate com o princípio do seu material: primeiro declarar o grão, depois transformar em fatos/métricas, e só no final entregar a mart de consumo. No seu caso, o grão mais seguro para a etapa intermediária é **contrato + produto + mês**, não evento diário.
