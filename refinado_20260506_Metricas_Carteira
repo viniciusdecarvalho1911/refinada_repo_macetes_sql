@@ -1,0 +1,623 @@
+# Evolução dos modelos de eficiência em cobrança
+
+## Contexto
+
+Hoje a lógica está muito próxima de:
+
+```text
+eficiência = regul / carteira
+```
+
+O problema é que, nesse modelo, a carteira acaba acumulando tudo que passou pelo escritório no mês.
+
+Na prática:
+
+```text
+se um contrato ficou disponível 1 dia,
+ele entra no divisor como se tivesse sido oportunidade do mês inteiro.
+```
+
+Isso começa a distorcer bastante quando a carteira tem muita entrada e saída.
+
+Neste exemplo, quando eu digo carteira, estou falando de saldo distribuído e apto para cobrança.
+
+---
+
+# Cenário base
+
+Mês com 22 dias úteis.
+
+A carteira normalmente gira em torno de 100M, mas em alguns dias entra um volume grande, sobe para 150M e depois volta ao patamar normal.
+
+| DU | Carteira vigente |
+|---:|---:|
+| 1 | 100M |
+| 2 | 100M |
+| 3 | 100M |
+| 4 | 100M |
+| 5 | 100M |
+| 6 | 100M |
+| 7 | 100M |
+| 8 | 100M |
+| 9 | 100M |
+| 10 | 150M |
+| 11 | 150M |
+| 12 | 150M |
+| 13 | 100M |
+| 14 | 100M |
+| 15 | 100M |
+| 16 | 100M |
+| 17 | 100M |
+| 18 | 100M |
+| 19 | 100M |
+| 20 | 100M |
+| 21 | 100M |
+| 22 | 100M |
+
+Regul do mês:
+
+```text
+regul = 5M
+```
+
+A ideia aqui é manter o mesmo regul e mudar apenas o divisor.
+
+---
+
+# Nível 0 — Meta nominal
+
+## Fórmula
+
+```text
+meta = valor nominal
+```
+
+Exemplo:
+
+```text
+meta = 5M
+```
+
+Resultado:
+
+```text
+5M / 5M = 100%
+```
+
+## Problema
+
+Não considera:
+
+- tamanho da carteira
+- entrada e saída
+- tempo disponível
+- oportunidade real
+
+Serve para cobrar volume, mas não eficiência.
+
+---
+
+# Nível 1 — Regul / carteira acumulada
+
+Esse é o modelo mais próximo do cenário atual.
+
+## Fórmula
+
+```text
+eficiência = regul / carteira acumulada
+```
+
+Aqui a carteira considera o risco dos contratos que passaram pelo escritório no mês.
+
+Como houve pico de 150M:
+
+```text
+carteira acumulada = 150M
+```
+
+Resultado:
+
+```text
+5M / 150M = 3,33%
+```
+
+## Problema
+
+Esse modelo trata o saldo que entrou por poucos dias como se fosse oportunidade do mês inteiro.
+
+Exemplo:
+
+| Contrato | Saldo | Dias disponível |
+|---|---:|---:|
+| A | 1M | 22 |
+| B | 50M | 1 |
+
+No acumulado, o contrato B entra inteiro no divisor mesmo tendo ficado disponível só 1 dia.
+
+Isso infla artificialmente a carteira e derruba a eficiência.
+
+---
+
+# Nível 2 — Regul / carteira média diária
+
+## Fórmula
+
+```text
+eficiência = regul / carteira média diária
+```
+
+## Cálculo
+
+```text
+19 dias × 100M = 1.900M
+3 dias × 150M = 450M
+
+total = 2.350M
+média = 2.350M / 22 = 106,8M
+```
+
+Resultado:
+
+```text
+5M / 106,8M = 4,68%
+```
+
+## O que melhora
+
+Aqui o pico temporário pesa menos, porque ele só afeta os dias em que realmente esteve vigente.
+
+Isso já reduz bastante a distorção causada por entradas rápidas.
+
+## Problema
+
+Ainda é uma visão agregada.
+
+Ela melhora o divisor, mas ainda não modela corretamente quanto tempo cada contrato ficou disponível.
+
+---
+
+# Nível 3 — Regul / saldo-dia
+
+## Fórmula
+
+```text
+eficiência = regul / saldo-dia
+```
+
+Aqui a lógica muda bastante.
+
+Ao invés de olhar apenas estoque, o modelo passa a olhar:
+
+```text
+saldo × tempo disponível
+```
+
+---
+
+## Usando o mesmo exemplo
+
+### Base normal
+
+```text
+100M × 22 dias
+= 2.200M saldo-dia
+```
+
+### Pico temporário
+
+```text
+50M extras × 3 dias
+= 150M saldo-dia
+```
+
+## Saldo-dia total
+
+```text
+2.200M + 150M
+= 2.350M saldo-dia
+```
+
+---
+
+## Resultado bruto
+
+```text
+5M / 2.350M
+= 0,21%
+```
+
+Essa leitura significa:
+
+```text
+regul por unidade de exposição temporal
+```
+
+---
+
+## Ajustando para equivalente mensal
+
+Como o mês tem 22 dias úteis:
+
+```text
+(5M × 22) / 2.350M
+= 4,68%
+```
+
+Essa leitura fica comparável ao conceito de:
+
+```text
+regul / carteira média
+```
+
+mas usando um divisor muito mais correto para um cenário com entrada e saída.
+
+---
+
+## Exemplo contrato a contrato
+
+| Contrato | Saldo | Dias | Saldo-dia |
+|---|---:|---:|---:|
+| A | 1M | 22 | 22M |
+| B | 50M | 1 | 50M |
+
+Aqui o tempo começa a entrar de verdade no cálculo.
+
+O contrato B ainda pesa bastante porque o saldo é alto, mas ele não é tratado como se tivesse ficado o mês inteiro disponível.
+
+---
+
+## Observação importante
+
+A unidade mudou.
+
+Antes era:
+
+```text
+regul / estoque
+```
+
+Agora passa a ser:
+
+```text
+regul / exposição temporal
+```
+
+Então:
+
+```text
+5M / 2.350M = 0,21%
+```
+
+e:
+
+```text
+(5M × 22) / 2.350M = 4,68%
+```
+
+são leituras diferentes da mesma lógica.
+
+A segunda costuma ficar muito mais intuitiva para negócio.
+
+---
+
+# Comparação final
+
+| Modelo                    |          Divisor | Resultado |
+| ------------------------- | ---------------: | --------: |
+| Meta nominal              |               5M |      100% |
+| Carteira acumulada        |             150M |     3,33% |
+| Carteira média diária     |           106,8M |     4,68% |
+| Saldo-dia                 | 2.350M saldo-dia |     0,21% |
+| Saldo-dia ajustado p/ mês | 2.350M saldo-dia |     4,68% |
+
+---
+
+# Como interpretar
+
+Cada modelo responde uma pergunta diferente.
+
+| Modelo             | O que responde                              |
+| ------------------ | ------------------------------------------- |
+| Meta nominal       | Quanto fez?                                 |
+| Carteira acumulada | Quanto fez sobre tudo que passou no mês?    |
+| Carteira média     | Quanto fez sobre o estoque médio?           |
+| Saldo-dia          | Quanto fez considerando tempo de exposição? |
+|                    |                                             |
+|                    |                                             |
+|                    |                                             |
+
+---
+# Resumo bate pronto
+
+Carteira acumulada não está “errada”.
+Ela só responde uma pergunta diferente.
+
+Ela mede:
+
+“quanto passou pela operação no mês”
+
+Já carteira média mede:
+
+“qual foi a exposição média real ao longo do tempo”
+
+Enquanto a carteira era mais estática, acumulado e média eram parecidos.
+
+Mas quando começa a existir muita entrada e saída, o acumulado passa a distorcer, porque:
+
+um contrato que ficou 1 dia disponível entra no divisor como se tivesse sido oportunidade do mês inteiro.
+
+Isso faz operações com alta rotação parecerem menos eficientes artificialmente.
+
+Então:
+
+- carteira acumulada faz sentido para medir volume distribuído / exposição total
+- carteira média faz mais sentido para medir eficiência operacional
+
+O objetivo da mudança não é abandonar o acumulado.
+
+É parar de usar ele para responder uma pergunta que ele não representa tão bem.
+
+---
+
+# Minha leitura
+
+Para carteira estática, `regul / carteira` até funciona.
+
+Mas quando a carteira começa a girar muito, o acumulado passa a distorcer bastante.
+
+Ele penaliza meses ou escritórios com muita entrada temporária, porque aumenta o divisor com contratos que talvez tenham ficado disponíveis poucos dias.
+
+O mínimo aceitável passa a ser:
+
+```text
+regul / carteira média diária
+```
+
+Mas o modelo mais coerente é:
+
+```text
+regul / saldo-dia
+```
+
+porque ele incorpora:
+
+- saldo
+- tempo
+- entrada e saída
+- rotação da carteira
+
+---
+
+# Modelo de dados necessário
+
+Para fazer isso direito, o ideal é ter um fato diário no grão:
+
+```text
+1 linha = 1 contrato + 1 dia
+```
+
+Exemplo:
+
+```sql
+dt_ref
+contrato
+escritorio
+saldo_atual
+fl_na_carteira
+vl_regul_dia
+```
+
+Sem esse grão diário, fica muito difícil reconstruir corretamente o tempo de exposição de cada contrato.
+
+---
+# Saldo-dia  - Utilidade
+
+## Contexto
+
+
+Carteira média é ótima como KPI final.
+
+Mas saldo-dia preserva a informação temporal da carteira.
+
+Exemplo:
+
+Escritório A:
+100M disponíveis durante 22 dias
+=
+2.200M saldo-dia
+
+Escritório B:
+200M disponíveis durante 11 dias
+=
+2.200M saldo-dia
+
+Os dois têm o mesmo saldo-dia.
+
+Mas agora imagine:
+
+Escritório A:
+100M todos os dias
+→ carteira estável
+
+Escritório B:
+entra e sai carteira o tempo todo
+→ carteira extremamente volátil
+
+A carteira média dos dois pode acabar parecida:
+
+100M
+
+Mas operacionalmente são cenários completamente diferentes.
+
+O saldo-dia ajuda a responder coisas que a média esconde:
+
+- quanto tempo o saldo ficou exposto
+- quão giratória é a carteira
+- intensidade operacional
+- velocidade de entrada e saída
+- permanência média dos contratos
+
+Então:
+
+- carteira média = KPI executivo
+- saldo-dia = unidade analítica fundamental
+
+---
+O saldo-dia sozinho não responde tudo.
+
+O poder dele aparece quando você começa a comparar:
+
+- saldo-dia
+- carteira média
+- saldo acumulado
+- entradas e saídas
+- permanência média
+
+Aí você começa a enxergar o comportamento operacional da carteira.
+
+---
+## Exemplificação do Saldo Dia
+
+
+Usando o mesmo cenário:
+
+- 22 dias úteis
+- carteira normalmente em 100M
+- spike para 150M nos dias 10, 11 e 12
+
+Então:
+
+19 dias × 100M = 1.900M
+3 dias × 150M = 450M
+
+Saldo-dia total:
+
+2.350M saldo-dia
+
+Carteira média:
+
+2.350 / 22
+= 106,8M
+
+---
+
+Até aqui, a carteira parece relativamente saudável e estável.
+
+Mas agora entra a diferença importante:
+
+---
+
+Cenário A — carteira estável
+
+Imagine que praticamente os mesmos contratos permaneceram o mês inteiro.
+
+Então:
+
+- pouca entrada
+- pouca saída
+- alta permanência
+- carteira “parada”
+
+Nesse caso:
+
+saldo acumulado distribuído no mês
+≈ 150M
+
+Tempo médio de exposição:
+
+2.350 / 150
+= 15,6 dias médios
+
+Ou seja:
+
+a carteira teve permanência relativamente alta.
+
+---
+
+Cenário B — carteira extremamente giratória
+
+Agora imagine que:
+
+- entrou muita carteira
+- saiu muita carteira
+- vários contratos ficaram poucos dias
+- houve muita redistribuição
+
+Mesmo mantendo:
+
+- carteira média = 106,8M
+- saldo-dia = 2.350M
+
+o saldo acumulado distribuído no mês pode virar:
+
+500M
+
+Então:
+
+2.350 / 500
+= 4,7 dias médios
+
+---
+
+Perceba o que aconteceu.
+
+A carteira média ficou igual.
+
+O saldo-dia ficou igual.
+
+Mas operacionalmente os cenários são completamente diferentes.
+
+---
+
+No cenário A:
+
+- contratos ficaram mais tempo
+- houve mais janela operacional
+- menos rotação
+- mais estabilidade
+
+---
+
+No cenário B:
+
+- contratos passaram rapidamente
+- houve menos tempo médio de atuação
+- mais volatilidade
+- mais carteira transitória
+
+---
+
+É aí que o saldo-dia começa a ficar poderoso.
+
+Porque ele permite derivar coisas que a carteira média sozinha não mostra.
+
+Exemplo:
+
+- tempo médio de permanência
+- intensidade de rotação
+- velocidade de entrada/saída
+- exposição operacional real
+- quanto da carteira foi transitória
+
+---
+
+Então a lógica fica mais ou menos assim:
+
+Carteira média:
+“quanto tinha em média”
+
+Saldo acumulado:
+“quanto passou no mês”
+
+Saldo-dia:
+“quanto tempo o saldo ficou exposto”
+
+---
+
+E a combinação dos três começa a explicar coisas como:
+
+“a eficiência caiu porque a operação piorou?”
+
+ou:
+
+“a eficiência caiu porque os contratos ficaram poucos dias disponíveis?”
