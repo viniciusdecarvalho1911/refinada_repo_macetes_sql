@@ -1,0 +1,120 @@
+Sim — mas eu ajustaria sua decomposição para fechar matematicamente.
+
+O ideal é explicar a variação de D para D+1 assim:
+
+```text
+Saldo_D+1 - Saldo_D
+=
+Entrada
+- Saída
++ Mudança de saldo do estoque
+```
+
+Onde:
+
+```text
+Entrada = saldo_D+1 dos contratos que não existiam em D
+
+Saída = saldo_D dos contratos que existiam em D e não existem em D+1
+
+Estoque = contratos que existem em D e D+1
+
+Mudança de saldo do estoque =
+saldo_D+1 - saldo_D dos contratos que permaneceram
+```
+
+A sua definição de “estoque” está quase certa, mas eu não chamaria de “saldo de contratos que entraram neste dia e já estavam no anterior”. Melhor:
+
+```text
+Estoque = saldo dos contratos presentes nos dois dias
+```
+
+Porque “entraram neste dia e já estavam no anterior” fica contraditório.
+
+Isso está alinhado com seu próprio playbook: antes de analisar, declarar o grão e decompor a variação em fatores mensuráveis; o material reforça `GRÃO → JOIN → EXPLOSÃO` e a necessidade de decompor para encontrar causa raiz. 
+
+Modelo SQL em Athena:
+
+```sql
+WITH base AS (
+    SELECT
+        anomesdia,
+        contrato,
+        produto,
+        escritorio,
+        saldo
+    FROM workspace_db.view_silver_integrado_cobranca_carteira_dia
+),
+
+comparativo AS (
+    SELECT
+        coalesce(d1.anomesdia, d0.anomesdia + 1) AS anomesdia,
+        coalesce(d1.contrato, d0.contrato) AS contrato,
+        coalesce(d1.produto, d0.produto) AS produto,
+        coalesce(d1.escritorio, d0.escritorio) AS escritorio,
+
+        d0.saldo AS saldo_d0,
+        d1.saldo AS saldo_d1,
+
+        CASE
+            WHEN d0.contrato IS NULL THEN 'ENTRADA'
+            WHEN d1.contrato IS NULL THEN 'SAIDA'
+            ELSE 'ESTOQUE'
+        END AS tipo_movimento
+    FROM base d0
+    FULL OUTER JOIN base d1
+        ON d0.contrato = d1.contrato
+       AND d0.produto = d1.produto
+       AND d1.anomesdia = d0.anomesdia + 1
+)
+
+SELECT
+    anomesdia,
+    escritorio,
+
+    SUM(CASE WHEN tipo_movimento = 'ENTRADA' THEN saldo_d1 ELSE 0 END) AS vl_entrada,
+
+    SUM(CASE WHEN tipo_movimento = 'SAIDA' THEN saldo_d0 ELSE 0 END) AS vl_saida,
+
+    SUM(CASE WHEN tipo_movimento = 'ESTOQUE' THEN saldo_d0 ELSE 0 END) AS vl_estoque_d0,
+    SUM(CASE WHEN tipo_movimento = 'ESTOQUE' THEN saldo_d1 ELSE 0 END) AS vl_estoque_d1,
+
+    SUM(CASE
+        WHEN tipo_movimento = 'ESTOQUE'
+        THEN saldo_d1 - saldo_d0
+        ELSE 0
+    END) AS vl_mudanca_saldo_estoque,
+
+    SUM(COALESCE(saldo_d1, 0)) - SUM(COALESCE(saldo_d0, 0)) AS variacao_total,
+
+    SUM(CASE WHEN tipo_movimento = 'ENTRADA' THEN saldo_d1 ELSE 0 END)
+    - SUM(CASE WHEN tipo_movimento = 'SAIDA' THEN saldo_d0 ELSE 0 END)
+    + SUM(CASE WHEN tipo_movimento = 'ESTOQUE' THEN saldo_d1 - saldo_d0 ELSE 0 END)
+    AS variacao_reconciliada
+
+FROM comparativo
+GROUP BY 1, 2;
+```
+
+A leitura executiva fica assim:
+
+```text
+A carteira variou +R$ 8M no dia.
++R$ 15M vieram de novos contratos,
+-R$ 10M vieram de saídas,
++R$ 3M vieram de aumento líquido de saldo nos contratos que permaneceram.
+```
+
+Eu criaria isso como uma **mart diária de decomposição de carteira**, algo como:
+
+```text
+view_gold_mart_cobranca_carteira_decomposicao_diaria
+```
+
+ou, se for pesado/recorrente:
+
+```text
+iceberg_gold_mart_cobranca_carteira_decomposicao_diaria
+```
+
+O ponto crítico: **saída sempre usa o saldo do dia anterior**, entrada usa o saldo do dia atual, e mudança de saldo só vale para quem permaneceu nos dois dias.
