@@ -1,0 +1,1220 @@
+Perfeito. Vamos esquecer SQL por um momento.
+
+Vou te explicar isso como se estivéssemos implementando isso numa planilha manualmente pela primeira vez.
+
+---
+
+# 🎯 O problema real
+
+Você tem:
+
+```text
+fila = LOW TICKETS ATIVO
+```
+
+E a regra do negócio diz:
+
+```text
+Nova Quest deve ficar com 27% dos clientes
+```
+
+Só que você distribui clientes todos os dias.
+
+E aí acontece isto:
+
+## Dia 1
+
+Entraram:
+
+```text
+100 clientes
+```
+
+O correto seria:
+
+```text
+27 clientes para Nova Quest
+```
+
+Mas o sorteio mandou:
+
+```text
+23 clientes
+```
+
+Então ficou faltando:
+
+```text
+4 clientes
+```
+
+---
+
+# 🧠 O erro que as pessoas cometem
+
+No dia seguinte, elas fazem:
+
+```text
+"ah, continua distribuindo 27%"
+```
+
+Só que isso NÃO corrige o erro acumulado.
+
+---
+
+# 🧠 Como pensar corretamente
+
+Você não pensa:
+
+```text
+"quanto ela deve receber HOJE?"
+```
+
+Você pensa:
+
+```text
+"quanto ela deveria ter acumulado ATÉ AGORA?"
+```
+
+Isso muda tudo.
+
+---
+
+# 🎯 Dia 2
+
+Agora entram mais:
+
+```text
+50 clientes
+```
+
+Então o acumulado total será:
+
+```text
+100 + 50 = 150 clientes
+```
+
+---
+
+# 🎯 Quanto a Nova Quest deveria ter no total?
+
+A regra é:
+
+```text
+27%
+```
+
+Então:
+
+```text
+150 * 27%
+=
+40,5
+≈ 41 clientes
+```
+
+---
+
+# 🎯 Quantos ela já tem?
+
+Ela já recebeu:
+
+```text
+23
+```
+
+---
+
+# 🎯 Quantos faltam?
+
+Então:
+
+```text
+41 - 23
+=
+18
+```
+
+---
+
+# 🎯 O que isso significa?
+
+Dos 50 novos clientes:
+
+```text
+18 devem ir para Nova Quest
+```
+
+---
+
+# 🎯 Qual o share REAL do dia 2?
+
+Agora vem a mágica.
+
+O share do dia 2 NÃO é mais:
+
+```text
+27%
+```
+
+Agora é:
+
+```text
+18 / 50
+=
+36%
+```
+
+---
+
+# 🧠 Interpretação HUMANA
+
+O motor está pensando assim:
+
+```text
+"Ontem eu mandei menos clientes do que deveria.
+Então hoje eu preciso compensar."
+```
+
+---
+
+# 🎯 O nome disso
+
+Isso é um:
+
+```text
+motor de compensação acumulada
+```
+
+Ou:
+
+```text
+motor de cotas acumuladas
+```
+
+---
+
+# 🧠 O conceito mais importante de todos
+
+O share do dia NÃO é fixo.
+
+O que é fixo é o:
+
+```text
+share acumulado alvo
+```
+
+---
+
+# 🚨 Frase MUITO importante
+
+O motor não tenta acertar:
+
+```text
+o dia
+```
+
+Ele tenta acertar:
+
+```text
+o acumulado
+```
+
+---
+
+# 🧩 Então qual é a lógica inteira?
+
+Todo dia o motor faz:
+
+---
+
+# PASSO 1
+
+Olha quantos clientes já foram distribuídos.
+
+Exemplo:
+
+```text
+100
+```
+
+---
+
+# PASSO 2
+
+Olha quantos clientes novos entraram.
+
+Exemplo:
+
+```text
+50
+```
+
+---
+
+# PASSO 3
+
+Calcula quanto deveria existir no total depois da entrada.
+
+Exemplo:
+
+```text
+150
+```
+
+---
+
+# PASSO 4
+
+Calcula o alvo teórico acumulado.
+
+Exemplo:
+
+```text
+150 * 27%
+=
+41
+```
+
+---
+
+# PASSO 5
+
+Olha quanto a Nova Quest já possui.
+
+Exemplo:
+
+```text
+23
+```
+
+---
+
+# PASSO 6
+
+Calcula quanto ela PRECISA receber agora.
+
+Exemplo:
+
+```text
+41 - 23
+=
+18
+```
+
+---
+
+# PASSO 7
+
+Distribui os 50 clientes do dia tentando entregar:
+
+```text
+18
+```
+
+para ela.
+
+---
+
+# 🎯 Resultado final
+
+Depois da distribuição:
+
+```text
+23 + 18
+=
+41
+```
+
+E aí ela fica próxima do:
+
+```text
+27% acumulado
+```
+
+---
+
+# 🚨 Agora vem a parte MAIS importante
+
+O motor NÃO distribui “por porcentagem”.
+
+Ele distribui por:
+
+```text
+quantidade necessária para corrigir o acumulado
+```
+
+---
+
+# 🧠 Então o que é isto aqui?
+
+```sql
+alvo_acumulado_pos =
+(total_antes + novos) * share_teorico
+```
+
+Significa:
+
+```text
+"quantos clientes esse escritório deveria ter no total após a entrada nova?"
+```
+
+---
+
+# 🧠 E isto?
+
+```sql
+qtd_alvo_rodada =
+alvo_acumulado_pos - qtd_ja_recebida
+```
+
+Significa:
+
+```text
+"quantos clientes eu preciso mandar AGORA para compensar?"
+```
+
+---
+
+# 🧠 E isto?
+
+```sql
+share_ajustado_rodada =
+qtd_alvo_rodada / clientes_novos
+```
+
+Significa:
+
+```text
+"qual percentual da entrada nova precisa ir para ele?"
+```
+
+---
+
+# 🎯 O SQL faz exatamente isso
+
+O SQL NÃO está fazendo mágica.
+
+Ele só automatiza essas continhas.
+
+---
+
+# 🧩 O que cada tabela representa
+
+---
+
+# 1️⃣ tabela_regra_share_escritorio
+
+É a regra oficial.
+
+Exemplo:
+
+| fila        | escritório   | share |
+| ----------- | ------------ | ----: |
+| LOW TICKETS | Nova Quest   |   27% |
+| LOW TICKETS | Escritório B |   30% |
+| LOW TICKETS | Escritório C |   43% |
+
+---
+
+# 2️⃣ iceberg_gold_fato_cobranca_distribuicao_cliente
+
+É o histórico do que REALMENTE aconteceu.
+
+Exemplo:
+
+| cliente   | escritório   |
+| --------- | ------------ |
+| Cliente 1 | Nova Quest   |
+| Cliente 2 | Escritório B |
+
+---
+
+# 3️⃣ clientes_elegiveis_dia
+
+São os clientes novos de hoje.
+
+Exemplo:
+
+| cliente     |
+| ----------- |
+| Cliente 101 |
+| Cliente 102 |
+
+---
+
+# 🎯 O SQL principal faz o quê?
+
+Ele pega:
+
+```text
+regra teórica
++
+histórico real
++
+entrada nova
+```
+
+E calcula:
+
+```text
+quantos clientes cada escritório precisa receber hoje
+```
+
+---
+
+# 🎯 Depois vem o segundo SQL
+
+Esse:
+
+```sql
+row_number()
+```
+
+serve para ordenar os clientes.
+
+Exemplo:
+
+| cliente | posição |
+| ------- | ------: |
+| A       |       1 |
+| B       |       2 |
+| C       |       3 |
+
+---
+
+# 🎯 E o que é isto?
+
+```sql
+limite_inferior
+limite_superior
+```
+
+É literalmente:
+
+```text
+"esse bloco de clientes pertence a este escritório"
+```
+
+---
+
+# Exemplo
+
+Nova Quest precisa receber:
+
+```text
+18 clientes
+```
+
+Então ela pega:
+
+```text
+clientes 1 até 18
+```
+
+---
+
+# Escritório B
+
+Precisa receber:
+
+```text
+15
+```
+
+Então pega:
+
+```text
+19 até 33
+```
+
+---
+
+# Escritório C
+
+Pega o restante.
+
+---
+
+# 🧠 O motor inteiro é basicamente isso
+
+```text
+1. Descobre quanto cada escritório deveria ter acumulado
+2. Descobre quanto já tem
+3. Calcula quanto falta
+4. Divide os clientes novos para compensar
+5. Salva o resultado
+6. Repete amanhã
+```
+
+---
+
+# 🎯 O objetivo final
+
+Não é acertar o share TODO DIA.
+
+É fazer com que, ao longo do tempo:
+
+```text
+share_real ≈ share_teorico
+```
+
+---
+
+# 🚨 A coisa mais importante para você explicar para alguém
+
+Se alguém perguntar:
+
+> “Por que hoje a Nova Quest recebeu 36% se o share dela é 27%?”
+
+A resposta é:
+
+```text
+Porque ela estava abaixo do share acumulado histórico.
+O motor está compensando o déficit acumulado.
+```
+
+---
+
+# 🎯 A analogia perfeita
+
+Imagine 3 pessoas dividindo pizza.
+
+A regra é:
+
+```text
+Pessoa A = 27%
+```
+
+Mas ontem ela comeu menos pizza.
+
+Hoje ela precisa comer MAIS que 27% para compensar.
+
+O objetivo não é equilibrar:
+
+```text
+o dia
+```
+
+O objetivo é equilibrar:
+
+```text
+o histórico acumulado
+```
+Abaixo está um SQL mais operacional, já com **normalização por maiores restos** para garantir que a soma das cotas bata com a quantidade de clientes novos.
+
+```sql
+INSERT INTO workspace_db.iceberg_gold_fato_cobranca_distribuicao_cliente
+WITH parametros AS (
+    SELECT
+        DATE '2026-05-12' AS dt_execucao,
+        'exec_20260512_001' AS id_execucao
+),
+
+novos AS (
+    SELECT
+        e.fila,
+        e.cliente_id
+    FROM workspace_db.view_silver_integrado_cobranca_clientes_elegiveis_dia e
+    CROSS JOIN parametros p
+    WHERE e.dt_ref_date = p.dt_execucao
+),
+
+qtd_novos AS (
+    SELECT
+        fila,
+        count(DISTINCT cliente_id) AS qtd_clientes_novos
+    FROM novos
+    GROUP BY 1
+),
+
+historico_fila AS (
+    SELECT
+        fila,
+        count(DISTINCT cliente_id) AS qtd_clientes_acumulado_antes
+    FROM workspace_db.iceberg_gold_fato_cobranca_distribuicao_cliente
+    GROUP BY 1
+),
+
+historico_escritorio AS (
+    SELECT
+        fila,
+        escritorio,
+        count(DISTINCT cliente_id) AS qtd_clientes_escritorio_antes
+    FROM workspace_db.iceberg_gold_fato_cobranca_distribuicao_cliente
+    GROUP BY 1,2
+),
+
+regra AS (
+    SELECT
+        r.fila,
+        r.escritorio,
+        cast(r.share_teorico AS double) AS share_teorico,
+
+        coalesce(r.fl_evitar_ultrapassar, false) AS fl_evitar_ultrapassar,
+        cast(coalesce(r.tolerancia_pp_acima, 0.010000) AS double) AS tolerancia_pp_acima,
+        coalesce(r.tp_politica_arredondamento, 'ROUND') AS tp_politica_arredondamento
+    FROM workspace_db.tabela_regra_share_escritorio r
+    CROSS JOIN parametros p
+    WHERE r.fl_ativo = true
+      AND p.dt_execucao BETWEEN r.dt_inicio_vigencia
+                            AND coalesce(r.dt_fim_vigencia, DATE '9999-12-31')
+),
+
+cota_bruta AS (
+    SELECT
+        r.fila,
+        r.escritorio,
+        r.share_teorico,
+        r.fl_evitar_ultrapassar,
+        r.tolerancia_pp_acima,
+        r.tp_politica_arredondamento,
+
+        coalesce(hf.qtd_clientes_acumulado_antes, 0) AS qtd_clientes_acumulado_antes,
+        coalesce(he.qtd_clientes_escritorio_antes, 0) AS qtd_clientes_escritorio_antes,
+        qn.qtd_clientes_novos,
+
+        (
+            coalesce(hf.qtd_clientes_acumulado_antes, 0)
+            + qn.qtd_clientes_novos
+        ) AS qtd_clientes_acumulado_pos,
+
+        -- alvo decimal puro
+        (
+            (
+                coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                + qn.qtd_clientes_novos
+            ) * r.share_teorico
+        ) AS alvo_acumulado_pos_decimal,
+
+        -- alvo inteiro com política de arredondamento
+        CASE
+            WHEN r.tp_politica_arredondamento = 'FLOOR' THEN
+                cast(floor(
+                    (
+                        coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                        + qn.qtd_clientes_novos
+                    ) * r.share_teorico
+                ) AS bigint)
+
+            WHEN r.tp_politica_arredondamento = 'CEIL' THEN
+                cast(ceil(
+                    (
+                        coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                        + qn.qtd_clientes_novos
+                    ) * r.share_teorico
+                ) AS bigint)
+
+            ELSE
+                cast(round(
+                    (
+                        coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                        + qn.qtd_clientes_novos
+                    ) * r.share_teorico
+                ) AS bigint)
+        END AS alvo_acumulado_pos,
+
+        -- teto máximo permitido
+        cast(floor(
+            (
+                coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                + qn.qtd_clientes_novos
+            ) * (r.share_teorico + r.tolerancia_pp_acima)
+        ) AS bigint) AS teto_acumulado_pos
+
+    FROM regra r
+    JOIN qtd_novos qn
+        ON r.fila = qn.fila
+    LEFT JOIN historico_fila hf
+        ON r.fila = hf.fila
+    LEFT JOIN historico_escritorio he
+        ON r.fila = he.fila
+       AND r.escritorio = he.escritorio
+),
+
+cota_com_teto AS (
+    SELECT
+        *,
+
+        greatest(
+            0,
+            alvo_acumulado_pos - qtd_clientes_escritorio_antes
+        ) AS cota_rodada_sem_teto,
+
+        greatest(
+            0,
+            teto_acumulado_pos - qtd_clientes_escritorio_antes
+        ) AS capacidade_ate_teto,
+
+        CASE
+            WHEN fl_evitar_ultrapassar = true THEN
+                least(
+                    greatest(0, alvo_acumulado_pos - qtd_clientes_escritorio_antes),
+                    greatest(0, teto_acumulado_pos - qtd_clientes_escritorio_antes)
+                )
+            ELSE
+                greatest(0, alvo_acumulado_pos - qtd_clientes_escritorio_antes)
+        END AS cota_rodada_decimal
+    FROM cota_bruta
+),
+
+cota_floor AS (
+    SELECT
+        *,
+        cast(floor(cota_rodada_decimal) AS bigint) AS cota_floor,
+        cota_rodada_decimal - floor(cota_rodada_decimal) AS resto_decimal
+    FROM cota_com_teto
+),
+
+sobra AS (
+    SELECT
+        fila,
+        max(qtd_clientes_novos) AS qtd_clientes_novos,
+        sum(cota_floor) AS soma_floor,
+        max(qtd_clientes_novos) - sum(cota_floor) AS qtd_sobra
+    FROM cota_floor
+    GROUP BY 1
+),
+
+cota_com_ranking AS (
+    SELECT
+        c.*,
+        s.qtd_sobra,
+
+        row_number() OVER (
+            PARTITION BY c.fila
+            ORDER BY c.resto_decimal DESC, c.escritorio
+        ) AS rn_resto
+    FROM cota_floor c
+    JOIN sobra s
+        ON c.fila = s.fila
+),
+
+cota_final AS (
+    SELECT
+        fila,
+        escritorio,
+
+        cota_floor
+        + CASE
+            WHEN rn_resto <= qtd_sobra THEN 1
+            ELSE 0
+          END AS qtd_clientes_rodada
+    FROM cota_com_ranking
+),
+
+cota_faixas AS (
+    SELECT
+        fila,
+        escritorio,
+        qtd_clientes_rodada,
+
+        coalesce(
+            sum(qtd_clientes_rodada) OVER (
+                PARTITION BY fila
+                ORDER BY escritorio
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ),
+            0
+        ) AS limite_inferior,
+
+        sum(qtd_clientes_rodada) OVER (
+            PARTITION BY fila
+            ORDER BY escritorio
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS limite_superior
+    FROM cota_final
+),
+
+clientes_ordenados AS (
+    SELECT
+        n.fila,
+        n.cliente_id,
+
+        row_number() OVER (
+            PARTITION BY n.fila
+            ORDER BY xxhash64(to_utf8(cast(n.cliente_id AS varchar)))
+        ) AS rn_cliente
+    FROM novos n
+),
+
+distribuicao AS (
+    SELECT
+        p.dt_execucao AS dt_distribuicao,
+        c.fila,
+        c.cliente_id,
+        f.escritorio,
+        p.id_execucao
+    FROM clientes_ordenados c
+    JOIN cota_faixas f
+        ON c.fila = f.fila
+       AND c.rn_cliente > f.limite_inferior
+       AND c.rn_cliente <= f.limite_superior
+    CROSS JOIN parametros p
+)
+
+SELECT
+    dt_distribuicao,
+    fila,
+    cliente_id,
+    escritorio,
+    id_execucao
+FROM distribuicao;
+```
+
+A leitura simples é:
+
+```text
+1. Calcula quantos clientes novos existem hoje.
+2. Calcula quanto cada escritório já recebeu no histórico.
+3. Calcula quanto cada escritório deveria ter acumulado após a entrada de hoje.
+4. Calcula quanto falta para cada escritório.
+5. Transforma essa necessidade em cotas inteiras.
+6. Ordena os clientes.
+7. Entrega blocos de clientes para cada escritório.
+8. Grava o resultado.
+```
+Sim. Essa consideração muda o motor de:
+
+```text
+corrigir para bater o share teórico
+```
+
+para:
+
+```text
+corrigir sem ultrapassar o teto político/operacional do share
+```
+
+Ou seja: **share não é só meta estatística; é limite de distribuição.**
+
+## Regra nova
+
+Para cada escritório, principalmente quem perdeu share:
+
+```text
+share_real_acumulado <= share_teorico + tolerância
+```
+
+Exemplo CRC:
+
+```text
+share_teorico = 18%
+tolerância = 1pp
+teto = 19%
+```
+
+Mas a preferência é:
+
+```text
+ficar em 18% ou um pouco abaixo
+```
+
+não em 19% cravado.
+
+## Tradução prática
+
+Se a CRC tem share 18%, ela não deve receber “19% porque arredondou”. Se ela ficar com 17,8%, tudo bem. Se ficar com 18,3%, talvez ok. Se ficar com 19,2%, já viola a intenção da regra.
+
+Então o motor precisa ter dois conceitos:
+
+```text
+alvo = 18%
+teto = 19%
+```
+
+E, se não der para bater exato:
+
+```text
+prefira abaixo do alvo
+```
+
+## Como muda a fórmula
+
+Antes:
+
+```sql
+alvo_acumulado_pos =
+round(total_pos * share_teorico)
+```
+
+Agora, para escritórios sensíveis, use:
+
+```sql
+alvo_acumulado_pos =
+floor(total_pos * share_teorico)
+```
+
+Por quê?
+
+Porque `round` pode jogar para cima.
+
+Exemplo:
+
+```text
+total = 150
+share = 18%
+
+150 * 18% = 27
+```
+
+Aqui ok.
+
+Mas:
+
+```text
+total = 103
+share = 18%
+
+103 * 18% = 18,54
+round = 19
+floor = 18
+```
+
+Se der 19, o share real vira:
+
+```text
+19 / 103 = 18,45%
+```
+
+Pode parecer pouco, mas para um escritório que perdeu share, isso pode ser indesejado. O `floor` força o motor a errar para baixo.
+
+## Regra recomendada
+
+Na tabela de regra de share, adicione parâmetros:
+
+```sql
+tp_politica_arredondamento varchar, -- 'FLOOR', 'ROUND', 'CEIL'
+tolerancia_pp_acima decimal(10,6),  -- ex: 0.010000
+fl_evitar_ultrapassar boolean
+```
+
+Exemplo:
+
+| escritório | share | política | tolerância |
+| ---------- | ----: | -------- | ---------: |
+| CRC        |   18% | FLOOR    |        1pp |
+| Nova Quest |   27% | ROUND    |        1pp |
+
+## SQL conceitual
+
+```sql
+CASE
+    WHEN fl_evitar_ultrapassar = true THEN
+        cast(floor(total_pos * share_teorico) AS bigint)
+    ELSE
+        cast(round(total_pos * share_teorico) AS bigint)
+END AS alvo_acumulado_pos
+```
+
+E depois aplique teto:
+
+```sql
+cast(floor(total_pos * (share_teorico + tolerancia_pp_acima)) AS bigint) AS teto_acumulado_pos
+```
+
+A cota final não pode passar desse teto:
+
+```sql
+least(
+    qtd_alvo_rodada_calculada,
+    teto_acumulado_pos - qtd_clientes_escritorio_antes
+) AS qtd_alvo_rodada_final
+```
+
+## Explicação simples para alguém
+
+> “O motor tenta aproximar o escritório do share vigente, mas não trata o share como algo que pode ultrapassar livremente. Se um escritório caiu para 18%, isso representa uma decisão de reduzir sua participação. Então, quando houver arredondamento ou falta de encaixe perfeito, o motor prefere deixar esse escritório levemente abaixo de 18% do que acima, especialmente acima de 19%.”
+
+## Resumo da regra
+
+```text
+1. Share teórico define o alvo.
+2. Tolerância define o máximo aceitável.
+3. Para escritórios que perderam share, arredonda para baixo.
+4. Nunca deixa passar do teto.
+5. A sobra vai para escritórios com maior direito de receber.
+```
+
+Esse ajuste é importante porque transforma o motor em um sistema de **execução da política comercial**, não apenas em um balanceador matemático.
+------------
+
+Fica assim: você troca o cálculo de `alvo_acumulado_pos` por uma versão com **política de arredondamento + teto máximo**.
+
+```sql
+-- Campos novos na tabela de regra
+ALTER TABLE workspace_db.tabela_regra_share_escritorio
+ADD COLUMNS (
+    fl_evitar_ultrapassar boolean,
+    tolerancia_pp_acima decimal(10,6),
+    tp_politica_arredondamento varchar
+);
+```
+
+Exemplo CRC:
+
+```sql
+-- share 18%, tolera no máximo 19%, prefere arredondar para baixo
+-- tolerancia_pp_acima = 0.010000
+-- tp_politica_arredondamento = 'FLOOR'
+-- fl_evitar_ultrapassar = true
+```
+
+Substitua a CTE `regra` e `cota_bruta` por esta versão:
+
+```sql
+regra AS (
+    SELECT
+        r.fila,
+        r.escritorio,
+        cast(r.share_teorico AS double) AS share_teorico,
+
+        coalesce(r.fl_evitar_ultrapassar, false) AS fl_evitar_ultrapassar,
+        cast(coalesce(r.tolerancia_pp_acima, 0.010000) AS double) AS tolerancia_pp_acima,
+        coalesce(r.tp_politica_arredondamento, 'ROUND') AS tp_politica_arredondamento
+    FROM workspace_db.tabela_regra_share_escritorio r
+    CROSS JOIN parametros p
+    WHERE r.fl_ativo = true
+      AND p.dt_execucao BETWEEN r.dt_inicio_vigencia
+                            AND coalesce(r.dt_fim_vigencia, DATE '9999-12-31')
+),
+
+cota_bruta AS (
+    SELECT
+        r.fila,
+        r.escritorio,
+        r.share_teorico,
+        r.fl_evitar_ultrapassar,
+        r.tolerancia_pp_acima,
+        r.tp_politica_arredondamento,
+
+        coalesce(hf.qtd_clientes_acumulado_antes, 0) AS qtd_clientes_acumulado_antes,
+        coalesce(he.qtd_clientes_escritorio_antes, 0) AS qtd_clientes_escritorio_antes,
+        qn.qtd_clientes_novos,
+
+        (
+            coalesce(hf.qtd_clientes_acumulado_antes, 0)
+            + qn.qtd_clientes_novos
+        ) AS qtd_clientes_acumulado_pos,
+
+        -- alvo decimal puro
+        (
+            (
+                coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                + qn.qtd_clientes_novos
+            ) * r.share_teorico
+        ) AS alvo_acumulado_pos_decimal,
+
+        -- alvo inteiro com política de arredondamento
+        CASE
+            WHEN r.tp_politica_arredondamento = 'FLOOR' THEN
+                cast(floor(
+                    (
+                        coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                        + qn.qtd_clientes_novos
+                    ) * r.share_teorico
+                ) AS bigint)
+
+            WHEN r.tp_politica_arredondamento = 'CEIL' THEN
+                cast(ceil(
+                    (
+                        coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                        + qn.qtd_clientes_novos
+                    ) * r.share_teorico
+                ) AS bigint)
+
+            ELSE
+                cast(round(
+                    (
+                        coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                        + qn.qtd_clientes_novos
+                    ) * r.share_teorico
+                ) AS bigint)
+        END AS alvo_acumulado_pos,
+
+        -- teto máximo permitido
+        cast(floor(
+            (
+                coalesce(hf.qtd_clientes_acumulado_antes, 0)
+                + qn.qtd_clientes_novos
+            ) * (r.share_teorico + r.tolerancia_pp_acima)
+        ) AS bigint) AS teto_acumulado_pos
+
+    FROM regra r
+    JOIN qtd_novos qn
+        ON r.fila = qn.fila
+    LEFT JOIN historico_fila hf
+        ON r.fila = hf.fila
+    LEFT JOIN historico_escritorio he
+        ON r.fila = he.fila
+       AND r.escritorio = he.escritorio
+),
+
+cota_com_teto AS (
+    SELECT
+        *,
+
+        greatest(
+            0,
+            alvo_acumulado_pos - qtd_clientes_escritorio_antes
+        ) AS cota_rodada_sem_teto,
+
+        greatest(
+            0,
+            teto_acumulado_pos - qtd_clientes_escritorio_antes
+        ) AS capacidade_ate_teto,
+
+        CASE
+            WHEN fl_evitar_ultrapassar = true THEN
+                least(
+                    greatest(0, alvo_acumulado_pos - qtd_clientes_escritorio_antes),
+                    greatest(0, teto_acumulado_pos - qtd_clientes_escritorio_antes)
+                )
+            ELSE
+                greatest(0, alvo_acumulado_pos - qtd_clientes_escritorio_antes)
+        END AS cota_rodada_decimal
+    FROM cota_bruta
+)
+```
+
+Depois, no restante do SQL, troque a origem da cota:
+
+```sql
+FROM cota_bruta
+```
+
+por:
+
+```sql
+FROM cota_com_teto
+```
+
+## Exemplo do efeito
+
+CRC:
+
+```text
+share = 18%
+tolerância = 1pp
+teto = 19%
+política = FLOOR
+```
+
+Se total pós-entrada for 103:
+
+```text
+alvo decimal = 103 * 18% = 18,54
+
+ROUND daria 19
+FLOOR dá 18
+```
+
+Então a CRC fica com 18 clientes, não 19.
+
+```text
+18 / 103 = 17,48%
+```
+
+Ela fica abaixo do share, o que é aceitável nesse caso.
+
+O motor evita transformar 18% em 18,45% ou 19% por causa de arredondamento.
