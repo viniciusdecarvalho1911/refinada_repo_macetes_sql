@@ -1,0 +1,648 @@
+Abaixo vai o **pacote SQL completo**, do Bronze até Gold/Mart. Estruturei no padrão `bronze → silver_padronizado → silver_integrado → gold → mart`, que é o desenho recomendado no seu material: Bronze sem regra, Silver padroniza/integra, Gold aplica regra oficial e Mart agrega para consumo. 
+
+> Ajuste apenas: nomes reais de colunas, `LOCATION` no S3 e período.
+
+```sql
+-- =========================================================
+-- PARÂMETROS MENTAIS DO PROCESSO
+-- =========================================================
+-- Histórico acumulado até 2025-12:
+-- entrada = menor dt_foto do mês por contrato/produto/escritório
+-- saída simulada = primeira data entre dt_foto - 3 e dt_foto + 4
+--                  em que contrato/produto não existe na OPC
+--                  OU atraso_opc < atraso_carteira
+--
+-- A partir da PURC:
+-- usar snapshot diário real da distribuição
+--
+-- Resultado:
+-- iceberg_gold_fato_cobranca_carteira_distribuida_dia
+-- mart mensal:
+-- iceberg_gold_mart_cobranca_carteira_media_escritorio_mes
+```
+
+## 1. Bronze — fontes mínimas
+
+```sql
+-- =========================================================
+-- 1.1 BRONZE — CARTEIRA DISTRIBUÍDA HISTÓRICA
+-- Até 2025-12, carteira acumulada
+-- =========================================================
+
+CREATE EXTERNAL TABLE IF NOT EXISTS workspace_db.tabela_bronze_fonte_cobranca_carteira_distribuida_historica (
+    dt_foto                  int,
+    contrato                 string,
+    produto                  string,
+    escritorio               string,
+    vl_saldo                 decimal(18,2),
+    dias_atraso_contrato     int,
+    faixa_atraso_contrato    string
+)
+STORED AS PARQUET
+LOCATION 's3://lakehouse/bronze/cobranca/carteira_distribuida_historica/';
+```
+
+```sql
+-- =========================================================
+-- 1.2 BRONZE — OPC DIÁRIA
+-- nomegia no formato YYYYMMDD
+-- =========================================================
+
+CREATE EXTERNAL TABLE IF NOT EXISTS workspace_db.tabela_bronze_fonte_cobranca_opc_diaria (
+    nomegia                  int,
+    contrato                 string,
+    produto                  string,
+    dias_atraso_contrato     int,
+    vl_saldo_opc             decimal(18,2)
+)
+STORED AS PARQUET
+LOCATION 's3://lakehouse/bronze/cobranca/opc_diaria/';
+```
+
+```sql
+-- =========================================================
+-- 1.3 BRONZE — PURC DIÁRIA
+-- Para período atual, com distribuição real diária
+-- =========================================================
+
+CREATE EXTERNAL TABLE IF NOT EXISTS workspace_db.tabela_bronze_fonte_cobranca_purc_carteira_diaria (
+    dt_foto                  int,
+    contrato                 string,
+    produto                  string,
+    escritorio               string,
+    vl_saldo                 decimal(18,2),
+    dias_atraso_contrato     int,
+    faixa_atraso_contrato    string,
+    fl_distribuido           int
+)
+STORED AS PARQUET
+LOCATION 's3://lakehouse/bronze/cobranca/purc_carteira_diaria/';
+```
+
+## 2. Silver padronizado
+
+```sql
+-- =========================================================
+-- 2.1 SILVER PADRONIZADO — CARTEIRA HISTÓRICA
+-- =========================================================
+
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_carteira_distribuida_historica AS
+SELECT
+    dt_foto AS p_dt_foto,
+
+    cast(substr(cast(dt_foto AS varchar), 1, 6) AS integer) AS mes_ref_yyyymm,
+    dt_foto AS dt_ref_yyyymmdd,
+    cast(date_parse(cast(dt_foto AS varchar), '%Y%m%d') AS date) AS dt_ref_date,
+    cast(date_parse(cast(dt_foto AS varchar), '%Y%m%d') AS timestamp) AS ts_ref,
+
+    cast(contrato AS varchar) AS contrato,
+    cast(produto AS varchar) AS produto,
+    cast(escritorio AS varchar) AS escritorio,
+
+    cast(vl_saldo AS decimal(18,2)) AS vl_saldo,
+    cast(dias_atraso_contrato AS integer) AS dias_atraso_contrato,
+    cast(faixa_atraso_contrato AS varchar) AS faixa_atraso_contrato,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'silver_padronizado_manual' AS id_execucao,
+
+    md5(
+        concat(
+            coalesce(cast(contrato AS varchar), ''),
+            '|', coalesce(cast(produto AS varchar), ''),
+            '|', coalesce(cast(escritorio AS varchar), ''),
+            '|', coalesce(cast(dt_foto AS varchar), '')
+        )
+    ) AS hash_chave_negocio,
+
+    md5(
+        concat(
+            coalesce(cast(vl_saldo AS varchar), ''),
+            '|', coalesce(cast(dias_atraso_contrato AS varchar), ''),
+            '|', coalesce(cast(faixa_atraso_contrato AS varchar), '')
+        )
+    ) AS hash_atributos
+FROM workspace_db.tabela_bronze_fonte_cobranca_carteira_distribuida_historica;
+```
+
+```sql
+-- =========================================================
+-- 2.2 SILVER PADRONIZADO — OPC
+-- =========================================================
+
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_opc_diaria AS
+SELECT
+    nomegia AS p_nomegia,
+
+    cast(substr(cast(nomegia AS varchar), 1, 6) AS integer) AS mes_ref_yyyymm,
+    nomegia AS dt_ref_yyyymmdd,
+    cast(date_parse(cast(nomegia AS varchar), '%Y%m%d') AS date) AS dt_ref_date,
+    cast(date_parse(cast(nomegia AS varchar), '%Y%m%d') AS timestamp) AS ts_ref,
+
+    cast(contrato AS varchar) AS contrato,
+    cast(produto AS varchar) AS produto,
+
+    cast(dias_atraso_contrato AS integer) AS dias_atraso_contrato,
+    cast(vl_saldo_opc AS decimal(18,2)) AS vl_saldo_opc,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'silver_padronizado_manual' AS id_execucao,
+
+    md5(
+        concat(
+            coalesce(cast(contrato AS varchar), ''),
+            '|', coalesce(cast(produto AS varchar), ''),
+            '|', coalesce(cast(nomegia AS varchar), '')
+        )
+    ) AS hash_chave_negocio
+FROM workspace_db.tabela_bronze_fonte_cobranca_opc_diaria;
+```
+
+```sql
+-- =========================================================
+-- 2.3 SILVER PADRONIZADO — PURC DIÁRIA
+-- =========================================================
+
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado_cobranca_purc_carteira_diaria AS
+SELECT
+    dt_foto AS p_dt_foto,
+
+    cast(substr(cast(dt_foto AS varchar), 1, 6) AS integer) AS mes_ref_yyyymm,
+    dt_foto AS dt_ref_yyyymmdd,
+    cast(date_parse(cast(dt_foto AS varchar), '%Y%m%d') AS date) AS dt_ref_date,
+    cast(date_parse(cast(dt_foto AS varchar), '%Y%m%d') AS timestamp) AS ts_ref,
+
+    cast(contrato AS varchar) AS contrato,
+    cast(produto AS varchar) AS produto,
+    cast(escritorio AS varchar) AS escritorio,
+
+    cast(vl_saldo AS decimal(18,2)) AS vl_saldo,
+    cast(dias_atraso_contrato AS integer) AS dias_atraso_contrato,
+    cast(faixa_atraso_contrato AS varchar) AS faixa_atraso_contrato,
+
+    CASE WHEN fl_distribuido = 1 THEN true ELSE false END AS fl_distribuido,
+
+    current_timestamp AS dt_ingestao_modelo,
+    'silver_padronizado_manual' AS id_execucao
+FROM workspace_db.tabela_bronze_fonte_cobranca_purc_carteira_diaria;
+```
+
+## 3. Silver integrado — histórico acumulado simulado
+
+```sql
+CREATE OR REPLACE VIEW workspace_db.view_silver_integrado_cobranca_carteira_historica_intervalo_simulado AS
+WITH carteira_base AS (
+    SELECT
+        mes_ref_yyyymm AS anomes,
+        dt_ref_yyyymmdd AS dt_foto,
+        dt_ref_date AS dt_foto_date,
+
+        contrato,
+        produto,
+        escritorio,
+
+        vl_saldo,
+        dias_atraso_contrato AS dias_atraso_carteira,
+        faixa_atraso_contrato
+    FROM workspace_db.view_silver_padronizado_cobranca_carteira_distribuida_historica
+    WHERE mes_ref_yyyymm <= 202512
+),
+
+-- Menor dt_foto do mês por contrato/produto/escritório
+carteira_primeira_foto AS (
+    SELECT *
+    FROM (
+        SELECT
+            c.*,
+            row_number() OVER (
+                PARTITION BY anomes, contrato, produto, escritorio
+                ORDER BY dt_foto ASC
+            ) AS rn
+        FROM carteira_base c
+    )
+    WHERE rn = 1
+),
+
+janela_observacao AS (
+    SELECT
+        c.*,
+        dia AS dt_check,
+        cast(date_format(dia, '%Y%m%d') AS integer) AS nomegia_check
+    FROM carteira_primeira_foto c
+    CROSS JOIN UNNEST(
+        sequence(
+            date_add('day', -3, c.dt_foto_date),
+            date_add('day',  4, c.dt_foto_date),
+            interval '1' day
+        )
+    ) AS t(dia)
+),
+
+avaliacao_opc AS (
+    SELECT
+        j.*,
+        o.dias_atraso_contrato AS dias_atraso_opc,
+
+        CASE
+            WHEN o.contrato IS NULL THEN true
+            ELSE false
+        END AS fl_nao_existe_opc,
+
+        CASE
+            WHEN o.contrato IS NOT NULL
+             AND o.dias_atraso_contrato < j.dias_atraso_carteira
+                THEN true
+            ELSE false
+        END AS fl_retroagiu_atraso,
+
+        CASE
+            WHEN o.contrato IS NULL THEN 'nao_existe_opc'
+            WHEN o.dias_atraso_contrato < j.dias_atraso_carteira THEN 'retroagiu_atraso'
+            ELSE null
+        END AS motivo_saida_candidato
+    FROM janela_observacao j
+    LEFT JOIN workspace_db.view_silver_padronizado_cobranca_opc_diaria o
+        ON j.contrato = o.contrato
+       AND j.produto = o.produto
+       AND j.nomegia_check = o.dt_ref_yyyymmdd
+),
+
+saida_simulada AS (
+    SELECT
+        anomes,
+        contrato,
+        produto,
+        escritorio,
+
+        min(dt_check) AS dt_saida_simulada,
+        min_by(motivo_saida_candidato, dt_check) AS motivo_saida
+    FROM avaliacao_opc
+    WHERE fl_nao_existe_opc = true
+       OR fl_retroagiu_atraso = true
+    GROUP BY 1,2,3,4
+)
+
+SELECT
+    c.anomes,
+    c.contrato,
+    c.produto,
+    c.escritorio,
+
+    c.vl_saldo,
+    c.dias_atraso_carteira AS dias_atraso_contrato,
+    c.faixa_atraso_contrato,
+
+    c.dt_foto_date AS dt_entrada_exposicao,
+
+    least(
+        last_day_of_month(c.dt_foto_date),
+        coalesce(s.dt_saida_simulada, last_day_of_month(c.dt_foto_date))
+    ) AS dt_saida_exposicao,
+
+    coalesce(s.motivo_saida, 'fim_mes_sem_saida_simulada') AS motivo_saida
+FROM carteira_primeira_foto c
+LEFT JOIN saida_simulada s
+    ON c.anomes = s.anomes
+   AND c.contrato = s.contrato
+   AND c.produto = s.produto
+   AND c.escritorio = s.escritorio;
+```
+
+## 4. Gold — fato diária oficial
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_cobranca_carteira_distribuida_dia (
+    anomesdia                       integer,
+    anomes                          integer,
+    dt_ref                          date,
+
+    contrato                        varchar,
+    produto                         varchar,
+    escritorio                      varchar,
+
+    vl_saldo                        decimal(18,2),
+    dias_atraso_contrato            integer,
+    faixa_atraso_contrato           varchar,
+
+    fl_distribuido                  boolean,
+    fl_purc                         boolean,
+    fl_simulado_historico           boolean,
+
+    tipo_evento_dia                 varchar,
+    dt_entrada_exposicao            date,
+    dt_saida_exposicao              date,
+    motivo_saida                    varchar,
+
+    origem_modelagem                varchar,
+    id_execucao                     varchar,
+    dt_ingestao_modelo              timestamp,
+
+    p_anomes                        integer
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    write_compression = 'SNAPPY',
+    partitioning = ARRAY['p_anomes'],
+    location = 's3://lakehouse/gold/cobranca/iceberg_gold_fato_cobranca_carteira_distribuida_dia/'
+);
+```
+
+## 5. Insert Gold — histórico até 2025-12
+
+```sql
+DELETE FROM workspace_db.iceberg_gold_fato_cobranca_carteira_distribuida_dia
+WHERE p_anomes <= 202512
+  AND origem_modelagem = 'HISTORICO_ACUMULADO_SIMULADO';
+```
+
+```sql
+INSERT INTO workspace_db.iceberg_gold_fato_cobranca_carteira_distribuida_dia
+WITH snapshot_diario AS (
+    SELECT
+        cast(date_format(dia, '%Y%m%d') AS integer) AS anomesdia,
+        cast(date_format(dia, '%Y%m') AS integer) AS anomes,
+        dia AS dt_ref,
+
+        contrato,
+        produto,
+        escritorio,
+
+        vl_saldo,
+        dias_atraso_contrato,
+        faixa_atraso_contrato,
+
+        true AS fl_distribuido,
+        false AS fl_purc,
+        true AS fl_simulado_historico,
+
+        CASE
+            WHEN dia = dt_entrada_exposicao THEN 'entrada'
+            WHEN dia = dt_saida_exposicao THEN 'saida'
+            ELSE 'estoque'
+        END AS tipo_evento_dia,
+
+        dt_entrada_exposicao,
+        dt_saida_exposicao,
+        motivo_saida,
+
+        'HISTORICO_ACUMULADO_SIMULADO' AS origem_modelagem
+    FROM workspace_db.view_silver_integrado_cobranca_carteira_historica_intervalo_simulado
+    CROSS JOIN UNNEST(
+        sequence(dt_entrada_exposicao, dt_saida_exposicao, interval '1' day)
+    ) AS t(dia)
+)
+
+SELECT
+    anomesdia,
+    anomes,
+    dt_ref,
+    contrato,
+    produto,
+    escritorio,
+    vl_saldo,
+    dias_atraso_contrato,
+    faixa_atraso_contrato,
+    fl_distribuido,
+    fl_purc,
+    fl_simulado_historico,
+    tipo_evento_dia,
+    dt_entrada_exposicao,
+    dt_saida_exposicao,
+    motivo_saida,
+    origem_modelagem,
+    'execucao_historico_acumulado_ate_202512' AS id_execucao,
+    current_timestamp AS dt_ingestao_modelo,
+    anomes AS p_anomes
+FROM snapshot_diario;
+```
+
+## 6. Insert Gold — PURC observada
+
+```sql
+DELETE FROM workspace_db.iceberg_gold_fato_cobranca_carteira_distribuida_dia
+WHERE p_anomes >= 202601
+  AND origem_modelagem = 'PURC_OBSERVADO';
+```
+
+```sql
+INSERT INTO workspace_db.iceberg_gold_fato_cobranca_carteira_distribuida_dia
+WITH base AS (
+    SELECT
+        dt_ref_yyyymmdd AS anomesdia,
+        mes_ref_yyyymm AS anomes,
+        dt_ref_date AS dt_ref,
+
+        contrato,
+        produto,
+        escritorio,
+
+        vl_saldo,
+        dias_atraso_contrato,
+        faixa_atraso_contrato,
+
+        fl_distribuido
+    FROM workspace_db.view_silver_padronizado_cobranca_purc_carteira_diaria
+    WHERE mes_ref_yyyymm >= 202601
+),
+
+eventos AS (
+    SELECT
+        b.*,
+
+        lag(fl_distribuido) OVER (
+            PARTITION BY contrato, produto, escritorio
+            ORDER BY dt_ref
+        ) AS fl_distribuido_anterior,
+
+        lead(fl_distribuido) OVER (
+            PARTITION BY contrato, produto, escritorio
+            ORDER BY dt_ref
+        ) AS fl_distribuido_seguinte,
+
+        min(CASE WHEN fl_distribuido THEN dt_ref END) OVER (
+            PARTITION BY contrato, produto, escritorio, anomes
+        ) AS dt_entrada_exposicao,
+
+        max(CASE WHEN fl_distribuido THEN dt_ref END) OVER (
+            PARTITION BY contrato, produto, escritorio, anomes
+        ) AS dt_saida_exposicao
+    FROM base b
+),
+
+final AS (
+    SELECT
+        anomesdia,
+        anomes,
+        dt_ref,
+
+        contrato,
+        produto,
+        escritorio,
+
+        vl_saldo,
+        dias_atraso_contrato,
+        faixa_atraso_contrato,
+
+        fl_distribuido,
+
+        CASE
+            WHEN fl_distribuido = true
+             AND coalesce(fl_distribuido_anterior, false) = false
+                THEN 'entrada'
+            WHEN fl_distribuido = true
+             AND coalesce(fl_distribuido_seguinte, false) = false
+                THEN 'saida'
+            WHEN fl_distribuido = true
+                THEN 'estoque'
+            ELSE 'fora'
+        END AS tipo_evento_dia,
+
+        dt_entrada_exposicao,
+        dt_saida_exposicao
+    FROM eventos
+    WHERE fl_distribuido = true
+)
+
+SELECT
+    anomesdia,
+    anomes,
+    dt_ref,
+
+    contrato,
+    produto,
+    escritorio,
+
+    vl_saldo,
+    dias_atraso_contrato,
+    faixa_atraso_contrato,
+
+    true AS fl_distribuido,
+    true AS fl_purc,
+    false AS fl_simulado_historico,
+
+    tipo_evento_dia,
+    dt_entrada_exposicao,
+    dt_saida_exposicao,
+
+    CASE
+        WHEN tipo_evento_dia = 'saida' THEN 'saida_purc_observada'
+        ELSE null
+    END AS motivo_saida,
+
+    'PURC_OBSERVADO' AS origem_modelagem,
+    'execucao_purc_observado' AS id_execucao,
+    current_timestamp AS dt_ingestao_modelo,
+
+    anomes AS p_anomes
+FROM final;
+```
+
+## 7. Mart — carteira média mensal
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_mart_cobranca_carteira_media_escritorio_mes (
+    anomes                          integer,
+    escritorio                      varchar,
+    origem_modelagem                varchar,
+
+    qt_dias_observados              integer,
+    qt_contratos_expostos           bigint,
+
+    vl_saldo_dia_acumulado          decimal(22,2),
+    vl_carteira_media               decimal(18,2),
+
+    vl_entrada_mes                  decimal(18,2),
+    vl_saida_mes                    decimal(18,2),
+    vl_estoque_medio                decimal(18,2),
+
+    qt_entradas_mes                 bigint,
+    qt_saidas_mes                   bigint,
+
+    id_execucao                     varchar,
+    dt_ingestao_modelo              timestamp,
+
+    p_anomes                        integer
+)
+WITH (
+    table_type = 'ICEBERG',
+    format = 'PARQUET',
+    write_compression = 'SNAPPY',
+    partitioning = ARRAY['p_anomes'],
+    location = 's3://lakehouse/gold/cobranca/iceberg_gold_mart_cobranca_carteira_media_escritorio_mes/'
+);
+```
+
+```sql
+DELETE FROM workspace_db.iceberg_gold_mart_cobranca_carteira_media_escritorio_mes
+WHERE p_anomes BETWEEN 202401 AND 202604;
+```
+
+```sql
+INSERT INTO workspace_db.iceberg_gold_mart_cobranca_carteira_media_escritorio_mes
+WITH base AS (
+    SELECT *
+    FROM workspace_db.iceberg_gold_fato_cobranca_carteira_distribuida_dia
+    WHERE p_anomes BETWEEN 202401 AND 202604
+      AND fl_distribuido = true
+),
+
+agg AS (
+    SELECT
+        anomes,
+        escritorio,
+        origem_modelagem,
+
+        count(DISTINCT dt_ref) AS qt_dias_observados,
+        count(DISTINCT contrato || '|' || produto) AS qt_contratos_expostos,
+
+        sum(vl_saldo) AS vl_saldo_dia_acumulado,
+
+        cast(
+            sum(vl_saldo) / nullif(count(DISTINCT dt_ref), 0)
+            AS decimal(18,2)
+        ) AS vl_carteira_media,
+
+        cast(sum(CASE WHEN tipo_evento_dia = 'entrada' THEN vl_saldo ELSE 0 END) AS decimal(18,2)) AS vl_entrada_mes,
+        cast(sum(CASE WHEN tipo_evento_dia = 'saida' THEN vl_saldo ELSE 0 END) AS decimal(18,2)) AS vl_saida_mes,
+
+        cast(
+            sum(CASE WHEN tipo_evento_dia = 'estoque' THEN vl_saldo ELSE 0 END)
+            / nullif(count(DISTINCT dt_ref), 0)
+            AS decimal(18,2)
+        ) AS vl_estoque_medio,
+
+        count(DISTINCT CASE WHEN tipo_evento_dia = 'entrada' THEN contrato || '|' || produto END) AS qt_entradas_mes,
+        count(DISTINCT CASE WHEN tipo_evento_dia = 'saida' THEN contrato || '|' || produto END) AS qt_saidas_mes,
+
+        max(id_execucao) AS id_execucao
+    FROM base
+    GROUP BY 1,2,3
+)
+
+SELECT
+    anomes,
+    escritorio,
+    origem_modelagem,
+
+    cast(qt_dias_observados AS integer) AS qt_dias_observados,
+    qt_contratos_expostos,
+
+    cast(vl_saldo_dia_acumulado AS decimal(22,2)) AS vl_saldo_dia_acumulado,
+    vl_carteira_media,
+
+    vl_entrada_mes,
+    vl_saida_mes,
+    vl_estoque_medio,
+
+    qt_entradas_mes,
+    qt_saidas_mes,
+
+    id_execucao,
+    current_timestamp AS dt_ingestao_modelo,
+
+    anomes AS p_anomes
+FROM agg;
+```
+
+O ponto crítico: a **Gold diária** vira sua verdade auditável; a **Mart mensal** vira consumo para meta, eficiência e QuickSight. Esse padrão de `DELETE + INSERT por partição` é adequado para snapshots mensais/fechamentos no Athena Iceberg. 
