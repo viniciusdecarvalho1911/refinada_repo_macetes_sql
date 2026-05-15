@@ -1,0 +1,657 @@
+`````markdown id="jlwmr4"
+---
+title: Marp — Guia Básico para Apresentações em Markdown
+tags:
+  - ferramenta/marp
+  - tema/apresentacao
+  - tema/markdown
+  - tema/obsidian
+  - tema/vscode
+tipo: referencia
+status: ativo
+---
+
+# 🎯 O que é o Marp?
+
+Marp é uma ferramenta que transforma arquivos Markdown (`.md`) em:
+
+- apresentações HTML;
+- PDF;
+- PPTX (PowerPoint).
+
+A ideia principal é:
+
+```text
+Markdown → Slides
+```
+
+Ou seja:
+
+- você escreve texto;
+- separa slides com `---`;
+- o Marp renderiza como apresentação.
+
+---
+
+# 🧠 Quando usar Marp?
+
+O Marp é excelente para:
+
+- apresentações técnicas;
+- arquitetura;
+- engenharia de dados;
+- comitês executivos;
+- workshops;
+- documentação viva;
+- apresentações versionadas no Git.
+
+---
+
+# 🏗️ Estrutura mínima de um arquivo Marp
+
+```markdown
+---
+marp: true
+theme: gaia
+paginate: true
+size: 16:9
+---
+
+# Meu slide
+
+Texto aqui
+
+---
+
+# Outro slide
+
+Mais conteúdo
+```
+
+---
+
+# 📦 Explicando o cabeçalho
+
+## `marp: true`
+
+Ativa o modo apresentação.
+
+---
+
+## `theme`
+
+Tema visual.
+
+Exemplos:
+
+```yaml
+theme: default
+theme: gaia
+theme: uncover
+```
+
+### Recomendação
+
+```yaml
+theme: gaia
+```
+
+Porque fica mais executivo.
+
+---
+
+## `paginate: true`
+
+Mostra número dos slides.
+
+---
+
+## `size: 16:9`
+
+Formato widescreen.
+
+---
+
+# 🎬 Separando slides
+
+Use:
+
+```markdown
+---
+```
+
+Exemplo:
+
+```markdown
+# Slide 1
+
+Texto
+
+---
+
+# Slide 2
+
+Outro texto
+```
+
+---
+
+# 📝 Títulos
+
+## Título principal
+
+```markdown
+# Título
+```
+
+---
+
+## Subtítulo
+
+```markdown
+## Subtítulo
+```
+
+---
+
+## Seção menor
+
+```markdown
+### Seção
+```
+
+---
+
+# ✍️ Formatação básica
+
+## Negrito
+
+```markdown
+**texto**
+```
+
+Resultado:
+
+**texto**
+
+---
+
+## Itálico
+
+```markdown
+*texto*
+```
+
+Resultado:
+
+*texto*
+
+---
+
+## Citação
+
+```markdown
+> texto
+```
+
+Resultado:
+
+> texto
+
+---
+
+# 📋 Listas
+
+## Lista simples
+
+```markdown
+- item 1
+- item 2
+- item 3
+```
+
+---
+
+## Lista numerada
+
+```markdown
+1. item
+2. item
+3. item
+```
+
+---
+
+# 📊 Tabelas
+
+## Sintaxe
+
+```markdown
+| Nome | Valor |
+|---|---|
+| A | 10 |
+| B | 20 |
+```
+
+Resultado:
+
+| Nome | Valor |
+|---|---|
+| A | 10 |
+| B | 20 |
+
+---
+
+# 🖼️ Inserindo imagens
+
+## Imagem simples
+
+```markdown
+![width:500](imagem.png)
+```
+
+---
+
+## Imagem ocupando tela inteira
+
+```markdown
+![bg](imagem.png)
+```
+
+---
+
+## Imagem à direita
+
+```markdown
+![bg right:40%](imagem.png)
+```
+
+---
+
+## Imagem à esquerda
+
+```markdown
+![bg left:35%](imagem.png)
+```
+
+---
+
+# 🎨 Controlando tamanho da fonte
+
+## Globalmente
+
+No cabeçalho:
+
+```yaml
+style: |
+  section {
+    font-size: 28px;
+  }
+```
+
+---
+
+## Exemplo completo
+
+```markdown
+---
+marp: true
+theme: gaia
+
+style: |
+  section {
+    font-size: 28px;
+  }
+---
+```
+
+---
+
+# 🎨 Mudando cor da fonte
+
+## Slide inteiro
+
+```yaml
+style: |
+  section {
+    color: #222222;
+  }
+```
+
+---
+
+## Texto específico
+
+```html
+<span style="color:red">
+Texto vermelho
+</span>
+```
+
+---
+
+# 🧱 Caixas visuais
+
+## Exemplo
+
+```html
+<div style="background:#fff3cd;padding:20px;border-radius:10px">
+
+Texto importante
+
+</div>
+```
+
+---
+
+# 🚨 Caixa de alerta
+
+```html
+<div style="background:#f8d7da;padding:20px;border-radius:10px">
+
+⚠️ Atenção
+
+</div>
+```
+
+---
+
+# 🟩 Caixa positiva
+
+```html
+<div style="background:#d4edda;padding:20px;border-radius:10px">
+
+✅ OK
+
+</div>
+```
+
+---
+
+# 🧠 Fluxos e diagramas simples
+
+## Exemplo
+
+````markdown
+```text
+A
+↓
+B
+↓
+C
+```
+`````
+
+Resultado:
+
+```text
+A
+↓
+B
+↓
+C
+```
+
+---
+
+# 📌 Texto centralizado
+
+```html
+<div align="center">
+
+# Texto centralizado
+
+</div>
+```
+
+---
+
+# 📐 Colunas simples
+
+## Exemplo
+
+```html
+<table>
+<tr>
+<td>
+
+Texto esquerda
+
+</td>
+<td>
+
+Texto direita
+
+</td>
+</tr>
+</table>
+```
+
+---
+
+# 🎨 Classes visuais no slide
+
+## Slide destaque
+
+```markdown
+<!-- _class: lead -->
+
+# Slide importante
+```
+
+---
+
+## Slide invertido
+
+```markdown
+<!-- _class: invert -->
+
+# Slide escuro
+```
+
+---
+
+# 🖥️ Preview no VS Code
+
+## Abrir preview
+
+```text
+Ctrl + Shift + P
+```
+
+Depois:
+
+```text
+Marp: Open Preview
+```
+
+---
+
+## Preview lado a lado
+
+```text
+Marp: Open Preview to the Side
+```
+
+---
+
+# 📦 Exportando PPTX
+
+## Via extensão
+
+Clique:
+
+```text
+Export Slide Deck
+```
+
+---
+
+## Via CLI
+
+```bash
+marp slides.md --pptx
+```
+
+---
+
+# 📄 Exportando PDF
+
+```bash
+marp slides.md --pdf
+```
+
+---
+
+# 🚀 Exportando HTML
+
+```bash
+marp slides.md --html
+```
+
+---
+
+# 🎨 Tema executivo recomendado
+
+```yaml
+theme: gaia
+```
+
+---
+
+# 🧠 Estrutura recomendada para apresentações executivas
+
+## Slide ideal
+
+* pouco texto;
+* headline forte;
+* 3 a 5 bullets;
+* um insight central;
+* um visual dominante.
+
+---
+
+# 🚨 Erros comuns
+
+## Muito texto
+
+Slides não devem virar documento.
+
+---
+
+## Fonte pequena
+
+Se precisar reduzir muito a fonte:
+
+* provavelmente há informação demais.
+
+---
+
+## Muitas cores
+
+Use poucas cores:
+
+* preto;
+* cinza;
+* laranja/vermelho para risco;
+* verde para positivo.
+
+---
+
+# 📌 Workflow recomendado
+
+## Estrutura
+
+```text
+apresentacoes/
+ ├── riscos_cobranca.md
+ ├── arquitetura_lakehouse.md
+ └── simulacao_regul.md
+```
+
+---
+
+# 🧱 Stack recomendada
+
+## VS Code
+
+Extensões:
+
+* Marp for VS Code
+* Markdown All in One
+* Material Icon Theme
+
+---
+
+# 🎯 Melhor prática
+
+Use Marp como:
+
+```text
+código para apresentações
+```
+
+Benefícios:
+
+* versionamento;
+* reaproveitamento;
+* exportação rápida;
+* histórico;
+* colaboração;
+* automação.
+
+---
+
+# 🚀 Exemplo completo mínimo
+
+```markdown
+---
+marp: true
+theme: gaia
+paginate: true
+size: 16:9
+
+style: |
+  section {
+    font-size: 28px;
+  }
+---
+
+# Meu slide
+
+Texto aqui
+
+---
+
+# Outro slide
+
+| Métrica | Valor |
+|---|---|
+| Regul | 10M |
+| Caixa | 8M |
+
+---
+
+![bg right:40%](imagem.png)
+
+# Slide com imagem
+```
+
+---
+
+# 🧠 Resumo mental do Marp
+
+```text
+Markdown
++
+---
++
+Tema
++
+CSS opcional
+=
+Apresentação profissional
+```
+
+```
+```
