@@ -1,0 +1,2369 @@
+---
+marp: true
+paginate: true
+theme: default
+size: 16:9
+---
+
+<style>
+
+/* =========================================================
+   1) VARIÁVEIS GLOBAIS
+   Altere aqui para mudar o visual do deck inteiro
+   ========================================================= */
+
+:root {
+  --cor-primaria: #D4AF37;
+  --cor-secundaria: #4CAF50;
+  --cor-texto: #222222;
+  --cor-fundo: #FFFFFF;
+  --cor-card: #F4F4F4;
+  --cor-borda: #CCCCCC;
+
+  --cor-danger: #ef4444;
+  --cor-warning: #f59e0b;
+  --cor-muted: #64748b;
+  --cor-ok: #166534;
+
+  --fonte-titulo-slide: 46px;
+  --fonte-subtitulo: 28px;
+  --fonte-card-titulo: 30px;
+  --fonte-card-valor: 42px;
+  --fonte-texto: 24px;
+
+  --padding-card: 25px;
+  --gap-cards: 20px;
+  --radius-card: 12px;
+}
+
+/* =========================================================
+   2) CONFIGURAÇÃO GERAL DOS SLIDES
+   Mude aqui fundo, fonte, padding e cor padrão
+   ========================================================= */
+
+section {
+  background: var(--cor-fundo);
+  color: var(--cor-texto);
+  font-size: var(--fonte-texto);
+  font-family: Arial, Helvetica, sans-serif;
+  padding: 56px 72px;
+}
+
+section.sql-card pre {
+  background: white !important;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  padding: 24px !important;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.06);
+}
+
+section.sql-card pre code {
+  color: #0f172a !important;
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+section.dark .code-light pre {
+  background: white !important;
+
+  border-radius: 18px;
+
+  border: 1px solid #334155;
+
+  box-shadow:
+    0 10px 25px rgba(0,0,0,0.18);
+}
+
+section.dark .code-light pre code {
+  color: #0f172a !important;
+}
+
+/* =========================================================
+   3) TÍTULOS PADRÃO
+   Afeta #, ## e ### do Markdown
+   ========================================================= */
+
+h1 {
+  font-size: var(--fonte-titulo-slide);
+  color: #0f172a;
+  margin-bottom: 18px;
+}
+
+h2 {
+  font-size: var(--fonte-subtitulo);
+  color: #334155;
+}
+
+h3 {
+  font-size: 22px;
+  color: #475569;
+}
+
+p, li {
+  font-size: var(--fonte-texto);
+  line-height: 1.35;
+}
+
+/* =========================================================
+   4) TABELAS
+   Use quando quiser tabela formatada
+   ========================================================= */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 18px;
+}
+
+th {
+  background: #e2e8f0;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+th, td {
+  border: 1px solid #cbd5e1;
+  padding: 10px 12px;
+  vertical-align: top;
+}
+
+/* =========================================================
+   5) CLASSES UTILITÁRIAS
+   Pequenas classes reutilizáveis para texto
+   ========================================================= */
+
+.center {
+  text-align: center;
+}
+
+.muted {
+  color: var(--cor-muted);
+}
+
+.small {
+  font-size: 18px;
+}
+
+.ok {
+  color: var(--cor-ok);
+  font-weight: 700;
+}
+
+.risk {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+/* =========================================================
+   6) BOX PADRÃO
+   Use para destacar uma ideia neutra
+   ========================================================= */
+
+.box {
+  border: 2px solid #cbd5e1;
+  border-radius: 14px;
+  padding: 18px 22px;
+  margin-top: 18px;
+  background: #f8fafc;
+}
+
+/* =========================================================
+   7) WARNING
+   Use para alertas moderados
+   ========================================================= */
+
+.warning {
+  border: 2px solid var(--cor-warning);
+  border-radius: 14px;
+  padding: 18px 22px;
+  margin-top: 18px;
+  background: #fffbeb;
+}
+
+/* =========================================================
+   8) DANGER
+   Use para risco crítico, erro grave ou decisão perigosa
+   ========================================================= */
+
+.danger {
+  border: 2px solid var(--cor-danger);
+  border-radius: 14px;
+  padding: 18px 22px;
+  margin-top: 18px;
+  background: #fef2f2;
+}
+
+/* =========================================================
+   9) FLOW
+   Use para mostrar sequência de processo
+   ========================================================= */
+
+.flow {
+  font-size: 26px;
+  line-height: 1.55;
+  text-align: center;
+  font-weight: 700;
+}
+
+/* =========================================================
+   10) TWO COLUMNS COM GRID
+   Melhor para layout fixo em duas colunas
+   ========================================================= */
+
+.two-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+  align-items: start;
+}
+
+/* =========================================================
+   11) FLEX ROW
+   Melhor para cards lado a lado
+   ========================================================= */
+
+.flex-row {
+  display: flex;
+  gap: var(--gap-cards);
+  align-items: stretch;
+}
+
+/* =========================================================
+   12) CARD DE MÉTRICA
+   Use dentro de flex-row
+   ========================================================= */
+
+.metric-card {
+  border: 1px solid var(--cor-borda);
+  padding: var(--padding-card);
+  border-radius: var(--radius-card);
+  flex: 1;
+  background: white;
+}
+
+.metric-title {
+  font-size: var(--fonte-card-titulo);
+  font-weight: bold;
+  margin-bottom: 20px;
+   text-align: center;
+}
+
+.metric-value {
+  font-size: var(--fonte-card-valor);
+  text-align: center;
+  font-weight: bold;
+  text-align: center;
+}
+
+/* =========================================================
+   13) CLASSES ESPECÍFICAS DE MÉTRICAS
+   Mude aqui se quiser alterar só Caixa ou só Eficiência
+   ========================================================= */
+
+.caixa-title {
+  color: #D4AF37 !important;
+  font-size: 30px !important;
+  text-align: center !important;
+}
+
+.caixa-value {
+  color: #222222 !important;
+  font-size: 40px !important;
+  text-align: center !important;
+}
+
+.eficiencia-title {
+  color: #4CAF50 !important;
+  font-size: 30px !important;
+  text-align: center !important;
+}
+
+.eficiencia-value {
+  color: #222222 !important;
+  font-size: 40px !important;
+  text-align: center !important;
+}
+
+/* =========================================================
+   14) SECTION CLASSES
+   Use <!-- _class: nome_da_classe --> no slide
+   ========================================================= */
+
+section.lead h1 {
+  font-size: 54px;
+}
+
+section.lead p {
+  font-size: 28px;
+}
+
+section.dark {
+  background: #0f172a;
+  color: white;
+}
+
+section.dark h1,
+section.dark h2,
+section.dark h3 {
+  color: white;
+}
+
+section.executivo {
+  background: #f8fafc;
+}
+
+section.tecnico {
+  background: #ffffff;
+}
+
+/* =========================================================
+   15) POSICIONAMENTO LIVRE
+   Use para logo, fonte, legenda ou selo
+   ========================================================= */
+
+.fonte-rodape {
+  position: absolute;
+  bottom: 25px;
+  right: 40px;
+  font-size: 16px;
+  color: #777777;
+}
+
+.logo-canto {
+  position: absolute;
+  top: 25px;
+  right: 40px;
+  font-size: 18px;
+  font-weight: bold;
+  color: #999999;
+}
+
+/* =========================================================
+   16) DIVISORES HORIZONTAIS
+   Use para separar blocos visualmente
+   ========================================================= */
+
+.divider {
+  height: 2px;
+  background: #e2e8f0;
+  margin: 28px 0;
+  border-radius: 999px;
+}
+
+/* =========================================================
+   17) HERO / CAPA PRINCIPAL
+   Use para slides de abertura
+   ========================================================= */
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 70%;
+}
+
+.hero-title {
+  font-size: 64px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.1;
+  margin-bottom: 20px;
+}
+
+.hero-subtitle {
+  font-size: 28px;
+  color: #475569;
+  max-width: 900px;
+  line-height: 1.4;
+}
+
+/* =========================================================
+   18) BADGES / TAGS
+   Use para status, labels e categorias
+   ========================================================= */
+
+.badge {
+  display: inline-block;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 700;
+  margin-right: 8px;
+  margin-bottom: 8px;
+}
+
+.badge-ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.badge-warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.badge-danger {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.badge-info {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+/* =========================================================
+   19) KPI GRID
+   Grid automática para vários KPIs
+   ========================================================= */
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+}
+
+.kpi-card {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.kpi-label {
+  font-size: 18px;
+  color: #64748b;
+  margin-bottom: 14px;
+}
+
+.kpi-number {
+  font-size: 42px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.kpi-delta {
+  margin-top: 10px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+/* =========================================================
+   20) CÓDIGO / SQL
+   Melhor visual para blocos técnicos
+   ========================================================= */
+
+pre {
+  background: #0f172a !important;
+  border-radius: 16px;
+  padding: 22px !important;
+  overflow: hidden;
+}
+
+code {
+  font-size: 18px;
+  line-height: 1.45;
+}
+
+/* =========================================================
+   21) QUOTE EXECUTIVO
+   Use para tese principal ou insight forte
+   ========================================================= */
+
+.quote {
+  border-left: 10px solid var(--cor-primaria);
+  padding: 18px 28px;
+  background: #fffaf0;
+  border-radius: 12px;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #0f172a;
+}
+
+/* =========================================================
+   22) TIMELINE VERTICAL
+   Use para evolução temporal ou roadmap
+   ========================================================= */
+
+.timeline {
+  border-left: 4px solid #cbd5e1;
+  margin-left: 14px;
+  padding-left: 28px;
+}
+
+.timeline-item {
+  margin-bottom: 30px;
+  position: relative;
+}
+
+.timeline-item::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  background: var(--cor-primaria);
+  border-radius: 999px;
+  position: absolute;
+  left: -39px;
+  top: 8px;
+}
+
+.timeline-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.timeline-text {
+  font-size: 20px;
+  color: #475569;
+  margin-top: 8px;
+}
+
+/* =========================================================
+   23) SIDE PANEL
+   Painel lateral fixo para destaque
+   ========================================================= */
+
+.side-panel {
+  background: #f8fafc;
+  border-left: 8px solid var(--cor-primaria);
+  padding: 24px;
+  border-radius: 14px;
+}
+
+/* =========================================================
+   24) IMAGEM RESPONSIVA
+   Use para screenshots, dashboards e diagramas
+   ========================================================= */
+
+.image-card {
+  border: 1px solid #cbd5e1;
+  border-radius: 18px;
+  padding: 18px;
+  background: white;
+}
+
+.image-fit {
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+}
+
+.image-cover {
+  width: 100%;
+  height: 420px;
+  object-fit: cover;
+  border-radius: 12px;
+}
+
+.image-cover-small {
+  width: 100%;
+  height: 300px;          /* diminua aqui */
+  object-fit: cover;
+  border-radius: 12px;
+}
+
+.image-cover-fit-slide {
+  width: 100%;
+  max-height: 45vh;       /* ocupa no máximo 45% da altura do slide */
+  object-fit: cover;
+  border-radius: 12px;
+}
+
+.image-slide-stack {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 18px;
+  height: 100%;
+}
+
+.image-slide-stack .image-card {
+  overflow: hidden;
+}
+
+.image-slide-stack img {
+  width: 100%;
+  max-height: 42vh;
+  object-fit: cover;
+  border-radius: 12px;
+}
+
+/* =========================================================
+   25) OVERLAY ESCURO PARA IMAGEM
+   Use em slides com background image
+   ========================================================= */
+
+.overlay-dark {
+  background: rgba(15, 23, 42, 0.72);
+  padding: 30px;
+  border-radius: 20px;
+  color: white;
+}
+
+/* =========================================================
+   26) GRID 3 COLUNAS
+   Use para comparações múltiplas
+   ========================================================= */
+
+.three-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 24px;
+}
+
+/* =========================================================
+   27) PILLS DE MÉTRICA
+   Pequenas métricas inline
+   ========================================================= */
+
+.metric-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+
+  padding: 12px 18px;
+
+  border-radius: 999px;
+
+  background: #f1f5f9;
+
+  font-size: 18px;
+  font-weight: 700;
+}
+
+/* =========================================================
+   28) CENTRALIZAÇÃO ABSOLUTA
+   Use para slides minimalistas
+   ========================================================= */
+
+.absolute-center {
+  position: absolute;
+
+  top: 50%;
+  left: 50%;
+
+  transform: translate(-50%, -50%);
+
+  text-align: center;
+}
+
+/* =========================================================
+   29) MINI CARDS
+   Cards compactos para grids densos
+   ========================================================= */
+
+.mini-card {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.mini-card-title {
+  font-size: 16px;
+  color: #64748b;
+  margin-bottom: 10px;
+}
+
+.mini-card-value {
+  font-size: 28px;
+  font-weight: 800;
+}
+
+/* =========================================================
+   30) TABLE STRIPES
+   Zebra em tabelas
+   ========================================================= */
+
+table tr:nth-child(even) {
+  background: #f8fafc;
+}
+
+/* =========================================================
+   31) CALLOUT INFO
+   Use para observações importantes
+   ========================================================= */
+
+.info {
+  border-left: 8px solid #3b82f6;
+  background: #eff6ff;
+  padding: 18px 22px;
+  border-radius: 12px;
+}
+
+/* =========================================================
+   32) STACK VERTICAL
+   Melhor para empilhar blocos com espaçamento
+   ========================================================= */
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* =========================================================
+   33) SPACE BETWEEN
+   Empurra elementos para extremos do slide
+   ========================================================= */
+
+.space-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* =========================================================
+   34) WIDTH HELPERS
+   Controle rápido de largura
+   ========================================================= */
+
+.w-25 { width: 25%; }
+.w-50 { width: 50%; }
+.w-75 { width: 75%; }
+.w-100 { width: 100%; }
+
+/* =========================================================
+   35) HEIGHT HELPERS
+   Controle rápido de altura
+   ========================================================= */
+
+.h-100 {
+  height: 100%;
+}
+
+/* =========================================================
+   36) GLASS EFFECT
+   Use para slides modernos sobre imagem
+   ========================================================= */
+
+.glass {
+  background: rgba(255,255,255,0.12);
+  backdrop-filter: blur(12px);
+
+  border: 1px solid rgba(255,255,255,0.2);
+
+  border-radius: 20px;
+
+  padding: 24px;
+}
+
+/* =========================================================
+   37) SOMBRA SUAVE
+   Adicione class="shadow"
+   ========================================================= */
+
+.shadow {
+  box-shadow:
+    0 10px 25px rgba(0,0,0,0.08);
+}
+
+/* =========================================================
+   38) BORDER TOP HIGHLIGHT
+   Destaque elegante em cards
+   ========================================================= */
+
+.border-top-gold {
+  border-top: 8px solid var(--cor-primaria);
+}
+
+/* =========================================================
+   39) CARD ESCURO
+   Use em slides dark
+   ========================================================= */
+
+.dark-card {
+  background: #1e293b;
+  border-radius: 16px;
+  padding: 24px;
+  color: white;
+}
+
+/* =========================================================
+   40) FOOTNOTE TÉCNICA
+   Observações pequenas no rodapé
+   ========================================================= */
+
+.footnote {
+  font-size: 14px;
+  color: #94a3b8;
+  margin-top: 18px;
+}
+
+/* =========================================================
+   41) TEXTO SQL
+   Usar para textos sql
+   ========================================================= */
+
+.sql-card pre {
+  background: white !important;
+
+  border: 1px solid #e2e8f0;
+
+  border-radius: 18px;
+
+  box-shadow:
+    0 10px 25px rgba(0,0,0,0.06);
+}
+
+
+
+/* =========================================================
+   EXEMPLOS REUTILIZÁVEIS
+   Copie as classes abaixo quando precisar
+   montar layouts específicos rapidamente
+   ========================================================= */
+
+
+
+/* #########################################################
+   1) IMAGEM POSICIONADA
+   #########################################################
+
+   Use para:
+   - logos
+   - imagens decorativas
+   - screenshots pequenas
+   - selos
+   - watermark
+
+   Controle:
+   top
+   left
+   right
+   bottom
+   width
+   height
+
+######################################################### */
+
+.imagem_posicionada_exemplo {
+  position: absolute;
+
+  top: 120px;
+  right: 80px;
+
+  width: 320px;
+
+  border-radius: 18px;
+
+  box-shadow:
+    0 10px 25px rgba(0,0,0,0.15);
+}
+
+/*
+EXEMPLO DE USO:
+
+<img
+class="imagem_posicionada_exemplo"
+src="./img/dashboard.png"
+/>
+
+*/
+
+
+
+/* #########################################################
+   2) BOX POSICIONADA
+   #########################################################
+
+   Use para:
+   - observações
+   - insights
+   - callouts
+   - notas executivas
+
+######################################################### */
+
+.box_posicionada_exemplo {
+  position: absolute;
+
+  top: 180px;
+  left: 90px;
+
+  width: 500px;
+
+  padding: 24px;
+
+  border-radius: 18px;
+
+  background: white;
+
+  border-left: 10px solid #D4AF37;
+
+  box-shadow:
+    0 10px 30px rgba(0,0,0,0.08);
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="box_posicionada_exemplo">
+
+## Insight
+
+A queda parece vir principalmente
+de conversão.
+
+</div>
+
+*/
+
+
+
+/* #########################################################
+   3) TABELA POSICIONADA
+   #########################################################
+
+   Use para:
+   - tabelas pequenas
+   - comparações
+   - rankings
+   - resumo executivo
+
+######################################################### */
+
+.tabela_posicionada_exemplo {
+  position: absolute;
+
+  top: 160px;
+  right: 60px;
+
+  width: 700px;
+
+  background: white;
+
+  padding: 20px;
+
+  border-radius: 18px;
+
+  box-shadow:
+    0 10px 25px rgba(0,0,0,0.08);
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="tabela_posicionada_exemplo">
+
+| Escritório | Eficiência |
+|---|---|
+| A | 18.2% |
+| B | 16.1% |
+
+</div>
+
+*/
+
+
+
+/* #########################################################
+   4) SQL POSICIONADO
+   #########################################################
+
+   Use para:
+   - walkthrough técnico
+   - SQL explicado
+   - comparação query/result
+
+######################################################### */
+
+.sql_posicionado_exemplo {
+  position: absolute;
+
+  bottom: 80px;
+  right: 60px;
+
+  width: 800px;
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="sql_posicionado_exemplo">
+
+```sql
+SELECT *
+FROM tabela;
+````
+
+</div>
+
+*/
+
+/* #########################################################
+5) BADGE POSICIONADA
+#########################################################
+
+Use para:
+
+* selo
+* status
+* criticidade
+* ambiente
+
+######################################################### */
+
+.badge_posicionada_exemplo {
+position: absolute;
+
+top: 30px;
+left: 40px;
+
+padding: 10px 18px;
+
+border-radius: 999px;
+
+background: #dcfce7;
+
+color: #166534;
+
+font-weight: 700;
+
+font-size: 16px;
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="badge_posicionada_exemplo">
+PRODUÇÃO
+</div>
+
+*/
+
+/* #########################################################
+6) CARD CENTRALIZADO
+#########################################################
+
+Use para:
+
+* mensagem principal
+* tese
+* callout forte
+
+######################################################### */
+
+.card_centralizado_exemplo {
+position: absolute;
+
+top: 50%;
+left: 50%;
+
+transform: translate(-50%, -50%);
+
+width: 900px;
+
+padding: 40px;
+
+border-radius: 24px;
+
+background: white;
+
+text-align: center;
+
+box-shadow:
+0 20px 40px rgba(0,0,0,0.12);
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="card_centralizado_exemplo">
+
+# Mensagem principal
+
+Texto importante.
+
+</div>
+
+*/
+
+/* #########################################################
+7) SIDEBAR LATERAL
+#########################################################
+
+Use para:
+
+* observações
+* navegação
+* resumo lateral
+
+######################################################### */
+
+.sidebar_exemplo {
+position: absolute;
+
+top: 0;
+right: 0;
+
+width: 340px;
+height: 100%;
+
+padding: 40px 30px;
+
+background: #f8fafc;
+
+border-left:
+2px solid #e2e8f0;
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="sidebar_exemplo">
+
+## Resumo
+
+* item
+* item
+* item
+
+</div>
+
+*/
+
+/* #########################################################
+8) IMAGEM FULLSCREEN
+#########################################################
+
+Use para:
+
+* background manual
+* slides visuais
+* screenshots grandes
+
+######################################################### */
+
+.imagem_fullscreen_exemplo {
+position: absolute;
+
+top: 0;
+left: 0;
+
+width: 100%;
+height: 100%;
+
+object-fit: cover;
+
+z-index: -1;
+}
+
+/*
+EXEMPLO DE USO:
+
+<img
+class="imagem_fullscreen_exemplo"
+src="./img/bg.png"
+/>
+
+*/
+
+/* #########################################################
+9) OVERLAY ESCURO
+#########################################################
+
+Use junto com imagem fullscreen
+para legibilidade
+
+######################################################### */
+
+.overlay_escuro_exemplo {
+position: absolute;
+
+top: 0;
+left: 0;
+
+width: 100%;
+height: 100%;
+
+background:
+rgba(15,23,42,0.68);
+
+z-index: -1;
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="overlay_escuro_exemplo"></div>
+
+*/
+
+/* #########################################################
+10) TRIÂNGULO DECORATIVO
+#########################################################
+
+Use para:
+
+* decoração
+* identidade visual
+* separador
+
+######################################################### */
+
+.triangulo_exemplo {
+width: 0;
+height: 0;
+
+border-left: 120px solid transparent;
+border-bottom: 120px solid #D4AF37;
+
+position: absolute;
+
+top: 0;
+right: 0;
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="triangulo_exemplo"></div>
+
+*/
+
+/* #########################################################
+11) LINHA VERTICAL DECORATIVA
+#########################################################
+
+Use para:
+
+* separar seções
+* timeline
+* destaque lateral
+
+######################################################### */
+
+.linha_vertical_exemplo {
+position: absolute;
+
+top: 120px;
+left: 80px;
+
+width: 8px;
+height: 500px;
+
+border-radius: 999px;
+
+background: #D4AF37;
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="linha_vertical_exemplo"></div>
+
+*/
+
+/* #########################################################
+12) SELO CANTO SUPERIOR
+#########################################################
+
+Use para:
+
+* status
+* confidencial
+* draft
+* ambiente
+
+######################################################### */
+
+.selo_canto_exemplo {
+position: absolute;
+
+top: 24px;
+right: 24px;
+
+padding: 12px 18px;
+
+border-radius: 12px;
+
+background: #0f172a;
+
+color: white;
+
+font-size: 14px;
+
+font-weight: 700;
+
+letter-spacing: 1px;
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="selo_canto_exemplo">
+CONFIDENCIAL
+</div>
+
+*/
+
+/* #########################################################
+13) TEXTO FLUTUANTE
+#########################################################
+
+Use para:
+
+* anotação
+* explicação
+* destaque rápido
+
+######################################################### */
+
+.texto_flutuante_exemplo {
+position: absolute;
+
+bottom: 80px;
+left: 100px;
+
+font-size: 28px;
+
+font-weight: 700;
+
+color: #0f172a;
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="texto_flutuante_exemplo">
++18% YoY
+</div>
+
+*/
+
+/* #########################################################
+14) GRID POSICIONADA
+#########################################################
+
+Use para:
+
+* dashboard
+* mini-cards
+* métricas
+
+######################################################### */
+
+.grid_posicionada_exemplo {
+position: absolute;
+
+top: 180px;
+left: 80px;
+
+width: 1200px;
+
+display: grid;
+
+grid-template-columns:
+1fr 1fr 1fr 1fr;
+
+gap: 20px;
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="grid_posicionada_exemplo">
+
+<div class="mini-card">
+...
+</div>
+
+</div>
+
+*/
+
+/* #########################################################
+15) CONTAINER VIDRO
+#########################################################
+
+Use em slides escuros ou imagem
+de fundo
+
+######################################################### */
+
+.glass_posicionado_exemplo {
+position: absolute;
+
+bottom: 80px;
+left: 80px;
+
+width: 700px;
+
+padding: 30px;
+
+border-radius: 24px;
+
+background:
+rgba(255,255,255,0.12);
+
+backdrop-filter:
+blur(14px);
+
+color: white;
+
+border:
+1px solid rgba(255,255,255,0.18);
+}
+
+/*
+EXEMPLO DE USO:
+
+<div class="glass_posicionado_exemplo">
+
+# Resultado
+
+Texto aqui
+
+</div>
+
+*/
+
+
+
+</style>
+
+Abaixo está o bloco de slides editado e expandido:
+
+
+<!-- =========================================================
+     SLIDE 1 — CAPA / LEAD
+     Use _class para aplicar estilo especial no slide inteiro
+     ========================================================= -->
+
+<!-- _class: lead -->
+
+# Template Marp para Apresentações Técnicas
+
+Material base para apresentações de engenharia de dados, cobrança, arquitetura e analytics engineering.
+
+<div class="badge badge-info">Marp</div>
+<div class="badge badge-ok">Markdown</div>
+<div class="badge badge-warning">CSS</div>
+
+<div class="fonte-rodape">
+Marp · Markdown · CSS
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 2 — HERO
+     Use .hero para uma capa mais forte e moderna
+     ========================================================= -->
+
+# Hero slide
+
+<div class="hero">
+
+<div class="hero-title">
+Apresentações como código
+</div>
+
+<div class="hero-subtitle">
+Use Markdown para escrever, CSS para controlar layout e Marp para transformar tudo em slides versionáveis.
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 3 — CARD SIMPLES
+     A classe .box cria um bloco destacado neutro
+     ========================================================= -->
+
+# Card simples
+
+<div class="box">
+
+Este bloco usa a classe `.box`.
+
+Use para destacar uma explicação, conceito ou premissa sem tom de alerta.
+
+</div>
+
+<div class="warning">
+
+Este bloco usa `.warning`.
+
+Use para avisos, cuidados, atenção operacional ou riscos moderados.
+
+</div>
+
+<div class="danger">
+
+Este bloco usa `.danger`.
+
+Use para risco crítico, erro grave, decisão perigosa ou ponto que pode quebrar a análise.
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 4 — INFO / CALLOUT
+     Use .info para observações técnicas importantes
+     ========================================================= -->
+
+# Callout Info
+
+<div class="info">
+
+## Observação técnica
+
+Use `.info` quando quiser destacar uma nota explicativa sem carregar tom de alerta.
+
+Exemplo: “Esta query depende da partição `p_anomes` para reduzir custo no Athena.”
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 5 — TWO COLUMNS
+     Use .two-cols quando quiser duas colunas estáveis
+     ========================================================= -->
+
+# Two Columns
+
+<div class="two-cols">
+
+<div>
+
+## Coluna esquerda
+
+Use esta coluna para:
+
+- contexto
+- premissas
+- leitura executiva
+- problema de negócio
+
+</div>
+
+<div>
+
+## Coluna direita
+
+Use esta coluna para:
+
+- SQL
+- métrica
+- evidência
+- recomendação
+
+</div>
+
+</div>
+
+<div class="fonte-rodape">
+Layout: grid-template-columns: 1fr 1fr
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 6 — THREE COLS
+     Use .three-cols para comparar três alternativas
+     ========================================================= -->
+
+# Three Columns
+
+<div class="three-cols">
+
+<div class="mini-card">
+
+<div class="mini-card-title">
+Opção 1
+</div>
+
+<div class="mini-card-value">
+View
+</div>
+
+Mais simples, barata e rápida para começar.
+
+</div>
+
+<div class="mini-card">
+
+<div class="mini-card-title">
+Opção 2
+</div>
+
+<div class="mini-card-value">
+Tabela
+</div>
+
+Boa quando a consulta fica pesada ou recorrente.
+
+</div>
+
+<div class="mini-card">
+
+<div class="mini-card-title">
+Opção 3
+</div>
+
+<div class="mini-card-value">
+Iceberg
+</div>
+
+Melhor para histórico, evolução e updates controlados.
+
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 7 — FLEX
+     Use .flex-row quando quiser cards com largura flexível
+     ========================================================= -->
+
+# Flex com cards
+
+<div class="flex-row">
+
+<div class="metric-card shadow">
+
+<div class="metric-title caixa-title">
+Caixa
+</div>
+
+<div class="metric-value caixa-value">
+R$ 12MM
+</div>
+
+</div>
+
+<div class="metric-card shadow">
+
+<div class="metric-title eficiencia-title">
+Eficiência
+</div>
+
+<div class="metric-value eficiencia-value">
+18.2%
+</div>
+
+</div>
+
+<div class="metric-card shadow">
+
+<div class="metric-title">
+Delta
+</div>
+
+<div class="metric-value risk">
+-1.3pp
+</div>
+
+</div>
+
+</div>
+
+<div class="fonte-rodape">
+Layout: display:flex; gap entre cards
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 8 — KPI GRID
+     Use .kpi-grid para vários indicadores compactos
+     ========================================================= -->
+
+# KPI Grid
+
+<div class="kpi-grid">
+
+<div class="kpi-card shadow border-top-gold">
+<div class="kpi-label">Caixa</div>
+<div class="kpi-number">R$ 12MM</div>
+<div class="kpi-delta ok">+8% vs mês anterior</div>
+</div>
+
+<div class="kpi-card shadow border-top-gold">
+<div class="kpi-label">Eficiência</div>
+<div class="kpi-number">18.2%</div>
+<div class="kpi-delta risk">-1.3pp</div>
+</div>
+
+<div class="kpi-card shadow border-top-gold">
+<div class="kpi-label">Contratos</div>
+<div class="kpi-number">42k</div>
+<div class="kpi-delta ok">+3.1%</div>
+</div>
+
+<div class="kpi-card shadow border-top-gold">
+<div class="kpi-label">Ticket</div>
+<div class="kpi-number">R$ 286</div>
+<div class="kpi-delta risk">-4.5%</div>
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 9 — METRIC PILLS
+     Use .metric-pill para indicadores pequenos inline
+     ========================================================= -->
+
+# Metric Pills
+
+<div class="stack">
+
+<div>
+<span class="metric-pill">Caixa: R$ 12MM</span>
+<span class="metric-pill">Eficiência: 18.2%</span>
+<span class="metric-pill">Delta: -1.3pp</span>
+</div>
+
+<div class="box">
+
+Use `.metric-pill` quando quiser indicadores menores, sem ocupar tanto espaço quanto cards completos.
+
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 10 — FLOW
+     Use .flow para mostrar sequência lógica ou pipeline
+     ========================================================= -->
+
+# Flow / Fluxo de processo
+
+<div class="flow">
+
+DEMANDA  
+↓  
+DADO  
+↓  
+ANÁLISE  
+↓  
+INSIGHT  
+↓  
+AÇÃO  
+↓  
+COMUNICAÇÃO
+
+</div>
+
+<div class="box">
+
+Use `.flow` quando quiser comunicar processo, arquitetura lógica, pipeline ou sequência de decisão.
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 11 — FLOW DE ENGENHARIA DE DADOS
+     Exemplo aplicado ao contexto Athena / Medallion
+     ========================================================= -->
+
+# Flow de arquitetura
+
+<div class="flow">
+
+bronze_fonte  
+↓  
+silver_padronizado  
+↓  
+silver_integrado  
+↓  
+gold_fato / gold_dimensao  
+↓  
+gold_mart  
+↓  
+QuickSight
+
+</div>
+
+<div class="warning">
+
+Atenção: se uma regra aparece em dashboard executivo, ela provavelmente deveria estar em Gold ou Mart, não solta no dashboard.
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 12 — QUOTE EXECUTIVO
+     Use .quote para tese central ou mensagem forte
+     ========================================================= -->
+
+# Quote executivo
+
+<div class="quote">
+
+Query responde pergunta.  
+Tabela materializada vira produto analítico.
+
+</div>
+
+<div class="box">
+
+Use `.quote` para destacar uma tese, conclusão ou mensagem que precisa ficar na cabeça da audiência.
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 13 — DANGER
+     Use para alertar contra um erro comum
+     ========================================================= -->
+
+# Exemplo de Danger
+
+<div class="danger">
+
+## Risco crítico
+
+Misturar grãos diferentes na mesma tabela pode gerar explosão de linhas, duplicidade e métrica errada.
+
+</div>
+
+<div class="box">
+
+Regra prática:
+
+
+antes de fazer JOIN, declare o grão de cada tabela
+
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 14 — WARNING
+     Use para cuidado importante, mas não crítico
+     ========================================================= -->
+
+# Exemplo de Warning
+
+<div class="warning">
+
+## Atenção
+
+Filtrar uma coluna derivada de data pode não acionar partition pruning.
+
+Prefira filtrar a partição física exposta com prefixo `p_*`.
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 15 — BOX
+     Use para conceito, definição ou resumo
+     ========================================================= -->
+
+# Exemplo de Box
+
+<div class="box">
+
+## Conceito
+
+Uma mart bem desenhada não é só uma tabela final.
+
+Ela é um produto analítico com grão claro, métricas defendíveis e consumo previsível.
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 16 — STACK
+     Use .stack para empilhar blocos com espaçamento consistente
+     ========================================================= -->
+
+# Stack vertical
+
+<div class="stack">
+
+<div class="box">
+Bloco 1 — Contexto da análise
+</div>
+
+<div class="warning">
+Bloco 2 — Atenção operacional
+</div>
+
+<div class="info">
+Bloco 3 — Observação técnica
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 17 — SPACE BETWEEN
+     Use .space-between para separar elementos nas pontas
+     ========================================================= -->
+
+# Space Between
+
+<div class="space-between">
+
+<div>
+
+## Resultado mensal
+
+Cobrança · Maio/2026
+
+</div>
+
+<div>
+
+<span class="badge badge-ok">Fechado</span> <span class="badge badge-info">Gold Mart</span>
+
+</div>
+
+</div>
+
+<div class="divider"></div>
+
+<div class="box">
+
+Use `.space-between` para colocar título de um lado e status, data ou selo do outro.
+
+</div>
+
+---
+<!-- =========================================================
+     SLIDE 18 — TWO COLS COM SQL
+     Markdown + SQL lado a lado
+     ========================================================= -->
+
+<!-- _class: sql-card -->
+
+# Texto + SQL lado a lado
+
+<div class="two-cols">
+
+<div>
+
+## Leitura executiva
+
+A queda de eficiência parece concentrada em poucos escritórios.
+
+O próximo passo é decompor por:
+
+- volume
+- ticket
+- conversão
+- faixa de atraso
+
+</div>
+
+<div>
+
+```sql
+SELECT
+    escritorio,
+    eficiencia,
+    delta_pp
+FROM gold_mart_cobranca
+WHERE anomes = 202605;
+```
+
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 19 — SIDE PANEL
+     Use .side-panel para destaque lateral
+     ========================================================= -->
+
+# Side Panel
+
+<div class="two-cols">
+
+<div>
+
+## Diagnóstico
+
+A eficiência caiu, mas o efeito não parece distribuído de forma homogênea.
+
+A concentração em poucos escritórios sugere uma investigação direcionada.
+
+</div>
+
+<div class="side-panel">
+
+## Próxima ação
+
+Priorizar análise por:
+
+* escritório
+* fila
+* faixa de atraso
+* conversão de boleto
+
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 20 — TIMELINE
+     Use .timeline para evolução temporal, roadmap ou processo
+     ========================================================= -->
+
+# Timeline
+
+<div class="timeline">
+
+<div class="timeline-item">
+<div class="timeline-title">1. Bronze</div>
+<div class="timeline-text">Preserva os dados próximos da origem.</div>
+</div>
+
+<div class="timeline-item">
+<div class="timeline-title">2. Silver</div>
+<div class="timeline-text">Padroniza, integra, deduplica e prepara o dado.</div>
+</div>
+
+<div class="timeline-item">
+<div class="timeline-title">3. Gold</div>
+<div class="timeline-text">Define a verdade de negócio e sustenta consumo analítico.</div>
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 21 — IMAGEM RESPONSIVA
+     Use .image-card + .image-fit para screenshots e diagramas
+     ========================================================= -->
+
+# Imagem responsiva
+
+<div class="two-cols">
+
+<div>
+
+## Uso recomendado
+
+Use `.image-fit` quando você não quer cortar a imagem.
+
+Bom para:
+
+* diagrama
+* arquitetura
+* screenshot
+* print de dashboard
+
+</div>
+
+<div class="image-card shadow">
+
+<img class="image-fit" src="/home/vinicius/Área de trabalho/download.webp" />
+
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 22 — IMAGEM COVER
+     Use .image-cover quando quiser preencher a área cortando bonito
+     ========================================================= -->
+
+<div class="image-slide-stack">
+
+# Imagem com cover
+
+<div class="image-card shadow">
+
+<img src="/home/vinicius/Área de trabalho/download.webp" />
+
+</div>
+
+<div class="box">
+
+`object-fit: cover` preenche o espaço, mas pode cortar parte da ima gem.
+
+Use para visual executivo.
+
+</div>
+
+</div>
+
+---
+
+<!-- _class: dark -->
+
+![bg cover](download.webp)
+
+<div class="overlay-dark absolute-center">
+
+
+
+</div>
+
+# Slide com imagem de fundo
+
+Use `.overlay-dark` para criar contraste e manter o texto legível.
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 24 — SECTION DARK
+     Use _class: dark para slide escuro
+     ========================================================= -->
+
+<!-- _class: dark -->
+
+# Slide escuro
+
+Este slide usa:
+
+<div class="code-light">
+
+```markdown
+<!-- _class: dark -->
+```
+
+</div>
+
+
+Use para:
+
+* abertura de seção
+* transição
+* conclusão
+* mensagem forte
+
+<div class="dark-card">
+
+Este card usa `.dark-card`, ideal para slides com fundo escuro.
+
+</div>
+
+<div class="fonte-rodape">
+Classe aplicada ao section inteiro
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 25 — GLASS EFFECT
+     Use .glass em slides escuros ou sobre imagem
+     ========================================================= -->
+
+<!-- _class: dark -->
+
+# Glass Effect
+
+<div class="glass">
+
+## Card com efeito vidro
+
+Use `.glass` para criar um bloco translúcido, especialmente em slides escuros ou com imagem de fundo.
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 26 — SECTION EXECUTIVO
+     Use _class: executivo para visual mais limpo
+     ========================================================= -->
+
+<!-- _class: executivo -->
+
+# Slide executivo
+
+<div class="quote">
+
+A apresentação executiva deve começar pela decisão, não pelo SQL.
+
+</div>
+
+<div class="flex-row">
+
+<div class="metric-card shadow">
+
+<div class="metric-title">
+Impacto
+</div>
+
+<div class="metric-value">
+R$ 1.2MM
+</div>
+
+</div>
+
+<div class="metric-card shadow">
+
+<div class="metric-title">
+Prioridade
+</div>
+
+<div class="metric-value risk">
+Alta
+</div>
+
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 27 — SECTION TÉCNICO
+     Use _class: tecnico para conteúdo mais detalhado
+     ========================================================= -->
+
+<!-- _class: sql-card -->
+
+# Slide técnico
+
+<div class="two-cols">
+
+<div>
+
+## Checklist técnico
+
+* grão declarado
+* partição filtrada
+* join validado
+* duplicidade testada
+* métrica reconciliada
+
+</div>
+
+<div>
+
+```sql
+SELECT
+    contrato,
+    produto,
+    count(*) AS qtd
+FROM tabela
+GROUP BY 1, 2
+HAVING count(*) > 1;
+```
+
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 28 — TABELA
+     Tabelas em Markdown herdam o CSS definido acima
+     ========================================================= -->
+
+# Tabela formatada
+
+| Camada             | Papel               | Exemplo                                   |
+| ------------------ | ------------------- | ----------------------------------------- |
+| Bronze             | Preserva origem     | tabela_bronze_fonte_sap_boletos           |
+| Silver Padronizado | Contrato técnico    | view_silver_padronizado_cobranca_boletos  |
+| Silver Integrado   | Integração e dedupe | view_silver_integrado_cobranca_pagamentos |
+| Gold               | Verdade de negócio  | iceberg_gold_fato_pagadoria               |
+| Mart               | Consumo             | view_gold_mart_cobranca_quicksight        |
+
+<div class="footnote">
+A classe de zebra striping em tabela foi adicionada no CSS com table tr:nth-child(even).
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 29 — WIDTH HELPERS
+     Use .w-25, .w-50, .w-75 e .w-100 para controlar largura
+     ========================================================= -->
+
+# Width helpers
+
+<div class="box w-50">
+
+Este box usa `.w-50`, então ocupa aproximadamente metade da largura disponível.
+
+</div>
+
+<div class="warning w-75">
+
+Este warning usa `.w-75`, então ocupa aproximadamente 75% da largura disponível.
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 30 — ABSOLUTE CENTER
+     Use .absolute-center para centralização livre
+     ========================================================= -->
+
+
+
+<div class="absolute-center">
+
+<div class="hero-title">
+Mensagem central
+</div>
+
+<div class="hero-subtitle">
+Use `.absolute-center` para slides minimalistas com foco total na mensagem.
+</div>
+
+</div>
+
+---
+
+<!-- =========================================================
+     SLIDE 31 — POSICIONAMENTO LIVRE
+     Use absolute apenas para itens pequenos
+     ========================================================= -->
+
+# Posicionamento livre
+
+<div class="logo-canto">
+COBRANÇA · 2026
+</div>
+
+Texto principal do slide.
+
+<div class="box">
+
+Evite posicionar tudo com `position:absolute`.
+
+Use isso para:
+
+* logo
+* rodapé
+* fonte
+* selo
+* marcação lateral
+
+</div>
+
+<div class="fonte-rodape">
+Confidencial
+</div>
+```
+
