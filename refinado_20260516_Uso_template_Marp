@@ -1,0 +1,66 @@
+---
+marp: true
+paginate: true
+size: 16:9
+theme: default
+---
+
+<style>
+@import url("./tema_vinicius.css");
+</style>
+
+# Meu slide
+
+<div class="box">
+
+Teste
+
+</div>
+
+---
+
+# Flex com cards
+
+<div class="flex-row">
+
+<div class="metric-card shadow">
+
+<div class="metric-title caixa-title">
+Caixa
+</div>
+
+<div class="metric-value caixa-value">
+R$ 12MM
+</div>
+
+</div>
+
+<div class="metric-card shadow">
+
+<div class="metric-title eficiencia-title">
+Eficiência
+</div>
+
+<div class="metric-value eficiencia-value">
+18.2%
+</div>
+
+</div>
+
+<div class="metric-card shadow">
+
+<div class="metric-title">
+Delta
+</div>
+
+<div class="metric-value risk">
+-1.3pp
+</div>
+
+</div>
+
+</div>
+
+<div class="fonte-rodape">
+Layout: display:flex; gap entre cards
+</div>
