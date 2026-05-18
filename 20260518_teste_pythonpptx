@@ -1,52 +1,350 @@
+import sys
+import re
+import base64
+import tempfile
+from pathlib import Path
+from bs4 import BeautifulSoup
+
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.enum.text import PP_ALIGN
+from pptx.dml.color import RGBColor
 
-prs = Presentation()
-prs.slide_width = Inches(13.333)
-prs.slide_height = Inches(7.5)
 
-slide = prs.slides.add_slide(prs.slide_layouts[6])
+SLIDE_W = 13.333
+SLIDE_H = 7.5
 
-# Título
-title_box = slide.shapes.add_textbox(Inches(0.7), Inches(0.5), Inches(12), Inches(0.8))
-title_tf = title_box.text_frame
-title_tf.text = "Eficiência caiu 2.3pp"
+MARGIN_X = 0.65
+TOP_Y = 0.45
+LINE_GAP = 0.18
 
-p = title_tf.paragraphs[0]
-p.font.size = Pt(32)
-p.font.bold = True
 
-# Card 1
-card = slide.shapes.add_shape(
-    1,  # retângulo
-    Inches(0.8),
-    Inches(1.6),
-    Inches(3.6),
-    Inches(1.5)
-)
+THEME = {
+    "title": RGBColor(15, 23, 42),
+    "subtitle": RGBColor(51, 65, 85),
+    "text": RGBColor(34, 34, 34),
+    "muted": RGBColor(100, 116, 139),
+    "card": RGBColor(248, 250, 252),
+    "border": RGBColor(203, 213, 225),
+    "warning_bg": RGBColor(255, 251, 235),
+    "warning_border": RGBColor(245, 158, 11),
+    "danger_bg": RGBColor(254, 242, 242),
+    "danger_border": RGBColor(239, 68, 68),
+    "code_bg": RGBColor(248, 250, 252),
+}
 
-card.text = "Volume\n-12%"
-tf = card.text_frame
-tf.paragraphs[0].font.size = Pt(18)
-tf.paragraphs[0].font.bold = True
-tf.paragraphs[1].font.size = Pt(30)
-tf.paragraphs[1].font.bold = True
 
-# Texto analítico
-box = slide.shapes.add_textbox(Inches(0.8), Inches(3.5), Inches(11.5), Inches(2))
-tf = box.text_frame
+def clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
 
-bullets = [
-    "Volume caiu 12%",
-    "Ticket ficou estável",
-    "80% da piora veio da fila 60-90"
-]
 
-for i, item in enumerate(bullets):
-    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-    p.text = item
-    p.level = 0
-    p.font.size = Pt(20)
+def add_textbox(slide, text, x, y, w, h, font_size=20, bold=False, color=None):
+    box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+    tf = box.text_frame
+    tf.clear()
+    tf.word_wrap = True
 
-prs.save("deck_editavel.pptx")
+    p = tf.paragraphs[0]
+    p.text = text
+    p.font.size = Pt(font_size)
+    p.font.bold = bold
+    p.font.name = "Arial"
+    p.font.color.rgb = color or THEME["text"]
+
+    return box
+
+
+def add_card(slide, text, x, y, w, h, kind="box"):
+    fill = THEME["card"]
+    border = THEME["border"]
+
+    if kind == "warning":
+        fill = THEME["warning_bg"]
+        border = THEME["warning_border"]
+    elif kind == "danger":
+        fill = THEME["danger_bg"]
+        border = THEME["danger_border"]
+
+    shape = slide.shapes.add_shape(
+        1,
+        Inches(x),
+        Inches(y),
+        Inches(w),
+        Inches(h),
+    )
+
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = fill
+    shape.line.color.rgb = border
+    shape.line.width = Pt(1.5)
+
+    tf = shape.text_frame
+    tf.clear()
+    tf.margin_left = Inches(0.18)
+    tf.margin_right = Inches(0.18)
+    tf.margin_top = Inches(0.12)
+    tf.word_wrap = True
+
+    p = tf.paragraphs[0]
+    p.text = clean_text(text)
+    p.font.size = Pt(18)
+    p.font.name = "Arial"
+    p.font.color.rgb = THEME["text"]
+
+    return shape
+
+
+def add_bullets(slide, items, x, y, w, font_size=20):
+    h = max(0.5, 0.36 * len(items))
+    box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+    tf = box.text_frame
+    tf.clear()
+    tf.word_wrap = True
+
+    for i, item in enumerate(items):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = clean_text(item)
+        p.level = 0
+        p.font.size = Pt(font_size)
+        p.font.name = "Arial"
+        p.font.color.rgb = THEME["text"]
+
+    return box
+
+
+def add_code(slide, code, x, y, w, h):
+    shape = slide.shapes.add_shape(
+        1,
+        Inches(x),
+        Inches(y),
+        Inches(w),
+        Inches(h),
+    )
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = THEME["code_bg"]
+    shape.line.color.rgb = THEME["border"]
+
+    tf = shape.text_frame
+    tf.clear()
+    tf.word_wrap = True
+    tf.margin_left = Inches(0.18)
+    tf.margin_top = Inches(0.12)
+
+    p = tf.paragraphs[0]
+    p.text = code.strip()
+    p.font.name = "Consolas"
+    p.font.size = Pt(13)
+    p.font.color.rgb = RGBColor(15, 23, 42)
+
+    return shape
+
+
+def add_table(slide, table_tag, x, y, w):
+    rows = table_tag.find_all("tr")
+    if not rows:
+        return 0
+
+    data = []
+    for tr in rows:
+        cells = tr.find_all(["th", "td"])
+        data.append([clean_text(c.get_text(" ")) for c in cells])
+
+    max_cols = max(len(r) for r in data)
+    row_count = len(data)
+    col_count = max_cols
+
+    h = min(3.8, 0.35 * row_count + 0.2)
+
+    table_shape = slide.shapes.add_table(
+        row_count,
+        col_count,
+        Inches(x),
+        Inches(y),
+        Inches(w),
+        Inches(h),
+    )
+
+    ppt_table = table_shape.table
+
+    for r_idx, row in enumerate(data):
+        for c_idx in range(col_count):
+            cell = ppt_table.cell(r_idx, c_idx)
+            cell.text = row[c_idx] if c_idx < len(row) else ""
+            p = cell.text_frame.paragraphs[0]
+            p.font.size = Pt(11 if row_count > 8 else 13)
+            p.font.name = "Arial"
+
+            if r_idx == 0:
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = RGBColor(226, 232, 240)
+                p.font.bold = True
+                p.font.color.rgb = RGBColor(15, 23, 42)
+
+    return h
+
+
+def resolve_image(src, html_path):
+    if not src:
+        return None
+
+    if src.startswith("data:image"):
+        header, encoded = src.split(",", 1)
+        suffix = ".png"
+        if "jpeg" in header or "jpg" in header:
+            suffix = ".jpg"
+
+        f = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        f.write(base64.b64decode(encoded))
+        f.close()
+        return f.name
+
+    path = Path(src)
+    if not path.is_absolute():
+        path = html_path.parent / path
+
+    return str(path) if path.exists() else None
+
+
+def convert(html_file, output_file):
+    html_path = Path(html_file).resolve()
+    soup = BeautifulSoup(html_path.read_text(encoding="utf-8"), "lxml")
+
+    prs = Presentation()
+    prs.slide_width = Inches(SLIDE_W)
+    prs.slide_height = Inches(SLIDE_H)
+
+    sections = soup.find_all("section")
+
+    if not sections:
+        raise ValueError("Nenhum <section> encontrado. Confirme se o HTML veio do Marp.")
+
+    for section in sections:
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        y = TOP_Y
+
+        children = [
+            c for c in section.children
+            if getattr(c, "name", None)
+        ]
+
+        for el in children:
+            name = el.name.lower()
+
+            classes = el.get("class", [])
+            class_str = " ".join(classes)
+
+            text = clean_text(el.get_text(" "))
+
+            if not text and name != "img":
+                continue
+
+            if name == "h1":
+                add_textbox(
+                    slide,
+                    text,
+                    MARGIN_X,
+                    y,
+                    12,
+                    0.75,
+                    font_size=32,
+                    bold=True,
+                    color=THEME["title"],
+                )
+                y += 0.9
+
+            elif name == "h2":
+                add_textbox(
+                    slide,
+                    text,
+                    MARGIN_X,
+                    y,
+                    12,
+                    0.55,
+                    font_size=24,
+                    bold=True,
+                    color=THEME["subtitle"],
+                )
+                y += 0.65
+
+            elif name == "h3":
+                add_textbox(
+                    slide,
+                    text,
+                    MARGIN_X,
+                    y,
+                    12,
+                    0.45,
+                    font_size=19,
+                    bold=True,
+                    color=THEME["subtitle"],
+                )
+                y += 0.55
+
+            elif name in ["p", "blockquote"]:
+                if "warning" in class_str:
+                    add_card(slide, text, MARGIN_X, y, 12, 0.85, kind="warning")
+                    y += 1.0
+                elif "danger" in class_str:
+                    add_card(slide, text, MARGIN_X, y, 12, 0.85, kind="danger")
+                    y += 1.0
+                elif "box" in class_str:
+                    add_card(slide, text, MARGIN_X, y, 12, 0.85, kind="box")
+                    y += 1.0
+                else:
+                    h = max(0.35, min(1.2, len(text) / 110 * 0.45))
+                    add_textbox(slide, text, MARGIN_X, y, 12, h, font_size=18)
+                    y += h + LINE_GAP
+
+            elif name in ["ul", "ol"]:
+                items = [li.get_text(" ") for li in el.find_all("li", recursive=False)]
+                add_bullets(slide, items, MARGIN_X + 0.15, y, 11.5, font_size=18)
+                y += max(0.6, 0.38 * len(items)) + 0.15
+
+            elif name == "pre":
+                code = el.get_text()
+                h = min(3.2, max(1.0, len(code.splitlines()) * 0.22))
+                add_code(slide, code, MARGIN_X, y, 12, h)
+                y += h + 0.25
+
+            elif name == "table":
+                h = add_table(slide, el, MARGIN_X, y, 12)
+                y += h + 0.3
+
+            elif name == "div":
+                if "warning" in class_str:
+                    add_card(slide, text, MARGIN_X, y, 12, 1.0, kind="warning")
+                    y += 1.15
+                elif "danger" in class_str:
+                    add_card(slide, text, MARGIN_X, y, 12, 1.0, kind="danger")
+                    y += 1.15
+                elif "box" in class_str or "card" in class_str:
+                    add_card(slide, text, MARGIN_X, y, 12, 1.0, kind="box")
+                    y += 1.15
+                else:
+                    h = max(0.5, min(1.6, len(text) / 100 * 0.45))
+                    add_textbox(slide, text, MARGIN_X, y, 12, h, font_size=17)
+                    y += h + 0.2
+
+            elif name == "img":
+                img_path = resolve_image(el.get("src"), html_path)
+                if img_path:
+                    slide.shapes.add_picture(
+                        img_path,
+                        Inches(MARGIN_X),
+                        Inches(y),
+                        width=Inches(6.5),
+                    )
+                    y += 3.0
+
+            if y > 6.8:
+                break
+
+    prs.save(output_file)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Uso: python marp_html_to_pptx.py slides.html deck_editavel.pptx")
+        sys.exit(1)
+
+    convert(sys.argv[1], sys.argv[2])
