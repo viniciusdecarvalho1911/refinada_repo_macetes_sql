@@ -1,0 +1,52 @@
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.enum.text import PP_ALIGN
+
+prs = Presentation()
+prs.slide_width = Inches(13.333)
+prs.slide_height = Inches(7.5)
+
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+# Título
+title_box = slide.shapes.add_textbox(Inches(0.7), Inches(0.5), Inches(12), Inches(0.8))
+title_tf = title_box.text_frame
+title_tf.text = "Eficiência caiu 2.3pp"
+
+p = title_tf.paragraphs[0]
+p.font.size = Pt(32)
+p.font.bold = True
+
+# Card 1
+card = slide.shapes.add_shape(
+    1,  # retângulo
+    Inches(0.8),
+    Inches(1.6),
+    Inches(3.6),
+    Inches(1.5)
+)
+
+card.text = "Volume\n-12%"
+tf = card.text_frame
+tf.paragraphs[0].font.size = Pt(18)
+tf.paragraphs[0].font.bold = True
+tf.paragraphs[1].font.size = Pt(30)
+tf.paragraphs[1].font.bold = True
+
+# Texto analítico
+box = slide.shapes.add_textbox(Inches(0.8), Inches(3.5), Inches(11.5), Inches(2))
+tf = box.text_frame
+
+bullets = [
+    "Volume caiu 12%",
+    "Ticket ficou estável",
+    "80% da piora veio da fila 60-90"
+]
+
+for i, item in enumerate(bullets):
+    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+    p.text = item
+    p.level = 0
+    p.font.size = Pt(20)
+
+prs.save("deck_editavel.pptx")
