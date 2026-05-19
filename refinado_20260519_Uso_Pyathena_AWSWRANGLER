@@ -1,0 +1,1012 @@
+Sim — o ideal aqui é tratar PyAthena como **camada de execução/orquestração SQL**, não como motor de transformação. Ou seja: o dado pesado fica no Athena/S3/Iceberg; o Python dispara, parametriza, valida e registra.
+
+PyAthena é um cliente DB API 2.0 para Amazon Athena e tem extras para Pandas/Arrow/Polars. ([PyPI][1])
+
+````markdown
+# PyAthena — Da consulta Athena até gravação em Iceberg
+
+## Instalação
+
+```bash
+pip install "PyAthena[Pandas]"
+````
+
+## Conexão base
+
+```python
+from pyathena import connect
+
+ATHENA_S3_STAGING = "s3://seu-bucket/athena-results/"
+REGION = "sa-east-1"
+DATABASE = "workspace_db"
+
+conn = connect(
+    s3_staging_dir=ATHENA_S3_STAGING,
+    region_name=REGION,
+    schema_name=DATABASE,
+    work_group="primary"
+)
+```
+
+---
+
+# 1. Função genérica para executar SQL
+
+```python
+def run_sql(sql: str):
+    with conn.cursor() as cursor:
+        cursor.execute(sql)
+        return cursor
+```
+
+Uso:
+
+```python
+run_sql("SELECT 1")
+```
+
+---
+
+# 2. Ler tabela Athena para Pandas
+
+Para resultados pequenos ou médios:
+
+```python
+from pyathena.pandas.cursor import PandasCursor
+
+cursor = conn.cursor(PandasCursor)
+
+df = cursor.execute("""
+    SELECT
+        contrato,
+        produto,
+        vl_pago,
+        mes_ref_yyyymm
+    FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+    WHERE mes_ref_yyyymm = 202604
+    LIMIT 1000
+""").as_pandas()
+```
+
+Para resultado grande, prefira processar em chunks. O `PandasCursor` baixa o resultado gerado no S3 e tende a ser mais rápido que fetch linha a linha. ([GitHub][2])
+
+```python
+cursor = conn.cursor(PandasCursor, chunksize=50000)
+
+cursor.execute("""
+    SELECT *
+    FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+    WHERE mes_ref_yyyymm = 202604
+""")
+
+for chunk in cursor.iter_chunks():
+    print(chunk.shape)
+```
+
+---
+
+# 3. Criar tabela Iceberg via PyAthena
+
+```python
+sql_create = """
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_pagadoria (
+    sk_pagadoria         varchar,
+    anomes               integer,
+    contrato             varchar,
+    produto              varchar,
+    origem_pagamento     varchar,
+    vl_caixa             decimal(18,2),
+    vl_regul             decimal(18,2),
+    dt_ingestao_modelo   timestamp,
+    id_execucao          varchar
+)
+PARTITIONED BY (anomes)
+LOCATION 's3://seu-bucket/gold/iceberg_gold_fato_pagadoria/'
+TBLPROPERTIES (
+    'table_type' = 'ICEBERG',
+    'format' = 'PARQUET',
+    'write_compression' = 'SNAPPY'
+)
+"""
+
+run_sql(sql_create)
+```
+
+---
+
+# 4. Gravar dados com INSERT INTO usando CTE
+
+```python
+anomes = 202604
+id_execucao = "exec_202604_pyathena"
+
+sql_insert = f"""
+INSERT INTO workspace_db.iceberg_gold_fato_pagadoria
+WITH base AS (
+    SELECT
+        cast(mes_ref_yyyymm as integer) AS anomes,
+        cast(contrato as varchar) AS contrato,
+        cast(produto as varchar) AS produto,
+        cast(origem_pagamento as varchar) AS origem_pagamento,
+        cast(sum(vl_pago) as decimal(18,2)) AS vl_caixa,
+        cast(sum(vl_regul) as decimal(18,2)) AS vl_regul
+    FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+    WHERE mes_ref_yyyymm = {anomes}
+    GROUP BY 1, 2, 3, 4
+),
+
+final AS (
+    SELECT
+        md5(
+            concat(
+                contrato,
+                '|',
+                produto,
+                '|',
+                cast(anomes as varchar),
+                '|',
+                origem_pagamento
+            )
+        ) AS sk_pagadoria,
+        anomes,
+        contrato,
+        produto,
+        origem_pagamento,
+        vl_caixa,
+        vl_regul,
+        current_timestamp AS dt_ingestao_modelo,
+        '{id_execucao}' AS id_execucao
+    FROM base
+)
+
+SELECT *
+FROM final
+"""
+
+run_sql(sql_insert)
+```
+
+---
+
+# 5. Reprocessar partição com DELETE + INSERT
+
+Esse é o padrão mais simples para mart mensal.
+
+```python
+anomes = 202604
+
+run_sql(f"""
+DELETE FROM workspace_db.iceberg_gold_fato_pagadoria
+WHERE anomes = {anomes}
+""")
+
+run_sql(sql_insert)
+```
+
+Use quando o grão é mensal e você quer sobrescrever o mês inteiro.
+
+---
+
+# 6. MERGE INTO via PyAthena
+
+```python
+sql_merge = f"""
+MERGE INTO workspace_db.iceberg_gold_fato_pagadoria AS t
+USING (
+    WITH base AS (
+        SELECT
+            cast(mes_ref_yyyymm as integer) AS anomes,
+            cast(contrato as varchar) AS contrato,
+            cast(produto as varchar) AS produto,
+            cast(origem_pagamento as varchar) AS origem_pagamento,
+            cast(sum(vl_pago) as decimal(18,2)) AS vl_caixa,
+            cast(sum(vl_regul) as decimal(18,2)) AS vl_regul
+        FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+        WHERE mes_ref_yyyymm = {anomes}
+        GROUP BY 1, 2, 3, 4
+    ),
+
+    final AS (
+        SELECT
+            md5(
+                concat(
+                    contrato,
+                    '|',
+                    produto,
+                    '|',
+                    cast(anomes as varchar),
+                    '|',
+                    origem_pagamento
+                )
+            ) AS sk_pagadoria,
+            anomes,
+            contrato,
+            produto,
+            origem_pagamento,
+            vl_caixa,
+            vl_regul,
+            current_timestamp AS dt_ingestao_modelo,
+            '{id_execucao}' AS id_execucao
+        FROM base
+    )
+
+    SELECT *
+    FROM final
+) AS s
+ON t.sk_pagadoria = s.sk_pagadoria
+
+WHEN MATCHED THEN UPDATE SET
+    vl_caixa = s.vl_caixa,
+    vl_regul = s.vl_regul,
+    dt_ingestao_modelo = s.dt_ingestao_modelo,
+    id_execucao = s.id_execucao
+
+WHEN NOT MATCHED THEN INSERT (
+    sk_pagadoria,
+    anomes,
+    contrato,
+    produto,
+    origem_pagamento,
+    vl_caixa,
+    vl_regul,
+    dt_ingestao_modelo,
+    id_execucao
+)
+VALUES (
+    s.sk_pagadoria,
+    s.anomes,
+    s.contrato,
+    s.produto,
+    s.origem_pagamento,
+    s.vl_caixa,
+    s.vl_regul,
+    s.dt_ingestao_modelo,
+    s.id_execucao
+)
+"""
+
+run_sql(sql_merge)
+```
+
+---
+
+# 7. Rodar validação depois da gravação
+
+```python
+sql_teste = f"""
+WITH duplicados AS (
+    SELECT
+        sk_pagadoria,
+        count(*) AS qtd
+    FROM workspace_db.iceberg_gold_fato_pagadoria
+    WHERE anomes = {anomes}
+    GROUP BY 1
+    HAVING count(*) > 1
+)
+
+SELECT count(*) AS qtd_erros
+FROM duplicados
+"""
+
+cursor = run_sql(sql_teste)
+qtd_erros = cursor.fetchone()[0]
+
+if qtd_erros > 0:
+    raise ValueError(f"Falha de qualidade: {qtd_erros} chaves duplicadas")
+```
+
+---
+
+# 8. Pipeline completo
+
+```python
+from pyathena import connect
+
+ATHENA_S3_STAGING = "s3://seu-bucket/athena-results/"
+REGION = "sa-east-1"
+DATABASE = "workspace_db"
+
+conn = connect(
+    s3_staging_dir=ATHENA_S3_STAGING,
+    region_name=REGION,
+    schema_name=DATABASE,
+    work_group="primary"
+)
+
+def run_sql(sql: str):
+    with conn.cursor() as cursor:
+        cursor.execute(sql)
+        return cursor
+
+def validar_sem_duplicidade(anomes: int):
+    sql = f"""
+    WITH duplicados AS (
+        SELECT
+            sk_pagadoria,
+            count(*) AS qtd
+        FROM workspace_db.iceberg_gold_fato_pagadoria
+        WHERE anomes = {anomes}
+        GROUP BY 1
+        HAVING count(*) > 1
+    )
+    SELECT count(*) AS qtd_erros
+    FROM duplicados
+    """
+
+    cursor = run_sql(sql)
+    qtd_erros = cursor.fetchone()[0]
+
+    if qtd_erros > 0:
+        raise ValueError(f"Falha de duplicidade: {qtd_erros} chaves duplicadas")
+
+def carregar_pagadoria(anomes: int, id_execucao: str):
+    run_sql(f"""
+    DELETE FROM workspace_db.iceberg_gold_fato_pagadoria
+    WHERE anomes = {anomes}
+    """)
+
+    run_sql(f"""
+    INSERT INTO workspace_db.iceberg_gold_fato_pagadoria
+    WITH base AS (
+        SELECT
+            cast(mes_ref_yyyymm as integer) AS anomes,
+            cast(contrato as varchar) AS contrato,
+            cast(produto as varchar) AS produto,
+            cast(origem_pagamento as varchar) AS origem_pagamento,
+            cast(sum(vl_pago) as decimal(18,2)) AS vl_caixa,
+            cast(sum(vl_regul) as decimal(18,2)) AS vl_regul
+        FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+        WHERE mes_ref_yyyymm = {anomes}
+        GROUP BY 1, 2, 3, 4
+    ),
+
+    final AS (
+        SELECT
+            md5(
+                concat(
+                    contrato,
+                    '|',
+                    produto,
+                    '|',
+                    cast(anomes as varchar),
+                    '|',
+                    origem_pagamento
+                )
+            ) AS sk_pagadoria,
+            anomes,
+            contrato,
+            produto,
+            origem_pagamento,
+            vl_caixa,
+            vl_regul,
+            current_timestamp AS dt_ingestao_modelo,
+            '{id_execucao}' AS id_execucao
+        FROM base
+    )
+
+    SELECT *
+    FROM final
+    """)
+
+    validar_sem_duplicidade(anomes)
+
+carregar_pagadoria(
+    anomes=202604,
+    id_execucao="exec_202604_pyathena"
+)
+```
+
+---
+
+# Recomendação prática
+
+Use PyAthena para:
+
+* disparar SQL
+* parametrizar `anomes`
+* orquestrar `DELETE + INSERT`
+* rodar `MERGE`
+* validar resultado
+* gerar logs de execução
+
+Evite usar PyAthena para:
+
+* trazer milhões de linhas para Pandas sem necessidade
+* transformar dado pesado localmente
+* substituir Glue/Spark quando houver muito volume
+
+Regra boa:
+
+```text
+Transformação pesada → Athena/Iceberg
+Controle e execução → Python/PyAthena
+Análise pequena → Pandas
+```
+
+```
+::contentReference[oaicite:2]{index=2}
+```
+
+[1]: https://pypi.org/project/PyAthena/?utm_source=chatgpt.com "PyAthena"
+[2]: https://github.com/pyathena-dev/PyAthena/blob/master/docs/pandas.md?plain=true&utm_source=chatgpt.com "PyAthena/docs/pandas.md at master"
+
+
+
+Abaixo vai uma versão expandida, comparando **boto3**, **awswrangler** e **PyAthena** no mesmo fluxo: **ler Athena → transformar/validar → gravar S3/Glue/Iceberg**.
+
+````markdown
+# Python para Athena — boto3 + awswrangler + PyAthena
+
+## Regra prática
+
+```text
+boto3       = controle baixo nível da AWS
+awswrangler = leitura/gravação simplificada com Pandas/S3/Glue/Athena
+PyAthena    = execução SQL estilo conexão de banco
+````
+
+## Instalação
+
+```bash
+pip install boto3 awswrangler pyathena pandas pyarrow
+```
+
+---
+
+# 1. Sessão AWS
+
+```python
+import boto3
+import awswrangler as wr
+import pandas as pd
+import time
+
+REGION = "sa-east-1"
+DATABASE = "workspace_db"
+WORKGROUP = "primary"
+ATHENA_OUTPUT = "s3://seu-bucket/athena-results/"
+
+session = boto3.Session(region_name=REGION)
+
+athena = session.client("athena")
+s3 = session.client("s3")
+glue = session.client("glue")
+```
+
+---
+
+# 2. Executar SQL no Athena com boto3
+
+Use quando quiser controle total: status, erro, QueryExecutionId, logs e Step Functions.
+
+```python
+def start_athena_query(sql: str) -> str:
+    response = athena.start_query_execution(
+        QueryString=sql,
+        QueryExecutionContext={
+            "Database": DATABASE
+        },
+        ResultConfiguration={
+            "OutputLocation": ATHENA_OUTPUT
+        },
+        WorkGroup=WORKGROUP
+    )
+
+    return response["QueryExecutionId"]
+```
+
+---
+
+# 3. Esperar query terminar
+
+O `start_query_execution` do boto3 apenas inicia a query; você precisa fazer polling até finalizar. A documentação do boto3 mostra o uso de `start_query_execution` para iniciar a execução, enquanto a checagem de estado vem por `get_query_execution`. ([Documentação AWS][1])
+
+```python
+def wait_athena_query(query_execution_id: str, poll_seconds: int = 2) -> dict:
+    while True:
+        response = athena.get_query_execution(
+            QueryExecutionId=query_execution_id
+        )
+
+        status = response["QueryExecution"]["Status"]["State"]
+
+        if status in ["SUCCEEDED", "FAILED", "CANCELLED"]:
+            if status != "SUCCEEDED":
+                reason = response["QueryExecution"]["Status"].get(
+                    "StateChangeReason",
+                    "Sem motivo detalhado"
+                )
+                raise RuntimeError(
+                    f"Query Athena falhou: {status} | {reason}"
+                )
+
+            return response
+
+        time.sleep(poll_seconds)
+```
+
+---
+
+# 4. Executar SQL completo com boto3
+
+```python
+def run_sql_boto3(sql: str) -> str:
+    query_id = start_athena_query(sql)
+    wait_athena_query(query_id)
+    return query_id
+```
+
+Uso:
+
+```python
+query_id = run_sql_boto3("SELECT 1")
+print(query_id)
+```
+
+---
+
+# 5. Ler resultado pequeno com boto3
+
+Bom para testes que retornam poucas linhas.
+
+```python
+def get_athena_results(query_execution_id: str) -> list[dict]:
+    paginator = athena.get_paginator("get_query_results")
+
+    rows = []
+
+    for page in paginator.paginate(QueryExecutionId=query_execution_id):
+        result_rows = page["ResultSet"]["Rows"]
+
+        if not rows:
+            header = [
+                col.get("VarCharValue")
+                for col in result_rows[0]["Data"]
+            ]
+            data_rows = result_rows[1:]
+        else:
+            data_rows = result_rows
+
+        for row in data_rows:
+            values = [
+                col.get("VarCharValue")
+                for col in row["Data"]
+            ]
+            rows.append(dict(zip(header, values)))
+
+    return rows
+```
+
+Exemplo:
+
+```python
+sql = """
+SELECT count(*) AS qtd_linhas
+FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+WHERE mes_ref_yyyymm = 202604
+"""
+
+query_id = run_sql_boto3(sql)
+rows = get_athena_results(query_id)
+
+print(rows)
+```
+
+---
+
+# 6. Ler Athena com awswrangler
+
+Use quando quiser DataFrame direto.
+
+```python
+df = wr.athena.read_sql_query(
+    sql="""
+        SELECT
+            contrato,
+            produto,
+            origem_pagamento,
+            vl_pago,
+            vl_regul,
+            mes_ref_yyyymm
+        FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+        WHERE mes_ref_yyyymm = 202604
+    """,
+    database=DATABASE,
+    boto3_session=session,
+    workgroup=WORKGROUP
+)
+```
+
+O `awswrangler.athena.read_sql_query` executa SQL no Athena e retorna um DataFrame Pandas. Por padrão, ele pode usar CTAS para resultados médios/grandes, lendo Parquet no S3; também permite `unload_approach=True` ou consulta CSV comum com `ctas_approach=False`. ([aws-sdk-pandas.readthedocs.io][2])
+
+---
+
+# 7. Leitura com modo CSV simples
+
+Use para resultado pequeno e quando você não quer CTAS temporário no Glue.
+
+```python
+df = wr.athena.read_sql_query(
+    sql="""
+        SELECT *
+        FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+        WHERE mes_ref_yyyymm = 202604
+        LIMIT 1000
+    """,
+    database=DATABASE,
+    boto3_session=session,
+    workgroup=WORKGROUP,
+    ctas_approach=False
+)
+```
+
+---
+
+# 8. Leitura com UNLOAD
+
+Bom para resultado maior sem criar tabela temporária no Glue. O caminho S3 precisa estar vazio. ([aws-sdk-pandas.readthedocs.io][2])
+
+```python
+df = wr.athena.read_sql_query(
+    sql="""
+        SELECT *
+        FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+        WHERE mes_ref_yyyymm = 202604
+    """,
+    database=DATABASE,
+    boto3_session=session,
+    workgroup=WORKGROUP,
+    ctas_approach=False,
+    unload_approach=True,
+    s3_output="s3://seu-bucket/tmp/unload_pagadoria_202604/"
+)
+```
+
+---
+
+# 9. Gravar DataFrame em Parquet no S3
+
+```python
+wr.s3.to_parquet(
+    df=df,
+    path="s3://seu-bucket/sandbox/pagadoria_202604/",
+    dataset=True,
+    mode="overwrite",
+    boto3_session=session
+)
+```
+
+O `wr.s3.to_parquet` grava arquivos Parquet no S3 e também pode trabalhar como dataset particionado integrado ao Glue/Athena. ([aws-sdk-pandas.readthedocs.io][3])
+
+---
+
+# 10. Gravar Parquet particionado e catalogar no Glue
+
+```python
+wr.s3.to_parquet(
+    df=df,
+    path="s3://seu-bucket/gold/tabela_gold_agregado_pagadoria_mensal/",
+    dataset=True,
+    mode="overwrite_partitions",
+    database="workspace_db",
+    table="tabela_gold_agregado_pagadoria_mensal",
+    partition_cols=["mes_ref_yyyymm"],
+    boto3_session=session
+)
+```
+
+Esse padrão é bom para tabela externa Parquet comum.
+
+```text
+Pandas DataFrame
+   ↓
+Parquet no S3
+   ↓
+Glue Catalog
+   ↓
+Athena consulta
+```
+
+---
+
+# 11. Criar tabela Iceberg via boto3 executando SQL
+
+```python
+sql_create_iceberg = """
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_fato_pagadoria (
+    sk_pagadoria         varchar,
+    anomes               integer,
+    contrato             varchar,
+    produto              varchar,
+    origem_pagamento     varchar,
+    vl_caixa             decimal(18,2),
+    vl_regul             decimal(18,2),
+    dt_ingestao_modelo   timestamp,
+    id_execucao          varchar
+)
+PARTITIONED BY (anomes)
+LOCATION 's3://seu-bucket/gold/iceberg_gold_fato_pagadoria/'
+TBLPROPERTIES (
+    'table_type' = 'ICEBERG',
+    'format' = 'PARQUET',
+    'write_compression' = 'SNAPPY'
+)
+"""
+
+run_sql_boto3(sql_create_iceberg)
+```
+
+---
+
+# 12. Gravar em Iceberg com INSERT INTO
+
+Aqui o Python só dispara o SQL. A transformação pesada acontece no Athena.
+
+```python
+anomes = 202604
+id_execucao = "exec_202604_boto3"
+
+sql_insert_iceberg = f"""
+INSERT INTO workspace_db.iceberg_gold_fato_pagadoria
+WITH base AS (
+    SELECT
+        cast(mes_ref_yyyymm as integer) AS anomes,
+        cast(contrato as varchar) AS contrato,
+        cast(produto as varchar) AS produto,
+        cast(origem_pagamento as varchar) AS origem_pagamento,
+        cast(sum(vl_pago) as decimal(18,2)) AS vl_caixa,
+        cast(sum(vl_regul) as decimal(18,2)) AS vl_regul
+    FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+    WHERE mes_ref_yyyymm = {anomes}
+    GROUP BY 1, 2, 3, 4
+),
+
+final AS (
+    SELECT
+        md5(
+            concat(
+                contrato,
+                '|',
+                produto,
+                '|',
+                cast(anomes as varchar),
+                '|',
+                origem_pagamento
+            )
+        ) AS sk_pagadoria,
+        anomes,
+        contrato,
+        produto,
+        origem_pagamento,
+        vl_caixa,
+        vl_regul,
+        current_timestamp AS dt_ingestao_modelo,
+        '{id_execucao}' AS id_execucao
+    FROM base
+)
+
+SELECT *
+FROM final
+"""
+
+run_sql_boto3(sql_insert_iceberg)
+```
+
+---
+
+# 13. Reprocessar mês: DELETE + INSERT
+
+```python
+def reprocessar_mes_pagadoria(anomes: int, id_execucao: str):
+    sql_delete = f"""
+    DELETE FROM workspace_db.iceberg_gold_fato_pagadoria
+    WHERE anomes = {anomes}
+    """
+
+    run_sql_boto3(sql_delete)
+
+    sql_insert = f"""
+    INSERT INTO workspace_db.iceberg_gold_fato_pagadoria
+    WITH base AS (
+        SELECT
+            cast(mes_ref_yyyymm as integer) AS anomes,
+            cast(contrato as varchar) AS contrato,
+            cast(produto as varchar) AS produto,
+            cast(origem_pagamento as varchar) AS origem_pagamento,
+            cast(sum(vl_pago) as decimal(18,2)) AS vl_caixa,
+            cast(sum(vl_regul) as decimal(18,2)) AS vl_regul
+        FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+        WHERE mes_ref_yyyymm = {anomes}
+        GROUP BY 1, 2, 3, 4
+    ),
+
+    final AS (
+        SELECT
+            md5(
+                concat(
+                    contrato,
+                    '|',
+                    produto,
+                    '|',
+                    cast(anomes as varchar),
+                    '|',
+                    origem_pagamento
+                )
+            ) AS sk_pagadoria,
+            anomes,
+            contrato,
+            produto,
+            origem_pagamento,
+            vl_caixa,
+            vl_regul,
+            current_timestamp AS dt_ingestao_modelo,
+            '{id_execucao}' AS id_execucao
+        FROM base
+    )
+
+    SELECT *
+    FROM final
+    """
+
+    run_sql_boto3(sql_insert)
+```
+
+Uso:
+
+```python
+reprocessar_mes_pagadoria(
+    anomes=202604,
+    id_execucao="exec_202604_reprocessamento"
+)
+```
+
+---
+
+# 14. Validação com awswrangler
+
+```python
+def validar_sem_duplicidade(anomes: int):
+    sql = f"""
+    WITH duplicados AS (
+        SELECT
+            sk_pagadoria,
+            count(*) AS qtd
+        FROM workspace_db.iceberg_gold_fato_pagadoria
+        WHERE anomes = {anomes}
+        GROUP BY 1
+        HAVING count(*) > 1
+    )
+
+    SELECT count(*) AS qtd_erros
+    FROM duplicados
+    """
+
+    df_teste = wr.athena.read_sql_query(
+        sql=sql,
+        database=DATABASE,
+        boto3_session=session,
+        workgroup=WORKGROUP,
+        ctas_approach=False
+    )
+
+    qtd_erros = int(df_teste.loc[0, "qtd_erros"])
+
+    if qtd_erros > 0:
+        raise ValueError(f"Falha: {qtd_erros} chaves duplicadas")
+```
+
+---
+
+# 15. Registrar resultado de execução
+
+```python
+def registrar_execucao(id_execucao: str, anomes: int, status: str, detalhe: str):
+    detalhe_sql = detalhe.replace("'", "''")
+
+    sql = f"""
+    INSERT INTO workspace_db.tabela_ctrl_execucao_pipeline
+    SELECT
+        '{id_execucao}' AS id_execucao,
+        {anomes} AS anomes,
+        'pagadoria' AS dominio,
+        '{status}' AS status,
+        '{detalhe_sql}' AS detalhe,
+        current_timestamp AS dt_execucao
+    """
+
+    run_sql_boto3(sql)
+```
+
+---
+
+# 16. Pipeline completo boto3 + awswrangler
+
+```python
+def pipeline_pagadoria(anomes: int):
+    id_execucao = f"exec_{anomes}_python"
+
+    try:
+        registrar_execucao(
+            id_execucao=id_execucao,
+            anomes=anomes,
+            status="INICIADO",
+            detalhe="Pipeline iniciado"
+        )
+
+        reprocessar_mes_pagadoria(
+            anomes=anomes,
+            id_execucao=id_execucao
+        )
+
+        validar_sem_duplicidade(anomes)
+
+        registrar_execucao(
+            id_execucao=id_execucao,
+            anomes=anomes,
+            status="SUCESSO",
+            detalhe="Pipeline finalizado com sucesso"
+        )
+
+    except Exception as e:
+        registrar_execucao(
+            id_execucao=id_execucao,
+            anomes=anomes,
+            status="FALHA",
+            detalhe=str(e)
+        )
+        raise
+```
+
+Uso:
+
+```python
+pipeline_pagadoria(202604)
+```
+
+---
+
+# 17. Quando usar cada ferramenta
+
+| Necessidade                      | Melhor escolha       |
+| -------------------------------- | -------------------- |
+| Executar SQL e controlar status  | boto3                |
+| Ler resultado para Pandas        | awswrangler          |
+| Gravar Parquet no S3             | awswrangler          |
+| Catalogar tabela externa no Glue | awswrangler          |
+| Criar/alterar Iceberg            | boto3 executando SQL |
+| MERGE/DELETE/INSERT em Iceberg   | boto3 ou PyAthena    |
+| Query exploratória estilo banco  | PyAthena             |
+| Pipeline robusto com log         | boto3 + awswrangler  |
+
+---
+
+# 18. Arquitetura recomendada
+
+```text
+Athena/Iceberg
+    ↑
+SQL pesado com CTEs
+    ↑
+boto3 executa e monitora
+    ↑
+awswrangler lê validações e escreve Parquet auxiliar
+    ↑
+Python registra execução
+```
+
+## Regra prática
+
+```text
+Não traga dado grande para Pandas sem necessidade.
+
+Faça transformação pesada no Athena.
+Use Python para orquestrar, validar e registrar.
+```
+
+```
+::contentReference[oaicite:4]{index=4}
+```
+
+[1]: https://docs.aws.amazon.com/goto/boto3/athena-2017-05-18/StartQueryExecution?utm_source=chatgpt.com "start_query_execution - Boto3 1.43.9 documentation"
+[2]: https://aws-sdk-pandas.readthedocs.io/en/stable/stubs/awswrangler.athena.read_sql_query.html?utm_source=chatgpt.com "awswrangler.athena.read_sql_query - AWS SDK for pandas"
+[3]: https://aws-sdk-pandas.readthedocs.io/en/stable/stubs/awswrangler.s3.to_parquet.html?utm_source=chatgpt.com "awswrangler.s3.to_parquet - AWS SDK for pandas"
