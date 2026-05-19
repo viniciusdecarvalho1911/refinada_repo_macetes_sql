@@ -861,3 +861,545 @@ com:
 e ative via TAB.
 
 Fica MUITO profissional e seguro.
+
+
+Essa é a pergunta CERTA.
+
+Porque o problema real dos snippets NÃO é criar.
+
+É:
+
+```text id="k6p0h6"
+lembrar que eles existem
+```
+
+Os melhores sistemas de snippet do mundo resolvem isso com:
+
+```text id="7onqyk"
+1. taxonomia
+2. agrupamento mental
+3. prefixos consistentes
+4. muscle memory
+5. descoberta rápida
+6. autocomplete
+```
+
+---
+
+# 🧠 Regra principal
+
+## Você NÃO memoriza snippets individualmente
+
+Você memoriza:
+
+```text id="s1xv2f"
+famílias
+```
+
+---
+
+# ❌ Errado
+
+```text id="7ew0wn"
+decorar 300 snippets
+```
+
+---
+
+# ✅ Certo
+
+```text id="mp8ywb"
+decorar padrões
+```
+
+Exemplo:
+
+| Família    | Prefixo |
+| ---------- | ------- |
+| SQL        | `.s`    |
+| Athena     | `.a`    |
+| Excel      | `.x`    |
+| Obsidian   | `.o`    |
+| Marp       | `.m`    |
+| QuickSight | `.q`    |
+
+---
+
+# 🏗️ Estrutura ideal PRA VOCÊ
+
+Você já pensa em:
+
+* modularidade
+* naming
+* contratos
+* reuso
+
+como aparece no seu framework de naming e organização.
+
+Então seu sistema de snippets deveria seguir exatamente essa lógica.
+
+---
+
+# 🎯 Modelo recomendado
+
+# 1️⃣ Prefixo por domínio
+
+## SQL / Athena
+
+```text id="mjlwm9"
+.s
+```
+
+## Excel
+
+```text id="3o0g0r"
+.x
+```
+
+## Obsidian
+
+```text id="t1j35j"
+.o
+```
+
+## Marp
+
+```text id="g4n8lw"
+.m
+```
+
+## QuickSight
+
+```text id="yw6a8t"
+.q
+```
+
+---
+
+# 2️⃣ Sufixo semântico
+
+## Exemplos
+
+| Snippet  | Significado        |
+| -------- | ------------------ |
+| `.scte`  | SQL CTE            |
+| `.sjoin` | JOIN               |
+| `.sscd2` | SCD2               |
+| `.svpad` | silver_padronizado |
+| `.smart` | mart               |
+| `.xflt`  | FILTRO             |
+| `.xlet`  | LET                |
+| `.onote` | nota obsidian      |
+| `.mwarn` | warning marp       |
+| `.qnarr` | narrativa qs       |
+
+---
+
+# 🧠 Você memoriza pela árvore
+
+Exemplo mental:
+
+```text id="0t0vfw"
+SQL
+ ├── CTE
+ ├── JOIN
+ ├── MERGE
+ ├── SCD2
+ ├── MART
+```
+
+Então:
+
+```text id="4l47up"
+.s + conceito
+```
+
+---
+
+# 🚀 Muscle memory REAL
+
+Depois de um tempo:
+
+```text id="0w4r0r"
+.scte
+```
+
+vira tão automático quanto:
+
+```text id="r9dz6m"
+CTRL+C
+```
+
+---
+
+# 🥇 O MELHOR método
+
+# Snippet Explorer
+
+Você cria:
+
+```text id="lxijj3"
+.snip
+```
+
+que abre TODOS os snippets.
+
+---
+
+# 🚀 Exemplo
+
+Digite:
+
+```text id="3u3sc3"
+.snip
+```
+
+e aparece:
+
+```text id="18vmsz"
+SQL
+----
+.scte
+.sjoin
+.sscd2
+.smerge
+.svpad
+
+Excel
+-----
+.xflt
+.xlet
+.xpivot
+
+Obsidian
+---------
+.onote
+.oanalise
+
+Marp
+----
+.mwarn
+.mcard
+```
+
+---
+
+# 🧱 Como implementar
+
+## Método simples
+
+Arquivo txt:
+
+```text id="my7x7d"
+C:\snippets\indice.txt
+```
+
+AutoHotkey:
+
+```ahk id="s9mjlwm"
+::.snip::
+{
+    Run "notepad.exe C:\snippets\indice.txt"
+}
+```
+
+---
+
+# 🚀 Método MUITO melhor
+
+# VSCode + snippets
+
+Porque:
+
+* autocomplete
+* pesquisa
+* descrição
+* preview
+
+---
+
+# Exemplo JSON
+
+```json id="j4nsn4"
+{
+  "SQL CTE": {
+    "prefix": ".scte",
+    "description": "Template WITH CTE",
+    "body": [
+      "WITH base AS (",
+      "    SELECT *",
+      "    FROM tabela",
+      ")",
+      "",
+      "SELECT *",
+      "FROM base"
+    ]
+  }
+}
+```
+
+---
+
+# 🧠 Resultado
+
+Você digita:
+
+```text id="8e0avp"
+.s
+```
+
+e o VSCode mostra:
+
+```text id="6x93k5"
+.scte
+.sjoin
+.smerge
+.sscd2
+```
+
+---
+
+# 🥇 Esse é o MELHOR caminho
+
+Porque resolve:
+
+```text id="lq9j6j"
+descoberta
+```
+
+---
+
+# 🚀 Estratégia REAL que funciona
+
+# 1️⃣ Comece com poucos snippets
+
+Não crie 200.
+
+Comece com:
+
+```text id="x4js5l"
+10-20
+```
+
+---
+
+# 2️⃣ Crie snippets para dor recorrente
+
+Exemplo seu:
+
+* silver_padronizado
+* MERGE SCD2
+* narrativa QS
+* LET/FILTRO
+* análise cobrança
+
+---
+
+# 3️⃣ Nome curto + consistente
+
+## ❌ ruim
+
+```text id="xv9h0u"
+.sql_template_merge_scd2_gold
+```
+
+---
+
+## ✅ bom
+
+```text id="y7s8nl"
+.sscd2
+```
+
+---
+
+# 4️⃣ Agrupe por contexto mental
+
+Exemplo:
+
+## SQL
+
+```text id="om2i9f"
+.scte
+.sjoin
+.scase
+.smerge
+.sscd2
+```
+
+## Athena
+
+```text id="phv6g2"
+.avpad
+.amv
+.aice
+```
+
+## Excel
+
+```text id="49o4av"
+.xflt
+.xlet
+.xlambda
+```
+
+---
+
+# 🧠 Técnica psicológica importante
+
+## Snippets devem ser:
+
+```text id="ud4f0m"
+previsíveis
+```
+
+---
+
+# Exemplo
+
+Se você sabe:
+
+```text id="w20xwp"
+.s = sql
+```
+
+então:
+
+```text id="e4v9ti"
+.s + qualquer coisa
+```
+
+já vira intuitivo.
+
+---
+
+# 🚀 Nível avançado
+
+# Cheat Sheet viva
+
+Você pode gerar:
+
+```text id="w5m6nx"
+snippets.md
+```
+
+automaticamente.
+
+Exemplo:
+
+```markdown id="9s2d3i"
+# SQL
+
+| Trigger | Uso |
+|---|---|
+| .scte | WITH |
+| .sscd2 | MERGE SCD2 |
+| .svpad | silver_padronizado |
+
+# Excel
+
+| Trigger | Uso |
+|---|---|
+| .xflt | FILTRO |
+| .xlet | LET |
+```
+
+---
+
+# 🧱 Melhor organização PRA VOCÊ
+
+Baseado no seu stack:
+
+```text id="b0vjx7"
+/snippets
+    /sql
+    /athena
+    /excel
+    /obsidian
+    /marp
+    /quicksight
+
+/index
+    snippets.md
+```
+
+---
+
+# 🎯 O que o mercado faz de verdade
+
+## Juniors
+
+Tentam decorar tudo.
+
+---
+
+## Seniors
+
+Usam:
+
+* autocomplete
+* prefixos consistentes
+* lookup rápido
+* muscle memory parcial
+
+---
+
+# 🥇 Melhor estratégia possível
+
+# Memorize apenas:
+
+## 1. prefixos
+
+```text id="j9b7vg"
+.s
+.x
+.o
+.m
+.q
+```
+
+## 2. convenções
+
+```text id="94ajpr"
+cte
+join
+merge
+mart
+scd2
+```
+
+## 3. snippet explorer
+
+```text id="y7nnh6"
+.snip
+```
+
+O resto você descobre.
+
+---
+
+# 🚀 O verdadeiro ganho
+
+Depois de um tempo você passa a pensar:
+
+```text id="svjv2l"
+“isso deveria ser um snippet”
+```
+
+Esse é o ponto de virada real.
+
+Você começa a transformar:
+
+* conhecimento
+* arquitetura
+* SQL
+* documentação
+* comunicação
+
+em:
+
+```text id="ajh1t9"
+ativos operacionais reutilizáveis
+```
+
+que é exatamente a lógica do seu framework de organização modular.
