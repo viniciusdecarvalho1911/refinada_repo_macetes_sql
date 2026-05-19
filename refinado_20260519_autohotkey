@@ -1,0 +1,863 @@
+Esse é EXATAMENTE o tipo de problema que separa:
+
+```text
+snippets improvisados
+```
+
+de:
+
+```text
+sistema profissional de snippets
+```
+
+Porque multiline + caracteres especiais quebram facilmente dependendo de:
+
+* engine
+* encoding
+* aspas
+* método de expansão
+* aplicação alvo
+* timing do teclado
+* clipboard
+* escape sequences
+
+---
+
+# 🎯 Regra de ouro
+
+## ❌ NÃO digite snippets “teclando caracteres”
+
+Evite:
+
+```ahk
+Send "SELECT * FROM tabela;"
+```
+
+para snippets grandes.
+
+Porque:
+
+* `;`
+* `%`
+* `{`
+* `}`
+* `|`
+* `"`
+* `'`
+* `(`
+* `)`
+* backticks
+* quebra de linha
+
+podem ser interpretados.
+
+---
+
+# ✅ Melhor abordagem PROFISSIONAL
+
+# 🥇 Método 1 — Raw Text Block
+
+No AutoHotkey v2:
+
+```ahk
+::sql::
+{
+    SendText "
+(
+SELECT
+    contrato,
+    produto,
+    vl_pago
+FROM tabela
+WHERE status = 'OK'
+    AND origem = 'BOLETO';
+)"
+}
+```
+
+# ✅ Por que isso funciona?
+
+`SendText`:
+
+* envia TEXTO literal
+* não interpreta caracteres especiais
+* não interpreta `{`
+* não interpreta `%`
+* não interpreta `;`
+* não interpreta pipes
+* não interpreta atalhos
+
+Isso resolve 95% dos problemas.
+
+---
+
+# 🧠 Diferença crítica
+
+## ❌ Send
+
+```ahk
+Send "^a"
+```
+
+interpreta comandos.
+
+---
+
+## ✅ SendText
+
+```ahk
+SendText "^a"
+```
+
+manda literalmente:
+
+```text
+^a
+```
+
+---
+
+# 🚀 Método 2 — Clipboard (mais robusto ainda)
+
+Esse é o mais estável para SQL gigante.
+
+## Exemplo
+
+```ahk
+::svpad::
+{
+    texto :=
+    "
+(
+CREATE OR REPLACE VIEW workspace_db.view_silver_padronizado AS
+SELECT
+    contrato,
+    produto,
+    vl_pago
+FROM tabela;
+)"
+
+    A_Clipboard := texto
+
+    Send "^v"
+}
+```
+
+---
+
+# 🥇 Por que clipboard é absurdo?
+
+Porque:
+
+* preserva multiline perfeitamente
+* preserva tabs
+* preserva unicode
+* preserva pipe
+* preserva aspas
+* preserva SQL enorme
+* funciona melhor em Excel
+* funciona melhor em Athena web
+* funciona melhor em navegador
+* evita timing issues
+
+---
+
+# 🚨 O maior problema real
+
+## Timing de digitação
+
+Quando você faz:
+
+```ahk
+Send "texto gigante"
+```
+
+alguns apps:
+
+* comem caracteres
+* pulam linhas
+* quebram indentação
+
+Principalmente:
+
+* browser
+* Athena web
+* Excel
+* Teams
+* Outlook
+* QuickSight
+* terminal remoto
+
+---
+
+# ✅ Clipboard evita isso
+
+Porque ele faz:
+
+```text
+1 paste
+```
+
+em vez de:
+
+```text
+1000 keypresses
+```
+
+---
+
+# 🧱 Método profissional híbrido
+
+Esse é o que eu recomendo PRA VOCÊ.
+
+```ahk
+::sqlcte::
+{
+    texto :=
+    "
+(
+WITH base AS (
+
+    SELECT
+        contrato,
+        produto,
+        vl_pago
+    FROM tabela
+
+)
+
+SELECT *
+FROM base;
+)"
+
+    ClipSaved := ClipboardAll()
+
+    A_Clipboard := texto
+
+    ClipWait 1
+
+    Send "^v"
+
+    Sleep 100
+
+    A_Clipboard := ClipSaved
+}
+```
+
+---
+
+# 🧠 Isso resolve:
+
+| Problema    | Resolvido |
+| ----------- | --------- |
+| multilinha  | ✅         |
+| pipe        | ✅         |
+| ;           | ✅         |
+| aspas       | ✅         |
+| unicode     | ✅         |
+| emoji       | ✅         |
+| SQL gigante | ✅         |
+| Excel       | ✅         |
+| navegador   | ✅         |
+| Athena web  | ✅         |
+
+---
+
+# 🚨 Problema clássico: `%`
+
+No AutoHotkey:
+
+```ahk
+%var%
+```
+
+tem significado especial.
+
+Então:
+
+## ❌ ruim
+
+```ahk
+Send "100%"
+```
+
+---
+
+## ✅ bom
+
+```ahk
+SendText "100%"
+```
+
+ou clipboard.
+
+---
+
+# 🚨 Problema clássico: `{}`
+
+## ❌
+
+```ahk
+Send "{Enter}"
+```
+
+vira comando.
+
+---
+
+## ✅
+
+```ahk
+SendText "{Enter}"
+```
+
+vira texto literal.
+
+---
+
+# 🧱 Melhor estrutura multiline
+
+## Use sempre:
+
+```ahk
+texto :=
+"
+(
+conteúdo
+)"
+```
+
+---
+
+# ❌ NÃO faça
+
+```ahk
+texto = SELECT ...
+```
+
+estilo v1 antigo.
+
+---
+
+# 🚀 Para snippets MUITO grandes
+
+## Melhor ainda: carregar arquivo
+
+Exemplo:
+
+```ahk
+::goldfato::
+{
+    texto := FileRead("C:\snippets\gold_fato.sql")
+
+    A_Clipboard := texto
+
+    Send "^v"
+}
+```
+
+---
+
+# 🥇 Isso é o estado da arte
+
+Porque:
+
+* snippets ficam versionáveis
+* organizáveis
+* reutilizáveis
+* git-friendly
+* editáveis no VSCode
+
+---
+
+# 🧠 Isso conversa MUITO com seu modelo
+
+Você já está pensando em:
+
+```text
+ativos reutilizáveis
+```
+
+como aparece no seu framework de naming/documentação.
+
+Então o ideal MESMO é:
+
+```text
+/snippets
+    /sql
+    /excel
+    /obsidian
+    /marp
+    /athena
+```
+
+e o AutoHotkey só injeta.
+
+---
+
+# 🚀 Nível enterprise
+
+Você pode inclusive:
+
+## armazenar snippets em markdown/sql
+
+Exemplo:
+
+```text
+snippets/sql/scd2_merge.sql
+snippets/sql/view_silver_padronizado.sql
+snippets/obsidian/analise.md
+```
+
+e carregar dinamicamente.
+
+---
+
+# 🥇 Melhor prática ABSOLUTA
+
+## Para código pequeno
+
+✅ `SendText`
+
+## Para código médio/grande
+
+✅ Clipboard
+
+## Para snippets enormes
+
+✅ FileRead + Clipboard
+
+---
+
+# 🔥 Dica MUITO importante para SQL
+
+## Preserve indentação com espaços
+
+Evite TAB real.
+
+Porque:
+
+* cada editor renderiza diferente
+* Athena web quebra
+* Excel quebra
+* Teams quebra
+
+Prefira:
+
+```text
+4 espaços
+```
+
+---
+
+# 🧠 Outro problema REAL
+
+## Smart quotes
+
+Outlook/Teams às vezes convertem:
+
+```text
+"
+```
+
+em:
+
+```text
+“
+”
+```
+
+Clipboard reduz MUITO isso.
+
+---
+
+# 🎯 Minha recomendação real para seu stack
+
+## Athena / SQL
+
+✅ FileRead + Clipboard
+
+## Excel
+
+✅ Clipboard
+
+## Obsidian
+
+✅ SendText
+
+## Marp
+
+✅ FileRead
+
+## Teams
+
+✅ Clipboard
+
+---
+
+# 🏗️ Exemplo PROFISSIONAL completo
+
+```ahk
+::scd2::
+{
+    caminho := "C:\snippets\sql\merge_scd2.sql"
+
+    texto := FileRead(caminho, "UTF-8")
+
+    ClipSaved := ClipboardAll()
+
+    A_Clipboard := texto
+
+    ClipWait 1
+
+    Send "^v"
+
+    Sleep 100
+
+    A_Clipboard := ClipSaved
+}
+```
+
+Isso escala MUITO bem.
+
+
+
+Quase. Depende de COMO você definiu o hotstring no AutoHotkey.
+
+---
+
+# 🎯 Comportamento padrão
+
+Se você fizer:
+
+```ahk id="6gwgsv"
+::scd2::
+{
+    ...
+}
+```
+
+o trigger padrão acontece quando você digita:
+
+```text id="z3wd7m"
+scd2 + caractere finalizador
+```
+
+Os finalizadores padrão incluem:
+
+* espaço
+* enter
+* tab
+* ponto
+* vírgula
+* ;
+* :
+* (
+* )
+* [
+* ]
+* etc
+
+Então:
+
+```text id="a56vw5"
+scd2 + Enter
+```
+
+✅ FUNCIONA.
+
+---
+
+# 🚨 Mas existe um detalhe importante
+
+Quando você usa:
+
+```text id="obd1ku"
+Enter
+```
+
+o próprio Enter pode “sobrar”.
+
+Então:
+
+```text id="h5bwh0"
+scd2 + Enter
+```
+
+pode virar:
+
+```text id="mbot4s"
+[paste do snippet]
+
+(quebra de linha extra)
+```
+
+---
+
+# 🥇 Melhor prática
+
+## Use TAB ou espaço
+
+Mais comum:
+
+```text id="6mcbv4"
+scd2 + TAB
+```
+
+ou:
+
+```text id="7f4ecv"
+scd2 + espaço
+```
+
+---
+
+# 🚀 Se quiser expansão IMEDIATA
+
+Você pode usar:
+
+```ahk id="om9fef"
+:*:scd2::
+```
+
+O `*` significa:
+
+```text id="j64i71"
+não precisa caractere finalizador
+```
+
+Então basta digitar:
+
+```text id="36ht4j"
+scd2
+```
+
+e ele expande imediatamente.
+
+---
+
+# 🧠 Comparação
+
+| Sintaxe     | Comportamento            |
+| ----------- | ------------------------ |
+| `::scd2::`  | espera espaço/tab/enter  |
+| `:*:scd2::` | expande instantaneamente |
+
+---
+
+# 🚨 Cuidado com expansão instantânea
+
+Porque:
+
+```text id="shjxjq"
+minhascd2teste
+```
+
+poderia expandir no meio da palavra.
+
+---
+
+# 🥇 Melhor equilíbrio (o que recomendo)
+
+Use:
+
+```ahk id="c6uz7d"
+:*?:scd2::
+```
+
+---
+
+# O que significa isso?
+
+| Símbolo | Significado                  |
+| ------- | ---------------------------- |
+| `*`     | não precisa finalizador      |
+| `?`     | pode estar dentro de palavra |
+
+---
+
+# 🚀 Minha recomendação REAL para você
+
+## Para snippets técnicos
+
+Use:
+
+```ahk id="m1v1kt"
+::scd2::
+```
+
+e ative com:
+
+```text id="8w3p4w"
+TAB
+```
+
+ou espaço.
+
+Isso evita:
+
+* expansão acidental
+* bugs
+* conflitos
+* trigger sem querer
+
+---
+
+# 🧱 Exemplo completo ideal
+
+```ahk id="qwd6ij"
+::scd2::
+{
+    caminho := "C:\snippets\sql\merge_scd2.sql"
+
+    texto := FileRead(caminho, "UTF-8")
+
+    ClipSaved := ClipboardAll()
+
+    A_Clipboard := texto
+
+    ClipWait 1
+
+    Send "^v"
+
+    Sleep 100
+
+    A_Clipboard := ClipSaved
+}
+```
+
+---
+
+# 🥇 Fluxo operacional
+
+Você digita:
+
+```text id="4zsvfq"
+scd2
+```
+
+depois:
+
+```text id="6yhm1y"
+TAB
+```
+
+e ele cola:
+
+```sql id="wjxsd5"
+MERGE INTO iceberg_gold_dimensao ...
+```
+
+---
+
+# 🎯 Dica MUITO importante
+
+## Configure TAB como trigger mental universal
+
+Exemplo:
+
+```text id="x9isg8"
+cte + TAB
+join + TAB
+svpad + TAB
+mart + TAB
+qs + TAB
+```
+
+Isso fica extremamente parecido com:
+
+* VSCode snippets
+* IntelliJ
+* dbt
+* IDE profissional
+
+---
+
+# 🧠 Outro detalhe importante
+
+## O snippet APAGA o trigger
+
+Ou seja:
+
+Você digita:
+
+```text id="ul8wxg"
+scd2
+```
+
+e ele substitui pelo conteúdo.
+
+Não fica:
+
+```text id="mqek4e"
+scd2MERGE INTO ...
+```
+
+---
+
+# 🚀 Melhor ainda: usar prefixo
+
+Muita gente usa:
+
+```text id="70pk86"
+;scd2
+```
+
+ou:
+
+```text id="2d1yja"
+.scd2
+```
+
+para reduzir colisão.
+
+Exemplo:
+
+```ahk id="w45fj7"
+::.scd2::
+```
+
+Assim:
+
+```text id="zjlwmf"
+.scd2 + TAB
+```
+
+---
+
+# 🥇 Isso é excelente para você
+
+Porque você trabalha com MUITOS termos reais:
+
+* merge
+* gold
+* silver
+* mart
+* join
+* case
+
+Então prefixar evita expansão acidental.
+
+---
+
+# Minha recomendação final para seu caso
+
+## Use:
+
+```text id="eqgj0o"
+.scd2
+.cte
+.svpad
+.mart
+.qs
+```
+
+com:
+
+```ahk id="mwwfk2"
+::.scd2::
+```
+
+e ative via TAB.
+
+Fica MUITO profissional e seguro.
