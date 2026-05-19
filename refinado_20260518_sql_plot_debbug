@@ -1,0 +1,260 @@
+from sqlglot import parse_one
+from sqlglot import expressions as exp
+
+
+class SqlSemanticExplainer:
+    def __init__(self, sql: str, dialect: str = "presto"):
+        self.sql = sql
+        self.dialect = dialect
+        self.ast = parse_one(sql, dialect=dialect)
+
+    def get_tables(self):
+        return sorted({t.sql(dialect=self.dialect) for t in self.ast.find_all(exp.Table)})
+
+    def get_columns(self):
+        return sorted({c.sql(dialect=self.dialect) for c in self.ast.find_all(exp.Column)})
+
+    def get_ctes(self):
+        return sorted({cte.alias for cte in self.ast.find_all(exp.CTE)})
+
+    def get_cases(self):
+        return [case.sql(dialect=self.dialect, pretty=True) for case in self.ast.find_all(exp.Case)]
+
+    def get_aggregations(self):
+        agg_types = (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)
+        return [agg.sql(dialect=self.dialect) for agg in self.ast.find_all(agg_types)]
+
+    def get_joins(self):
+        joins = []
+
+        for join in self.ast.find_all(exp.Join):
+            joins.append({
+                "tipo_join": join.args.get("kind") or "JOIN",
+                "tabela": join.this.sql(dialect=self.dialect) if join.this else None,
+                "condicao": join.args.get("on").sql(dialect=self.dialect) if join.args.get("on") else None
+            })
+
+        return joins
+
+    def get_filters(self):
+        filters = []
+
+        for where in self.ast.find_all(exp.Where):
+            filters.append(where.this.sql(dialect=self.dialect))
+
+        return filters
+
+    def get_group_by(self):
+        groups = []
+
+        for group in self.ast.find_all(exp.Group):
+            for item in group.expressions:
+                groups.append(item.sql(dialect=self.dialect))
+
+        return groups
+
+    def get_order_by(self):
+        orders = []
+
+        for order in self.ast.find_all(exp.Order):
+            for item in order.expressions:
+                orders.append(item.sql(dialect=self.dialect))
+
+        return orders
+
+    def get_selected_fields(self):
+        selects = []
+
+        for select in self.ast.find_all(exp.Select):
+            for projection in select.expressions:
+                alias = projection.alias_or_name
+                selects.append({
+                    "campo_saida": alias,
+                    "expressao": projection.sql(dialect=self.dialect)
+                })
+
+        return selects
+
+    def get_target_model(self):
+        create = self.ast.find(exp.Create)
+
+        if create and create.this:
+            return create.this.sql(dialect=self.dialect)
+
+        return None
+
+    def detect_select_star(self):
+        return any(self.ast.find_all(exp.Star))
+
+    def detect_join_without_on(self):
+        risks = []
+
+        for join in self.ast.find_all(exp.Join):
+            if not join.args.get("on"):
+                risks.append({
+                    "tipo": "JOIN_SEM_ON",
+                    "severidade": "alta",
+                    "detalhe": join.sql(dialect=self.dialect)
+                })
+
+        return risks
+
+    def detect_partition_filter(self, partition_columns=None):
+        if partition_columns is None:
+            partition_columns = ["p_anomes", "p_dt_ref", "mes_ref_yyyymm", "dt_ref_yyyymmdd"]
+
+        filters = " ".join(self.get_filters()).lower()
+
+        found = [
+            col for col in partition_columns
+            if col.lower() in filters
+        ]
+
+        return {
+            "tem_filtro_particao": bool(found),
+            "colunas_particao_encontradas": found
+        }
+
+    def detect_medallion_violations(self):
+        target = self.get_target_model() or ""
+        tables = self.get_tables()
+
+        risks = []
+
+        target_lower = target.lower()
+
+        for table in tables:
+            table_lower = table.lower()
+
+            if "mart" in target_lower and "bronze" in table_lower:
+                risks.append({
+                    "tipo": "MART_CONSUMINDO_BRONZE",
+                    "severidade": "alta",
+                    "detalhe": f"{target} depende diretamente de {table}"
+                })
+
+            if "gold" in target_lower and "bronze" in table_lower:
+                risks.append({
+                    "tipo": "GOLD_CONSUMINDO_BRONZE",
+                    "severidade": "media",
+                    "detalhe": f"{target} depende diretamente de {table}"
+                })
+
+        return risks
+
+    def detect_risks(self):
+        risks = []
+
+        if self.detect_select_star():
+            risks.append({
+                "tipo": "SELECT_STAR",
+                "severidade": "media",
+                "detalhe": "Uso de SELECT * detectado."
+            })
+
+        risks.extend(self.detect_join_without_on())
+        risks.extend(self.detect_medallion_violations())
+
+        partition_check = self.detect_partition_filter()
+
+        if not partition_check["tem_filtro_particao"]:
+            risks.append({
+                "tipo": "SEM_FILTRO_PARTICAO",
+                "severidade": "media",
+                "detalhe": "Nenhuma coluna típica de partição encontrada no WHERE."
+            })
+
+        return risks
+
+    def infer_grain(self):
+        group_by = self.get_group_by()
+
+        if not group_by:
+            return "Grão não inferido: consulta sem GROUP BY explícito."
+
+        return "1 linha = " + " + ".join(group_by)
+
+    def explain(self):
+        return {
+            "modelo_destino": self.get_target_model(),
+            "tabelas": self.get_tables(),
+            "ctes": self.get_ctes(),
+            "colunas": self.get_columns(),
+            "campos_saida": self.get_selected_fields(),
+            "joins": self.get_joins(),
+            "filtros": self.get_filters(),
+            "group_by": self.get_group_by(),
+            "grao_inferido": self.infer_grain(),
+            "agregacoes": self.get_aggregations(),
+            "cases": self.get_cases(),
+            "particionamento": self.detect_partition_filter(),
+            "riscos": self.detect_risks()
+        }
+
+    def print_report(self):
+        report = self.explain()
+
+        print("\n" + "=" * 80)
+        print("EXPLAIN SEMÂNTICO SQL")
+        print("=" * 80)
+
+        print("\nMODELO DESTINO:")
+        print(report["modelo_destino"])
+
+        print("\nTABELAS:")
+        for item in report["tabelas"]:
+            print("-", item)
+
+        print("\nCTEs:")
+        for item in report["ctes"]:
+            print("-", item)
+
+        print("\nGRÃO INFERIDO:")
+        print(report["grao_inferido"])
+
+        print("\nJOINS:")
+        for join in report["joins"]:
+            print(f"- {join['tipo_join']} {join['tabela']}")
+            print(f"  ON {join['condicao']}")
+
+        print("\nFILTROS:")
+        for f in report["filtros"]:
+            print("-", f)
+
+        print("\nGROUP BY:")
+        for g in report["group_by"]:
+            print("-", g)
+
+        print("\nAGREGAÇÕES:")
+        for agg in report["agregacoes"]:
+            print("-", agg)
+
+        print("\nCASES:")
+        for case in report["cases"]:
+            print("-" * 40)
+            print(case)
+
+        print("\nPARTIÇÃO:")
+        print(report["particionamento"])
+
+        print("\nRISCOS:")
+        if not report["riscos"]:
+            print("- Nenhum risco relevante detectado.")
+        else:
+            for r in report["riscos"]:
+                print(f"- [{r['severidade']}] {r['tipo']}: {r['detalhe']}")
+
+        print("\n" + "=" * 80)
+
+
+# =========================================================
+# USO
+# =========================================================
+sql = """
+CREATE OR REPLACE VIEW workspace_db.view_gold_mart_cobranca_pagadoria_quicksight AS WITH pagamentos AS ( SELECT contrato, produto, cnpj_raiz, escritorio, mes_ref_yyyymm, vl_pago, vl_desconto_boleto, origem_pagamento FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados WHERE mes_ref_yyyymm = 202604 ), carteira AS ( SELECT contrato, produto, mes_ref_yyyymm, faixa_atraso, saldo_contabil, tipo_carteira FROM workspace_db.view_silver_integrado_cobranca_carteira_vigor WHERE mes_ref_yyyymm = 202604 ), base AS ( SELECT p.mes_ref_yyyymm, p.contrato, p.produto, p.cnpj_raiz, p.escritorio, c.faixa_atraso, c.tipo_carteira, p.origem_pagamento, p.vl_pago, p.vl_desconto_boleto, c.saldo_contabil, CASE WHEN p.origem_pagamento IN ('BOLETO', 'DEBITO_CONTA') THEN p.vl_pago ELSE 0 END AS vl_caixa, CASE WHEN c.faixa_atraso <= 60 AND p.vl_pago > 0 THEN c.saldo_contabil ELSE 0 END AS vl_regul FROM pagamentos p INNER JOIN carteira c ON p.contrato = c.contrato AND p.produto = c.produto AND p.mes_ref_yyyymm = c.mes_ref_yyyymm ) SELECT mes_ref_yyyymm, escritorio, faixa_atraso, tipo_carteira, count(DISTINCT contrato) AS qtd_contratos, sum(vl_pago) AS vl_pago_total, sum(vl_caixa) AS vl_caixa, sum(vl_regul) AS vl_regul, sum(vl_desconto_boleto) AS vl_desconto_total, sum(saldo_contabil) AS saldo_total, cast(sum(vl_regul) as double) / nullif(sum(saldo_contabil), 0) AS eficiencia_regul FROM base GROUP BY mes_ref_yyyymm, escritorio, faixa_atraso, tipo_carteira;
+"""
+explainer = SqlSemanticExplainer(sql, dialect="presto")
+explainer.print_report()
+
+# Se quiser o resultado como dict:
+resultado = explainer.explain()
