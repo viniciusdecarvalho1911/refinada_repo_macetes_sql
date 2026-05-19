@@ -1,0 +1,414 @@
+Segue uma nota pronta em padrão Obsidian.
+
+---
+title: Sistema de Command Palette Pessoal com Nota Adesiva + AutoHotkey + Obsidian
+tags:
+  - tipo/guia
+  - tema/produtividade
+  - tema/autohotkey
+  - tema/obsidian
+  - tema/command_palette
+status: rascunho
+---
+
+# Sistema de Command Palette Pessoal com Nota Adesiva + AutoHotkey + Obsidian
+
+## Objetivo
+
+Criar um sistema em que eu consiga digitar comandos curtos em uma Nota Adesiva e abrir rapidamente:
+
+- notas específicas do Obsidian
+- templates
+- SQLs
+- comunicações
+- demandas
+- apresentações
+- arquivos markdown
+- buscas dentro do vault
+
+A ideia é transformar a Nota Adesiva em uma espécie de **command palette universal**.
+
+---
+
+# 1. Modelo mental
+
+Em vez de pensar assim:
+
+```text
+abrir Obsidian → procurar pasta → procurar nota → abrir
+
+pensar assim:
+
+digitar comando → executar ação → abrir contexto certo
+
+Exemplo:
+
+/pag boleto cancelado
+
+significa:
+
+abrir conhecimento de pagadoria relacionado a boleto cancelado
+
+Isso combina com a lógica de blocos reutilizáveis indexados: usar IDs como PAG-001, REQ-045, ERR-002, MET-002 para localizar conhecimento em segundos. 
+
+
+---
+
+2. Pré-requisitos
+
+Instalar
+
+AutoHotkey v2
+
+Obsidian
+
+Sticky Notes / Nota Adesiva do Windows
+
+
+Ter um vault organizado
+
+Exemplo:
+
+/conhecimento
+/pedidos
+/comunicacoes
+/sql
+/templates
+/apresentacoes
+/indices
+
+
+---
+
+3. Criar padrão de comandos
+
+Estrutura recomendada
+
+/<categoria> <termo>
+
+Exemplos:
+
+/pag boleto cancelado
+/req divergencia caixa
+/sql scd2
+/com resposta gestora
+/ppt eficiencia
+/err duplicidade
+/met eficiencia
+
+
+---
+
+4. Significado das categorias
+
+Prefixo	Uso
+
+/pag	Pagadoria / cobrança
+/req	Demandas e pedidos
+/sql	Snippets e templates SQL
+/com	Comunicação pronta
+/ppt	Apresentações
+/err	Erros e troubleshooting
+/met	Métricas
+/ath	Athena
+/daily	Nota diária
+
+
+
+---
+
+5. Criar URLs do Obsidian
+
+Abrir nota específica
+
+Formato:
+
+obsidian://open?vault=NOME_DO_VAULT&file=CAMINHO_DA_NOTA
+
+Exemplo:
+
+obsidian://open?vault=MeuVault&file=conhecimento/PAG-001%20%E2%80%94%20Regra%20de%20exclus%C3%A3o%20de%20boletos%20cancelados
+
+Abrir busca
+
+Formato:
+
+obsidian://search?vault=NOME_DO_VAULT&query=TERMO
+
+Exemplo:
+
+obsidian://search?vault=MeuVault&query=pag%20boleto%20cancelado
+
+
+---
+
+6. Primeiro AutoHotkey simples
+
+Criar um arquivo:
+
+command_palette_obsidian.ahk
+
+Código inicial:
+
+#Requires AutoHotkey v2.0
+
+#HotIf WinActive("ahk_exe StikyNot.exe")
+
+::/pag boleto cancelado::
+{
+    Run "obsidian://search?vault=MeuVault&query=pag%20boleto%20cancelado"
+}
+
+::/req divergencia caixa::
+{
+    Run "obsidian://search?vault=MeuVault&query=req%20divergencia%20caixa"
+}
+
+::/sql scd2::
+{
+    Run "obsidian://search?vault=MeuVault&query=sql%20scd2"
+}
+
+::/com resposta gestora::
+{
+    Run "obsidian://search?vault=MeuVault&query=com%20resposta%20gestora"
+}
+
+#HotIf
+
+O bloco #HotIf WinActive("ahk_exe StikyNot.exe") garante que os comandos funcionem apenas na Nota Adesiva.
+
+
+---
+
+7. Versão melhor: usando atalho para executar linha atual
+
+Em vez de criar um hotstring para cada comando, uma versão mais poderosa é:
+
+1. digitar o comando na nota
+
+
+2. selecionar a linha
+
+
+3. apertar um atalho
+
+
+4. AutoHotkey interpreta
+
+
+
+Exemplo:
+
+/sql scd2
+
+Seleciona a linha e aperta:
+
+Ctrl + Alt + Enter
+
+
+---
+
+8. AutoHotkey com parser simples
+
+#Requires AutoHotkey v2.0
+
+#HotIf WinActive("ahk_exe StikyNot.exe")
+
+^!Enter::
+{
+    Send "^c"
+    Sleep 100
+
+    cmd := Trim(A_Clipboard)
+
+    if (cmd = "") {
+        return
+    }
+
+    vault := "MeuVault"
+
+    if InStr(cmd, "/pag ") {
+        termo := StrReplace(cmd, "/pag ", "")
+        Run "obsidian://search?vault=" vault "&query=pag%20" UriEncode(termo)
+    }
+    else if InStr(cmd, "/req ") {
+        termo := StrReplace(cmd, "/req ", "")
+        Run "obsidian://search?vault=" vault "&query=req%20" UriEncode(termo)
+    }
+    else if InStr(cmd, "/sql ") {
+        termo := StrReplace(cmd, "/sql ", "")
+        Run "obsidian://search?vault=" vault "&query=sql%20" UriEncode(termo)
+    }
+    else if InStr(cmd, "/com ") {
+        termo := StrReplace(cmd, "/com ", "")
+        Run "obsidian://search?vault=" vault "&query=com%20" UriEncode(termo)
+    }
+    else {
+        Run "obsidian://search?vault=" vault "&query=" UriEncode(cmd)
+    }
+}
+
+UriEncode(str) {
+    encoded := ""
+    Loop Parse str {
+        ch := A_LoopField
+        if ch ~= "^[A-Za-z0-9_.~-]$"
+            encoded .= ch
+        else if ch = " "
+            encoded .= "%20"
+        else
+            encoded .= "%" Format("{:02X}", Ord(ch))
+    }
+    return encoded
+}
+
+#HotIf
+
+
+---
+
+9. Como usar na prática
+
+Fluxo diário
+
+1. Abrir Nota Adesiva.
+
+
+2. Digitar:
+
+
+
+/sql scd2
+
+3. Selecionar a linha.
+
+
+4. Apertar:
+
+
+
+Ctrl + Alt + Enter
+
+5. O Obsidian abre a busca correspondente.
+
+
+
+
+---
+
+10. Evolução recomendada
+
+Fase 1 — Busca simples
+
+Tudo abre via busca:
+
+obsidian://search
+
+É mais fácil e não exige saber o caminho exato da nota.
+
+Fase 2 — Abrir notas oficiais
+
+Depois, comandos importantes abrem notas específicas:
+
+/pag boleto cancelado → PAG-001
+/sql scd2 → SQL-003
+/com resposta gestora → COM-003
+
+Fase 3 — Comandos com ação
+
+Exemplos:
+
+/daily
+
+abre nota diária.
+
+/req nova
+
+abre template de nova demanda.
+
+/com ajuste
+
+abre template de comunicação.
+
+/sql merge
+
+abre template Athena MERGE.
+
+
+---
+
+11. Organização sugerida no Obsidian
+
+Prefixos
+
+PAG-001 — Regra de exclusão de boletos cancelados
+REQ-045 — Divergência de caixa
+SQL-003 — Template SCD2 com Iceberg
+COM-003 — Resposta para gestora sobre ajuste
+ERR-002 — Duplicidade de boletos
+MET-002 — Eficiência ajustada por DU
+
+Tags
+
+#dominio/cobranca
+#tema/pagadoria
+#tipo/sql
+#tipo/comunicacao
+#status/producao
+
+Esse padrão segue a ideia de usar prefixos fixos, tags e metadados mínimos para acelerar busca, linkagem e reuso. 
+
+
+---
+
+12. Exemplo de sistema completo
+
+/pag boleto cancelado
+
+abre conhecimento operacional.
+
+/sql scd2
+
+abre template técnico.
+
+/req divergencia caixa
+
+abre histórico da demanda.
+
+/com resposta gestora
+
+abre modelo de comunicação.
+
+/ppt eficiencia
+
+abre apresentação relacionada.
+
+
+---
+
+13. Por que isso é poderoso
+
+Esse sistema transforma o fluxo:
+
+lembrar onde está → procurar → abrir → adaptar
+
+em:
+
+intenção → comando → contexto aberto
+
+Na prática, você cria um sistema operacional pessoal para análise, comunicação e documentação.
+
+
+---
+
+14. Próximo passo
+
+Começar pequeno:
+
+/sql scd2
+/pag boleto cancelado
+/req divergencia caixa
+/com resposta gestora
+
+Depois expandir conforme os comandos aparecerem naturalmente no trabalho.
