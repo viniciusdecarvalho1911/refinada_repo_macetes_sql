@@ -1,0 +1,617 @@
+Abaixo está a nota pronta em formato Obsidian/Markdown.
+
+Baseei nos seus padrões de `bronze → silver → gold`, uso de Iceberg como materialização oficial e nos exemplos do seu material de `MERGE incremental`/SCD2. A documentação do Athena confirma `INSERT`, `UPDATE`, `DELETE` e `MERGE INTO` em Iceberg, com transações/snapshots; `MERGE INTO` exige Athena Engine v3.  ([Documentação AWS][1])
+
+````markdown
+---
+title: Athena + Iceberg — UPDATE, DELETE, MERGE e SCD2 com CTEs
+tags:
+  - dominio/engenharia_dados
+  - tema/athena
+  - tema/iceberg
+  - tema/sql
+  - tema/scd2
+status: referencia
+---
+
+# Athena + Iceberg — UPDATE, DELETE, MERGE e SCD2 com CTEs
+
+## Premissas
+
+Estes exemplos assumem:
+
+- Athena Engine v3
+- tabela destino em Apache Iceberg
+- catálogo Glue
+- SQL em sintaxe Athena/Trino
+- tabelas em `workspace_db`
+
+Athena permite `INSERT`, `UPDATE`, `DELETE` e `MERGE INTO` sobre tabelas Iceberg. Cada transação gera novo snapshot, o que permite rollback lógico/time travel depois. Para `MERGE INTO`, o suporte é transacional apenas para Iceberg no Engine v3.
+
+---
+
+# 1. Tabela Iceberg de exemplo
+
+```sql
+CREATE TABLE IF NOT EXISTS workspace_db.iceberg_gold_dimensao_contrato_scd2 (
+    sk_contrato              varchar,
+    contrato                 varchar,
+    produto                  varchar,
+    cnpj_raiz                varchar,
+    escritorio               varchar,
+    faixa_atraso             varchar,
+    status_contrato          varchar,
+    hash_atributos           varchar,
+    dt_inicio_vigencia       date,
+    dt_fim_vigencia          date,
+    fl_ativo                 boolean,
+    fl_excluido_logico       boolean,
+    dt_ingestao_modelo       timestamp,
+    id_execucao              varchar,
+    anomes                   integer
+)
+PARTITIONED BY (anomes)
+LOCATION 's3://seu-bucket/gold/iceberg_gold_dimensao_contrato_scd2/'
+TBLPROPERTIES (
+    'table_type' = 'ICEBERG',
+    'format' = 'PARQUET',
+    'write_compression' = 'SNAPPY'
+);
+````
+
+---
+
+# 2. UPDATE com CTE
+
+## Uso
+
+Bom para correção pontual em registros existentes.
+
+```sql
+UPDATE workspace_db.iceberg_gold_dimensao_contrato_scd2
+SET
+    status_contrato    = 'REGULARIZADO',
+    dt_ingestao_modelo = current_timestamp,
+    id_execucao        = 'exec_202604_update_status'
+WHERE fl_ativo = true
+  AND (contrato, produto) IN (
+      WITH contratos_regularizados AS (
+          SELECT
+              cast(contrato as varchar) AS contrato,
+              cast(produto as varchar)  AS produto
+          FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+          WHERE mes_ref_yyyymm = 202604
+            AND vl_pago > decimal '0.00'
+      )
+      SELECT
+          contrato,
+          produto
+      FROM contratos_regularizados
+  );
+```
+
+## Observação importante
+
+Para `UPDATE` baseado em valores vindos de outra tabela, prefira `MERGE INTO`. O `UPDATE` é melhor quando o valor atualizado é fixo ou derivável diretamente do próprio alvo.
+
+---
+
+# 3. DELETE com CTE
+
+## Uso
+
+Bom para apagar registros físicos quando existe critério claro de expurgo.
+
+```sql
+DELETE FROM workspace_db.iceberg_gold_dimensao_contrato_scd2
+WHERE fl_ativo = false
+  AND dt_fim_vigencia < date '2023-01-01'
+  AND (contrato, produto) IN (
+      WITH candidatos_expurgo AS (
+          SELECT
+              contrato,
+              produto
+          FROM workspace_db.iceberg_gold_dimensao_contrato_scd2
+          WHERE fl_ativo = false
+            AND fl_excluido_logico = true
+            AND dt_fim_vigencia < date '2023-01-01'
+      )
+      SELECT
+          contrato,
+          produto
+      FROM candidatos_expurgo
+  );
+```
+
+## Regra prática
+
+Em dimensão histórica, prefira **delete lógico**. Use `DELETE` físico só para expurgo, LGPD, dados inválidos ou reconstrução controlada.
+
+---
+
+# 4. MERGE incremental com CTE
+
+## Uso
+
+Bom para upsert de fatos, marts e dimensões tipo 1.
+
+```sql
+MERGE INTO workspace_db.iceberg_gold_fato_pagadoria AS t
+USING (
+    WITH base AS (
+        SELECT
+            cast(mes_ref_yyyymm as integer)        AS anomes,
+            cast(contrato as varchar)              AS contrato,
+            cast(produto as varchar)               AS produto,
+            cast(origem_pagamento as varchar)      AS origem_pagamento,
+            cast(sum(vl_pago) as decimal(18,2))    AS vl_caixa,
+            cast(sum(vl_regul) as decimal(18,2))   AS vl_regul
+        FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+        WHERE mes_ref_yyyymm = 202604
+        GROUP BY
+            cast(mes_ref_yyyymm as integer),
+            cast(contrato as varchar),
+            cast(produto as varchar),
+            cast(origem_pagamento as varchar)
+    ),
+
+    final AS (
+        SELECT
+            md5(
+                concat(
+                    contrato,
+                    '|',
+                    produto,
+                    '|',
+                    cast(anomes as varchar),
+                    '|',
+                    origem_pagamento
+                )
+            ) AS sk_pagadoria,
+            anomes,
+            contrato,
+            produto,
+            origem_pagamento,
+            vl_caixa,
+            vl_regul,
+            current_timestamp AS dt_ingestao_modelo,
+            'exec_202604_merge_pagadoria' AS id_execucao
+        FROM base
+    )
+
+    SELECT *
+    FROM final
+) AS s
+ON  t.sk_pagadoria = s.sk_pagadoria
+
+WHEN MATCHED THEN UPDATE SET
+    vl_caixa           = s.vl_caixa,
+    vl_regul           = s.vl_regul,
+    dt_ingestao_modelo = s.dt_ingestao_modelo,
+    id_execucao        = s.id_execucao
+
+WHEN NOT MATCHED THEN INSERT (
+    sk_pagadoria,
+    anomes,
+    contrato,
+    produto,
+    origem_pagamento,
+    vl_caixa,
+    vl_regul,
+    dt_ingestao_modelo,
+    id_execucao
+)
+VALUES (
+    s.sk_pagadoria,
+    s.anomes,
+    s.contrato,
+    s.produto,
+    s.origem_pagamento,
+    s.vl_caixa,
+    s.vl_regul,
+    s.dt_ingestao_modelo,
+    s.id_execucao
+);
+```
+
+Esse padrão segue a lógica do seu material: `MERGE` quando há correção tardia, reprocessamento por chave, atualização pontual, SCD2 ou late-arriving data. 
+
+---
+
+# 5. MERGE com DELETE
+
+## Uso
+
+Bom quando uma tabela de staging informa que determinada linha deve ser removida.
+
+```sql
+MERGE INTO workspace_db.iceberg_gold_fato_pagadoria AS t
+USING (
+    WITH cancelamentos AS (
+        SELECT
+            md5(
+                concat(
+                    cast(contrato as varchar),
+                    '|',
+                    cast(produto as varchar),
+                    '|',
+                    cast(mes_ref_yyyymm as varchar),
+                    '|',
+                    cast(origem_pagamento as varchar)
+                )
+            ) AS sk_pagadoria
+        FROM workspace_db.view_silver_integrado_cobranca_pagamentos_cancelados
+        WHERE mes_ref_yyyymm = 202604
+    )
+
+    SELECT
+        sk_pagadoria
+    FROM cancelamentos
+) AS s
+ON t.sk_pagadoria = s.sk_pagadoria
+
+WHEN MATCHED THEN DELETE;
+```
+
+---
+
+# 6. SCD2 com UPDATE + INSERT
+
+## Ideia
+
+SCD2 normalmente não “edita o passado”.
+
+Ela faz:
+
+```text
+1. fecha o registro atual
+2. insere uma nova versão ativa
+```
+
+Esse padrão conversa com modelagem dimensional: Type 2 preserva histórico criando uma nova versão da dimensão quando atributos relevantes mudam.
+
+---
+
+## 6.1 Fechar registros ativos alterados
+
+```sql
+UPDATE workspace_db.iceberg_gold_dimensao_contrato_scd2
+SET
+    dt_fim_vigencia    = date_add('day', -1, current_date),
+    fl_ativo           = false,
+    dt_ingestao_modelo = current_timestamp,
+    id_execucao        = 'exec_202604_scd2_fecha'
+WHERE fl_ativo = true
+  AND (contrato, produto) IN (
+      WITH origem AS (
+          SELECT
+              cast(contrato as varchar)        AS contrato,
+              cast(produto as varchar)         AS produto,
+              cast(cnpj_raiz as varchar)       AS cnpj_raiz,
+              cast(escritorio as varchar)      AS escritorio,
+              cast(faixa_atraso as varchar)    AS faixa_atraso,
+              cast(status_contrato as varchar) AS status_contrato,
+              md5(
+                  concat(
+                      coalesce(cast(cnpj_raiz as varchar), ''),
+                      '|',
+                      coalesce(cast(escritorio as varchar), ''),
+                      '|',
+                      coalesce(cast(faixa_atraso as varchar), ''),
+                      '|',
+                      coalesce(cast(status_contrato as varchar), '')
+                  )
+              ) AS hash_atributos
+          FROM workspace_db.view_silver_integrado_cobranca_contratos
+          WHERE mes_ref_yyyymm = 202604
+      ),
+
+      alterados AS (
+          SELECT
+              t.contrato,
+              t.produto
+          FROM workspace_db.iceberg_gold_dimensao_contrato_scd2 t
+          INNER JOIN origem s
+              ON  t.contrato = s.contrato
+              AND t.produto  = s.produto
+          WHERE t.fl_ativo = true
+            AND t.hash_atributos <> s.hash_atributos
+      )
+
+      SELECT
+          contrato,
+          produto
+      FROM alterados
+  );
+```
+
+---
+
+## 6.2 Inserir novas versões
+
+```sql
+INSERT INTO workspace_db.iceberg_gold_dimensao_contrato_scd2 (
+    sk_contrato,
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+    faixa_atraso,
+    status_contrato,
+    hash_atributos,
+    dt_inicio_vigencia,
+    dt_fim_vigencia,
+    fl_ativo,
+    fl_excluido_logico,
+    dt_ingestao_modelo,
+    id_execucao,
+    anomes
+)
+WITH origem AS (
+    SELECT
+        cast(contrato as varchar)        AS contrato,
+        cast(produto as varchar)         AS produto,
+        cast(cnpj_raiz as varchar)       AS cnpj_raiz,
+        cast(escritorio as varchar)      AS escritorio,
+        cast(faixa_atraso as varchar)    AS faixa_atraso,
+        cast(status_contrato as varchar) AS status_contrato,
+        md5(
+            concat(
+                coalesce(cast(cnpj_raiz as varchar), ''),
+                '|',
+                coalesce(cast(escritorio as varchar), ''),
+                '|',
+                coalesce(cast(faixa_atraso as varchar), ''),
+                '|',
+                coalesce(cast(status_contrato as varchar), '')
+            )
+        ) AS hash_atributos
+    FROM workspace_db.view_silver_integrado_cobranca_contratos
+    WHERE mes_ref_yyyymm = 202604
+),
+
+atuais AS (
+    SELECT
+        contrato,
+        produto,
+        hash_atributos
+    FROM workspace_db.iceberg_gold_dimensao_contrato_scd2
+    WHERE fl_ativo = true
+),
+
+novos_ou_alterados AS (
+    SELECT
+        s.*
+    FROM origem s
+    LEFT JOIN atuais t
+        ON  s.contrato = t.contrato
+        AND s.produto  = t.produto
+    WHERE t.contrato IS NULL
+       OR t.hash_atributos <> s.hash_atributos
+)
+
+SELECT
+    md5(
+        concat(
+            contrato,
+            '|',
+            produto,
+            '|',
+            cast(current_date as varchar)
+        )
+    ) AS sk_contrato,
+    contrato,
+    produto,
+    cnpj_raiz,
+    escritorio,
+    faixa_atraso,
+    status_contrato,
+    hash_atributos,
+    current_date AS dt_inicio_vigencia,
+    date '9999-12-31' AS dt_fim_vigencia,
+    true AS fl_ativo,
+    false AS fl_excluido_logico,
+    current_timestamp AS dt_ingestao_modelo,
+    'exec_202604_scd2_insere' AS id_execucao,
+    202604 AS anomes
+FROM novos_ou_alterados;
+```
+
+---
+
+# 7. SCD2 com delete lógico
+
+## Uso
+
+Quando uma chave sumiu da origem e você quer fechar a versão ativa sem apagar o histórico.
+
+```sql
+UPDATE workspace_db.iceberg_gold_dimensao_contrato_scd2
+SET
+    dt_fim_vigencia    = date_add('day', -1, current_date),
+    fl_ativo           = false,
+    fl_excluido_logico = true,
+    dt_ingestao_modelo = current_timestamp,
+    id_execucao        = 'exec_202604_scd2_delete_logico'
+WHERE fl_ativo = true
+  AND (contrato, produto) IN (
+      WITH origem_atual AS (
+          SELECT DISTINCT
+              cast(contrato as varchar) AS contrato,
+              cast(produto as varchar)  AS produto
+          FROM workspace_db.view_silver_integrado_cobranca_contratos
+          WHERE mes_ref_yyyymm = 202604
+      ),
+
+      ativos_destino AS (
+          SELECT
+              contrato,
+              produto
+          FROM workspace_db.iceberg_gold_dimensao_contrato_scd2
+          WHERE fl_ativo = true
+      ),
+
+      removidos AS (
+          SELECT
+              t.contrato,
+              t.produto
+          FROM ativos_destino t
+          LEFT JOIN origem_atual s
+              ON  t.contrato = s.contrato
+              AND t.produto  = s.produto
+          WHERE s.contrato IS NULL
+      )
+
+      SELECT
+          contrato,
+          produto
+      FROM removidos
+  );
+```
+
+---
+
+# 8. SCD2 com MERGE para fechamento
+
+## Uso
+
+Alternativa mais compacta para fechar registros ativos alterados.
+
+```sql
+MERGE INTO workspace_db.iceberg_gold_dimensao_contrato_scd2 AS t
+USING (
+    WITH origem AS (
+        SELECT
+            cast(contrato as varchar)        AS contrato,
+            cast(produto as varchar)         AS produto,
+            md5(
+                concat(
+                    coalesce(cast(cnpj_raiz as varchar), ''),
+                    '|',
+                    coalesce(cast(escritorio as varchar), ''),
+                    '|',
+                    coalesce(cast(faixa_atraso as varchar), ''),
+                    '|',
+                    coalesce(cast(status_contrato as varchar), '')
+                )
+            ) AS hash_atributos
+        FROM workspace_db.view_silver_integrado_cobranca_contratos
+        WHERE mes_ref_yyyymm = 202604
+    )
+
+    SELECT
+        contrato,
+        produto,
+        hash_atributos
+    FROM origem
+) AS s
+ON  t.contrato = s.contrato
+AND t.produto  = s.produto
+AND t.fl_ativo = true
+
+WHEN MATCHED AND t.hash_atributos <> s.hash_atributos THEN UPDATE SET
+    dt_fim_vigencia    = date_add('day', -1, current_date),
+    fl_ativo           = false,
+    dt_ingestao_modelo = current_timestamp,
+    id_execucao        = 'exec_202604_scd2_merge_fecha';
+```
+
+Depois desse `MERGE`, ainda rode o `INSERT` da seção 6.2 para criar as novas versões ativas.
+
+---
+
+# 9. Quando usar cada padrão
+
+| Caso                          | Melhor padrão      |
+| ----------------------------- | ------------------ |
+| Correção simples              | `UPDATE`           |
+| Expurgo físico                | `DELETE`           |
+| Upsert de fato/mart           | `MERGE INTO`       |
+| Reprocessar mês inteiro       | `DELETE + INSERT`  |
+| Histórico de dimensão         | `UPDATE + INSERT`  |
+| Remoção preservando histórico | delete lógico SCD2 |
+| Late-arriving data            | `MERGE INTO`       |
+| Bootstrap inicial             | `CTAS`             |
+
+---
+
+# 10. Boas práticas
+
+## 1. Sempre declare o grão
+
+Exemplo:
+
+```text
+1 linha = 1 contrato + 1 produto + 1 versão vigente
+```
+
+ou:
+
+```text
+1 linha = 1 contrato + 1 produto + 1 mês + 1 origem_pagamento
+```
+
+## 2. Use staging quando a regra ficar complexa
+
+Em produção, muitas vezes é melhor:
+
+```text
+view_silver_integrado
+↓
+staging_delta
+↓
+MERGE na Iceberg final
+```
+
+## 3. Evite `MERGE` desnecessário
+
+Para reprocessamento mensal simples:
+
+```sql
+DELETE FROM tabela WHERE anomes = 202604;
+
+INSERT INTO tabela
+WITH ...
+SELECT ...
+```
+
+Isso costuma ser mais simples, auditável e barato de manter.
+
+## 4. Não apague histórico de dimensão sem motivo
+
+Em SCD2:
+
+* `DELETE` físico é exceção
+* `fl_ativo = false` é regra
+* `fl_excluido_logico = true` preserva rastreabilidade
+
+## 5. Monitore snapshots e otimize
+
+Iceberg cria snapshots e arquivos de delete. Em tabelas muito atualizadas, planeje manutenção com:
+
+```sql
+OPTIMIZE workspace_db.iceberg_gold_dimensao_contrato_scd2
+REWRITE DATA USING BIN_PACK;
+```
+
+---
+
+# 11. Checklist antes de rodar em produção
+
+* [ ] A tabela é Iceberg?
+* [ ] O workgroup está em Athena Engine v3?
+* [ ] O grão está declarado?
+* [ ] A chave do `MERGE` é única no source?
+* [ ] A CTE de origem não duplica linhas?
+* [ ] O `WHERE` filtra partição ou janela?
+* [ ] Existe teste de duplicidade por chave?
+* [ ] Existe teste de nulos críticos?
+* [ ] Existe plano de rollback/time travel?
+
+```
+
+Observação honesta: não consigo executar no seu Athena daqui, mas a sintaxe acima segue o formato documentado de `UPDATE`, `DELETE`, `INSERT INTO` e `MERGE INTO` do Athena para Iceberg. Ajuste apenas nomes de banco, views, buckets e colunas reais.
+::contentReference[oaicite:3]{index=3}
+```
+
+[1]: https://docs.aws.amazon.com/athena/latest/ug/merge-into-statement.html?utm_source=chatgpt.com "MERGE INTO - Amazon Athena"
