@@ -1,0 +1,564 @@
+🧭 Guia de Implantação — Sankey com VBA no Excel
+
+🎯 Objetivo
+
+Construir um sistema no Excel capaz de:
+
+desenhar Sankey automaticamente via VBA
+
+transformar tabelas em fluxos visuais
+
+atualizar o diagrama automaticamente
+
+usar dados de cobrança/pagadoria
+
+permitir expansão futura para:
+
+Power Query
+
+Athena
+
+QuickSight
+
+automação de PPT
+
+
+
+A ideia central é:
+
+TABELA → VBA → SHAPES → SANKEY
+
+
+---
+
+🧠 O que estamos construindo
+
+Você NÃO está criando apenas “um gráfico”.
+
+Você está criando:
+
+ENGINE VISUAL DECLARATIVA
+
+Ou seja:
+
+a tabela declara os fluxos
+
+o VBA interpreta
+
+o Excel renderiza
+
+
+Isso é muito parecido conceitualmente com:
+
+Power BI
+
+D3.js
+
+Vega
+
+QuickSight custom visual
+
+
+
+---
+
+🏗️ Arquitetura da solução
+
+Fluxo geral
+
+Tabela de links
+    ↓
+Macro VBA
+    ↓
+Leitura da matriz
+    ↓
+Criação de Shapes
+    ↓
+Conectores proporcionais
+    ↓
+Sankey renderizado
+
+
+---
+
+📦 Estrutura recomendada do arquivo
+
+Abas recomendadas
+
+Aba	Função
+
+nodes	posição dos nós
+links	fluxos do Sankey
+dashboard	renderização visual
+config	configurações globais
+hidden_vba	opcional para controle
+
+
+
+---
+
+1️⃣ Criando os nós do Sankey
+
+Objetivo
+
+Os nós representam:
+
+status
+
+fila
+
+escritório
+
+resultado
+
+etapa operacional
+
+
+
+---
+
+📌 Exemplo
+
+Na aba dashboard:
+
+Célula	Texto
+
+B4	30-60
+B6	61-90
+B8	91-120
+E4	Acionado
+E6	Sem contato
+E8	Acordo
+H4	Pago
+H6	Promessa
+H8	WO
+
+
+
+---
+
+🧠 Importante
+
+O VBA NÃO trabalha com o texto.
+
+Ele trabalha com:
+
+endereços das células
+
+Exemplo:
+
+B4 → H4
+
+
+---
+
+2️⃣ Criando a tabela de fluxos
+
+Aba: links
+
+Monte assim:
+
+origem	destino	peso	cor
+
+B4	E4	18	blue
+B4	E6	7	gray
+B6	E4	14	orange
+B6	E8	9	green
+B8	E6	11	red
+B8	E8	6	purple
+E4	H4	12	green
+E4	H6	8	orange
+E6	H8	10	red
+E8	H4	9	green
+
+
+
+---
+
+🧠 Interpretação
+
+Exemplo:
+
+30-60 → Acionado → Pago
+
+ou:
+
+91-120 → Sem contato → WO
+
+
+---
+
+3️⃣ Abrindo o editor VBA
+
+Atalho
+
+ALT + F11
+
+
+---
+
+4️⃣ Criando módulo VBA
+
+Vá em:
+
+Inserir → Módulo
+
+
+---
+
+5️⃣ Cole o código completo
+
+Código principal
+
+Option Explicit
+
+Sub SankeyDaSelecao()
+
+    Dim matriz As Variant
+    Dim wsDestino As Worksheet
+
+    If TypeName(Selection) <> "Range" Then
+        MsgBox "Selecione uma matriz com 4 colunas.", vbExclamation
+        Exit Sub
+    End If
+
+    matriz = Selection.Value
+
+    Set wsDestino = Worksheets("dashboard")
+
+    Call DesenharSankeyMatriz( _
+        matriz:=matriz, _
+        wsDestino:=wsDestino, _
+        nomePrefixo:="sankey_", _
+        transparencia:=0.5, _
+        fatorPeso:=1, _
+        pesoMinimo:=2, _
+        limparAntes:=True _
+    )
+
+End Sub
+
+
+---
+
+6️⃣ Motor de renderização
+
+Sub DesenharSankeyMatriz( _
+    ByVal matriz As Variant, _
+    ByVal wsDestino As Worksheet, _
+    Optional ByVal nomePrefixo As String = "sankey_", _
+    Optional ByVal transparencia As Double = 0.5, _
+    Optional ByVal fatorPeso As Double = 1, _
+    Optional ByVal pesoMinimo As Double = 1, _
+    Optional ByVal limparAntes As Boolean = True _
+)
+
+    Dim i As Long
+    Dim src As Range
+    Dim tgt As Range
+    Dim shp As Shape
+
+    If limparAntes Then
+        Call LimparSankey(wsDestino, nomePrefixo)
+    End If
+
+    For i = 1 To UBound(matriz, 1)
+
+        Set src = wsDestino.Range(CStr(matriz(i, 1)))
+        Set tgt = wsDestino.Range(CStr(matriz(i, 2)))
+
+        Set shp = wsDestino.Shapes.AddConnector( _
+            msoConnectorCurve, _
+            src.Left + src.Width, _
+            src.Top + src.Height / 2, _
+            tgt.Left, _
+            tgt.Top + tgt.Height / 2 _
+        )
+
+        shp.Name = nomePrefixo & Format(i, "0000")
+
+        With shp.Line
+
+            .Visible = msoTrue
+
+            .ForeColor.RGB = CorSankey(CStr(matriz(i, 4)))
+
+            .Weight = Application.Max( _
+                pesoMinimo, _
+                CDbl(matriz(i, 3)) * fatorPeso _
+            )
+
+            .Transparency = transparencia
+
+            .BeginArrowheadStyle = msoArrowheadNone
+            .EndArrowheadStyle = msoArrowheadTriangle
+
+        End With
+
+    Next i
+
+End Sub
+
+
+---
+
+7️⃣ Função de limpeza
+
+Sub LimparSankey( _
+    ByVal ws As Worksheet, _
+    Optional ByVal nomePrefixo As String = "sankey_" _
+)
+
+    Dim shp As Shape
+
+    For Each shp In ws.Shapes
+
+        If Left(shp.Name, Len(nomePrefixo)) = nomePrefixo Then
+            shp.Delete
+        End If
+
+    Next shp
+
+End Sub
+
+
+---
+
+8️⃣ Função de cores
+
+Function CorSankey(ByVal nomeCor As String) As Long
+
+    Select Case LCase(Trim(nomeCor))
+
+        Case "blue"
+            CorSankey = RGB(0, 112, 192)
+
+        Case "green"
+            CorSankey = RGB(0, 176, 80)
+
+        Case "red"
+            CorSankey = RGB(255, 0, 0)
+
+        Case "orange"
+            CorSankey = RGB(255, 192, 0)
+
+        Case "purple"
+            CorSankey = RGB(112, 48, 160)
+
+        Case "gray"
+            CorSankey = RGB(128, 128, 128)
+
+        Case Else
+            CorSankey = RGB(91, 155, 213)
+
+    End Select
+
+End Function
+
+
+---
+
+9️⃣ Como executar
+
+Método simples
+
+Selecione:
+
+links!A2:D11
+
+
+---
+
+Pressione
+
+ALT + F8
+
+
+---
+
+Escolha
+
+SankeyDaSelecao
+
+
+---
+
+Clique
+
+Executar
+
+
+---
+
+🔟 Como adicionar botão
+
+Vá em:
+
+Desenvolvedor
+→ Inserir
+→ Botão
+
+
+---
+
+Associe à macro
+
+SankeyDaSelecao
+
+
+---
+
+🧠 O que acontecerá
+
+O Excel irá:
+
+ler a tabela
+→ localizar células
+→ criar conectores
+→ definir espessura
+→ aplicar cor
+→ renderizar Sankey
+
+
+---
+
+🎨 Como o peso funciona
+
+Coluna peso
+
+peso = espessura da linha
+
+Exemplo:
+
+peso	resultado
+
+2	linha fina
+10	média
+30	grossa
+
+
+
+---
+
+📌 Métricas boas para Sankey
+
+No seu contexto:
+
+Métrica	Uso
+
+qtd_contratos	volume
+vl_caixa	financeiro
+vl_regul	regularização
+qtd_clientes	clientes
+qtd_pagamentos	eventos
+
+
+
+---
+
+🧠 Casos de uso MUITO fortes
+
+1️⃣ Jornada de cobrança
+
+Faixa → Acionado → Pago
+
+
+---
+
+2️⃣ Migração de carteira
+
+Fila anterior → Fila atual
+
+
+---
+
+3️⃣ Causa raiz
+
+Problema → Driver → Impacto
+
+
+---
+
+4️⃣ Fluxo operacional
+
+Emitido → Pago → Retroado
+
+
+---
+
+🚨 Limitações importantes
+
+Não espere:
+
+roteamento perfeito
+
+empilhamento inteligente
+
+curvas estilo Power BI
+
+anti-colisão automática
+
+
+O VBA faz:
+
+renderização simples
+
+
+---
+
+✅ Onde funciona MUITO bem
+
+Até:
+
+10–40 fluxos
+
+fica excelente.
+
+
+---
+
+🚀 Evoluções futuras
+
+Próximo nível
+
+Athena
+→ Power Query
+→ links
+→ VBA Sankey
+
+
+---
+
+Próximo próximo nível
+
+Gerar automaticamente:
+
+Sankey
+
+waterfall
+
+KPI cards
+
+narrativa
+
+PowerPoint
+
+
+
+---
+
+🧠 Conceito mais importante
+
+A grande ideia aqui é:
+
+o dado descreve o visual
+
+Isso é extremamente poderoso.
+
+Você transforma:
+
+Excel
+
+em:
+
+mini-engine analítica declarativa
