@@ -1,0 +1,418 @@
+---
+marp: true
+paginate: true
+size: 16:9
+theme: default
+---
+
+<style>
+@import url("/home/vinicius/Área de trabalho/tema_vinicius.css");
+
+section { font-size: 20px; padding: 42px 58px; }
+h1 { font-size: 36px; }
+h2 { font-size: 25px; }
+h3 { font-size: 21px; }
+li, p { font-size: 20px; line-height: 1.22; }
+table { font-size: 15px; }
+.compact li { font-size: 18px; line-height: 1.15; }
+.small-text { font-size: 16px; line-height: 1.18; }
+</style>
+
+# Visão Cliente
+## Impactos Operacionais e Econômicos
+
+### retenção contratual
+#### vs
+### retenção condicionada à composição total
+
+<div class="box">
+
+Avaliar se a mudança preserva regularização, caixa e recorrência — não apenas se melhora a experiência do cliente.
+
+</div>
+
+---
+
+# 1. Contexto da decisão
+
+A visão cliente tem uma motivação legítima:
+
+- comunicação única
+- menos conflito entre escritórios
+- melhor experiência do cliente
+- coordenação operacional
+
+<div class="warning">
+
+## Ponto crítico
+
+O requisito original era mais próximo de:
+
+```text
+distribuição em novos negócios na visão cliente + quebra no nível contrato
+```
+
+Agora a proposta virou:
+
+```text
+distribuição total na visão cliente + retenção só com composição total e quebra na visão cliente
+```
+
+</div>
+
+---
+
+# 2. Por que isso muda o risco?
+
+<div class="two-cols">
+
+<div>
+
+## Quebra por contrato
+
+- preserva contrato saudável
+- mantém cura parcial
+- mantém recorrência
+
+</div>
+
+<div>
+
+## Composição total
+
+- contrato bom depende do contrato ruim
+- reduz incentivo à recuperação parcial
+- pode afetar regularização
+
+</div>
+
+</div>
+
+<div class="danger">
+
+A diferença não é detalhe operacional. É mudança de incentivo econômico.
+
+</div>
+
+---
+
+# 3. Como funciona hoje
+
+Hoje o escritório recebe o cliente e, na prática, tem uma janela de atuação.
+
+## Exemplo: cerca de 4 meses
+
+Nesse período, se atuar em alguns contratos e conseguir:
+
+- colocar em dia
+- renegociar aquele contrato
+
+o contrato recuperado ou o novo contrato vai para o colchão do escritório.
+
+<div class="box">
+
+## Ponto positivo do modelo atual
+
+O escritório é recompensado por recuperar parte do risco, não apenas por resolver tudo.
+
+</div>
+
+---
+
+# 4. Por que isso é positivo?
+
+Mesmo que os demais contratos sigam no rodízio e possam ir para outro escritório, o modelo atual preserva uma lógica saudável:
+
+```text
+atuou bem em um contrato
+↓
+recuperou aquele contrato
+↓
+mantém assistido e acompanhado em Colchão
+↓
+recebe parcelas futuras
+```
+
+<div class="warning">
+
+## Em termos simples
+
+O modelo atual não exige que o cliente inteiro seja resolvido para reconhecer uma recuperação real.
+
+</div>
+
+---
+
+# 5. O que muda na proposta nova?
+
+Se o cliente paga parcialmente (parte dos contratos) em Novos Negócios, mas não compõe tudo:
+
+- o escritório recebe comissão imediata
+- mas não retém o contrato
+- não recebe parcelas futuras no colchão
+- não mantém continuidade
+
+<div class="danger">
+
+## Novo incentivo
+
+“Se recuperar parcialmente não mantém o cliente,
+o incentivo passa a ser resolver tudo ou seguir para o próximo.”
+
+</div>
+
+---
+
+# 6. Analogia simples
+
+<div class="two-cols">
+
+<div>
+
+## Modelo atual
+
+### Relacionamento
+
+O valor vem de:
+
+- melhora gradual
+- continuidade
+- recorrência
+
+É como acompanhar um cliente em recuperação.
+
+</div>
+
+<div>
+
+## Modelo novo
+
+### Corretagem
+
+O valor vem de:
+
+- fechar agora
+- fechar tudo
+- maximizar o evento
+
+É como ganhar apenas no fechamento.
+
+</div>
+
+</div>
+
+---
+
+# 7. Exemplo operacional, dia 15 de um mês
+
+| Contrato | Situação | Colchão
+|---|---|---|
+| A | 0 dias |Sim
+| B | 25 dias |Sim
+| C | 44 dias | Sim
+| D | 250 dias | Não
+
+<div class="two-cols compact">
+
+<div>
+
+## Atual
+
+- A/B/C podem performar
+- pagamento parcial tem valor
+- contrato recuperado pode seguir
+- existe recorrência
+
+</div>
+
+<div>
+
+## Novo
+
+- D bloqueia a retenção
+- A/B/C viram reféns
+- composição total fica difícil
+- incentivo muda
+
+</div>
+
+</div>
+
+<div class="danger">
+
+O contrato saudável vira refém do contrato morto.
+
+</div>
+
+---
+
+# 8. Possível mudança de comportamento
+
+Se retenção depender de composição total, o incentivo muda. O escritório tenderá a priorizar clientes com:
+
+- menor atraso máximo
+- menos contratos antigos
+- maior chance de fechar 100%
+
+
+## Na prática
+
+O foco pode sair do:
+
+```text
+contrato mais recuperável -> cliente mais fechável
+```
+
+</div>
+
+<div class="warning">
+
+
+<strong> Pergunta: “qual é o pior contrato desse cliente?” </strong>
+
+
+Se houver contrato muito antigo:
+
+- o cliente perde atratividade
+- contratos jovens podem perder prioridade
+- recuperação gradual perde força
+
+</div>
+
+---
+
+# 9. Risco de seleção inesperada
+
+A regra pode criar um filtro invisível:
+
+```text
+cliente com atraso máximo baixo
+→ vale esforço
+
+cliente com contrato muito antigo
+→ difícil fechar 100%
+→ menor prioridade
+```
+
+<div class="danger">
+
+## Resultado possível
+
+Menos atuação sobre contratos jovens, mesmo quando eles ainda têm alta chance de cura.
+
+</div>
+
+---
+
+# 10. Mudança estrutural
+
+| Modelo atual | Modelo novo |
+|---|---|
+| (permite) cura progressiva | composição total |
+| contrato recuperável | cliente totalmente resolvido |
+| continuidade | evento |
+| atuação granular | atuação binária |
+
+<div class="warning">
+
+A proposta pode melhorar a experiência do cliente,
+mas reduzir o incentivo à recuperação progressiva.
+</div>
+
+---
+
+# 11. Cenários possíveis
+
+| Cenário | Colchão | Pós quebra | Leitura |
+|---|---:|---:|---|
+| Colchão muito melhor | 18% | 7% | alto risco |
+| Colchão melhor | 15% | 11% | risco moderado |
+| Igual | 13% | 13% | neutro |
+| Pós quebra melhor | 10% | 16% | regra pode ajudar |
+
+<div class="box">
+
+Antes de implantar, precisamos saber qual cenário é verdadeiro.
+
+</div>
+
+---
+
+# 12. EV: valor econômico total esperado
+
+EV não é só o que entrou hoje.
+
+EV inclui:
+
+- caixa imediato
+- parcelas futuras
+- recorrência
+- chance de requebra
+- desconto necessário
+
+| Métrica | Atual | Novo |
+|---|---:|---:|
+| Regul imediato | 100 | 120 |
+| Parcelas futuras | 140 | 30 |
+| EV total | 240 | 150 |
+
+<div class="danger">
+
+Ganhar mais hoje pode significar perder mais amanhã.
+
+</div>
+
+---
+
+# 13. Risco para regularização
+
+Se o escritório perder incentivo a recuperar parcialmente:
+
+- menos contratos retroagem por pagamento de parcela
+- menos contratos voltam para faixa saudável
+- menos parcelas futuras ficam na carteira
+- aumento do tempo de permanência do saldo em atraso
+
+<div class="danger">
+
+Isso pode afetar diretamente a regularização nominal.
+
+</div>
+
+---
+
+# 14. O que discutir antes de mudar
+
+| Tema | Pergunta |
+|---|---|
+| Contratos saudáveis | Estaremos mandando contratos bons para NN sem necessidade? |
+| Recuperação gradual | O cliente melhora mais aos poucos ou apenas em composição total? |
+| Desconto | Resolver tudo exige mais desconto? |
+| Valor no tempo | O cliente continua pagando depois da retroação? |
+| Caixa líquido | O ganho líquido realmente aumenta? |
+| Contrato contaminado | Um contrato muito antigo está destruindo contratos saudáveis? |
+
+---
+
+# 15. Recomendação
+
+## Evitar implantação binária imediata
+
+Melhor caminho:
+
+- visão cliente para distribuição em Novos Negócios
+
+
+Mas mantendo:
+
+- retenção parcial
+- elegibilidade por contrato
+- incentivo à cura gradual
+
+<div class="danger">
+
+## Conclusão
+
+O risco é trocar recuperação sustentável por fechamento de curto prazo.
+
+</div>
