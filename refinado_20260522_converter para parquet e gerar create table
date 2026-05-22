@@ -1,0 +1,363 @@
+# =========================================================
+# INSTALAÇÃO
+# =========================================================
+# pip install pandas pyarrow openpyxl
+
+from pathlib import Path
+import re
+import unicodedata
+import pandas as pd
+
+
+# =========================================================
+# TIPOS ATHENA — REFERÊNCIA
+# =========================================================
+#
+# Tipos comuns:
+# string, int, bigint, double, decimal(18,2), boolean, date, timestamp
+#
+# Recomendações práticas:
+# - IDs, contratos, CPF/CNPJ, códigos: string
+# - Valores financeiros: decimal(18,2)
+# - Contagens: bigint
+# - Datas sem hora: date
+# - Data/hora: timestamp
+#
+# Atenção:
+# O schema do CREATE TABLE precisa ser compatível com o schema físico
+# gravado no Parquet.
+# =========================================================
+
+
+# =========================================================
+# NORMALIZAÇÃO DE NOMES
+# =========================================================
+
+def normalizar_nome_coluna(nome: str) -> str:
+    nome = str(nome).strip().lower()
+    nome = unicodedata.normalize("NFKD", nome)
+    nome = "".join(c for c in nome if not unicodedata.combining(c))
+    nome = re.sub(r"[^a-z0-9_]+", "_", nome)
+    nome = re.sub(r"_+", "_", nome).strip("_")
+
+    if not nome:
+        nome = "coluna"
+
+    if re.match(r"^[0-9]", nome):
+        nome = f"col_{nome}"
+
+    return nome
+
+
+def tornar_colunas_unicas(colunas):
+    vistas = {}
+    resultado = []
+
+    for col in colunas:
+        base = normalizar_nome_coluna(col)
+
+        if base not in vistas:
+            vistas[base] = 1
+            resultado.append(base)
+        else:
+            vistas[base] += 1
+            resultado.append(f"{base}_{vistas[base]}")
+
+    return resultado
+
+
+# =========================================================
+# EXCEL
+# =========================================================
+
+def listar_abas_excel(arquivo_excel: str) -> list[str]:
+    return pd.ExcelFile(arquivo_excel).sheet_names
+
+
+def resolver_aba_excel(arquivo_excel: str, aba_excel=None):
+    abas = listar_abas_excel(arquivo_excel)
+
+    print("\nAbas disponíveis:")
+    for i, aba in enumerate(abas):
+        print(f"[{i}] {aba}")
+
+    if aba_excel is None:
+        aba_excel = abas[0]
+        print(f"\nNenhuma aba informada. Usando primeira aba: {aba_excel}")
+
+    elif isinstance(aba_excel, int):
+        try:
+            aba_excel = abas[aba_excel]
+        except IndexError:
+            raise ValueError(
+                f"Índice de aba inválido: {aba_excel}. "
+                f"Abas disponíveis: {list(enumerate(abas))}"
+            )
+
+    elif isinstance(aba_excel, str):
+        if aba_excel not in abas:
+            raise ValueError(
+                f"Aba '{aba_excel}' não encontrada. "
+                f"Abas disponíveis: {abas}"
+            )
+
+    else:
+        raise TypeError("aba_excel deve ser None, int ou str.")
+
+    print(f"\nLendo aba: {aba_excel}")
+    return aba_excel
+
+
+# =========================================================
+# INFERÊNCIA DE TIPOS ATHENA
+# =========================================================
+
+def inferir_tipo_athena(serie: pd.Series) -> str:
+    dtype = serie.dtype
+
+    if pd.api.types.is_bool_dtype(dtype):
+        return "boolean"
+
+    if pd.api.types.is_integer_dtype(dtype):
+        return "bigint"
+
+    if pd.api.types.is_float_dtype(dtype):
+        return "decimal(18,2)"
+
+    if pd.api.types.is_datetime64_any_dtype(dtype):
+        return "timestamp"
+
+    return "string"
+
+
+# =========================================================
+# LEITURA
+# =========================================================
+
+def ler_arquivo(
+    arquivo_origem: str,
+    aba_excel=None,
+    csv_sep=",",
+    encoding="utf-8",
+):
+    origem = Path(arquivo_origem)
+    extensao = origem.suffix.lower()
+
+    if extensao in [".xlsx", ".xls"]:
+        aba_resolvida = resolver_aba_excel(
+            arquivo_excel=arquivo_origem,
+            aba_excel=aba_excel,
+        )
+
+        return pd.read_excel(
+            arquivo_origem,
+            sheet_name=aba_resolvida,
+        )
+
+    if extensao == ".csv":
+        return pd.read_csv(
+            arquivo_origem,
+            sep=csv_sep,
+            encoding=encoding,
+        )
+
+    raise ValueError("Formato não suportado. Use .csv, .xlsx ou .xls.")
+
+
+# =========================================================
+# DDL ATHENA
+# =========================================================
+
+def gerar_create_table_athena(
+    database: str,
+    table_name: str,
+    s3_location: str,
+    schema_athena: dict,
+    partition_columns: dict | None = None,
+    external: bool = True,
+) -> str:
+    partition_columns = partition_columns or {}
+
+    partition_columns_norm = {
+        normalizar_nome_coluna(k): v.lower()
+        for k, v in partition_columns.items()
+    }
+
+    external_txt = "EXTERNAL " if external else ""
+
+    colunas_normais = [
+        f"    `{col}` {tipo}"
+        for col, tipo in schema_athena.items()
+        if col not in partition_columns_norm
+    ]
+
+    ddl = f"""CREATE {external_txt}TABLE IF NOT EXISTS `{database}`.`{table_name}` (
+{",\n".join(colunas_normais)}
+)
+"""
+
+    if partition_columns_norm:
+        colunas_particao = [
+            f"    `{col}` {tipo}"
+            for col, tipo in partition_columns_norm.items()
+        ]
+
+        ddl += f"""PARTITIONED BY (
+{",\n".join(colunas_particao)}
+)
+"""
+
+    ddl += f"""STORED AS PARQUET
+LOCATION '{s3_location.rstrip("/")}/'
+TBLPROPERTIES (
+    'parquet.compress'='SNAPPY'
+);
+"""
+
+    return ddl.strip()
+
+
+# =========================================================
+# PIPELINE PRINCIPAL
+# =========================================================
+
+def converter_para_parquet_e_gerar_ddl(
+    arquivo_origem: str,
+    parquet_saida: str,
+    database: str,
+    table_name: str,
+    s3_location: str,
+
+    # Excel
+    aba_excel=None,
+
+    # Schema opcional
+    column_names: list[str] | None = None,
+    athena_types: dict[str, str] | None = None,
+
+    # Partições opcionais
+    partition_columns: dict[str, str] | None = None,
+
+    # CSV
+    csv_sep=",",
+    encoding="utf-8",
+
+    # Parquet
+    compression="snappy",
+):
+    df = ler_arquivo(
+        arquivo_origem=arquivo_origem,
+        aba_excel=aba_excel,
+        csv_sep=csv_sep,
+        encoding=encoding,
+    )
+
+    if column_names is not None:
+        if len(column_names) != len(df.columns):
+            raise ValueError(
+                f"Você passou {len(column_names)} nomes, "
+                f"mas o arquivo tem {len(df.columns)} colunas."
+            )
+
+        df.columns = column_names
+
+    df.columns = tornar_colunas_unicas(df.columns)
+
+    athena_types = athena_types or {}
+    athena_types_norm = {
+        normalizar_nome_coluna(k): v.lower()
+        for k, v in athena_types.items()
+    }
+
+    schema_athena = {
+        col: athena_types_norm.get(col, inferir_tipo_athena(df[col]))
+        for col in df.columns
+    }
+
+    parquet_saida = Path(parquet_saida)
+    parquet_saida.parent.mkdir(parents=True, exist_ok=True)
+
+    df.to_parquet(
+        parquet_saida,
+        engine="pyarrow",
+        compression=compression,
+        index=False,
+    )
+
+    ddl = gerar_create_table_athena(
+        database=database,
+        table_name=table_name,
+        s3_location=s3_location,
+        schema_athena=schema_athena,
+        partition_columns=partition_columns,
+    )
+
+    return df, ddl
+
+
+# =========================================================
+# EXEMPLOS
+# =========================================================
+
+# 1) Excel escolhendo aba por nome
+df, ddl = converter_para_parquet_e_gerar_ddl(
+    arquivo_origem="entrada/pagamentos.xlsx",
+    aba_excel="Base Pagamentos",
+    parquet_saida="saida/pagamentos.parquet",
+    database="workspace_db",
+    table_name="tabela_bronze_fonte_manual_pagamentos",
+    s3_location="s3://meu-bucket/bronze/pagamentos/",
+)
+
+print(ddl)
+
+
+# 2) Excel escolhendo aba por índice
+df, ddl = converter_para_parquet_e_gerar_ddl(
+    arquivo_origem="entrada/pagamentos.xlsx",
+    aba_excel=1,
+    parquet_saida="saida/pagamentos.parquet",
+    database="workspace_db",
+    table_name="tabela_bronze_fonte_manual_pagamentos",
+    s3_location="s3://meu-bucket/bronze/pagamentos/",
+)
+
+print(ddl)
+
+
+# 3) CSV com nomes, tipos e partições
+nomes = [
+    "contrato",
+    "produto",
+    "dt_pagamento",
+    "vl_pago",
+    "escritorio",
+    "p_anomes",
+]
+
+tipos = {
+    "contrato": "string",
+    "produto": "string",
+    "dt_pagamento": "date",
+    "vl_pago": "decimal(18,2)",
+    "escritorio": "string",
+    "p_anomes": "int",
+}
+
+particoes = {
+    "p_anomes": "int",
+}
+
+df, ddl = converter_para_parquet_e_gerar_ddl(
+    arquivo_origem="entrada/pagamentos.csv",
+    parquet_saida="saida/pagamentos.parquet",
+    database="workspace_db",
+    table_name="tabela_bronze_fonte_manual_pagamentos",
+    s3_location="s3://meu-bucket/bronze/pagamentos/",
+    column_names=nomes,
+    athena_types=tipos,
+    partition_columns=particoes,
+    csv_sep=";",
+)
+
+print(ddl)
