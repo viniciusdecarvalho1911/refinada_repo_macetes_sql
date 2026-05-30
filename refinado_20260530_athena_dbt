@@ -1,0 +1,987 @@
+athena-dbt-like/
+├── models/
+│   ├── bronze/
+│   ├── silver_padronizado/
+│   ├── silver_integrado/
+│   ├── gold/
+│   └── marts/
+├── tests/
+├── macros/
+├── metadata/
+│   ├── sources.yml
+│   └── models.yml
+├── scripts/
+│   ├── run_model.py
+│   ├── test_model.py
+│   └── compile_sql.py
+└── target/
+    ├── compiled/
+    └── logs/
+
+
+
+Abaixo está um **gerador único**. Você cola em um arquivo chamado:
+
+```bash
+gerar_athena_dbt_like.py
+```
+
+Depois roda:
+
+```bash
+python gerar_athena_dbt_like.py
+```
+
+Ele cria a estrutura completa `athena-dbt-like-pro/`.
+
+A lógica segue seu padrão oficial `bronze_fonte → silver_padronizado → silver_integrado → gold`, com naming padronizado , replica ideias de dbt como `models`, `sources`, `tests` e materializações , usa Athena como motor SQL sobre S3/Glue  e respeita a separação dimensional de fato, dimensão e grão defendida por Kimball/Adamson  .
+
+````python
+from pathlib import Path
+import json
+import textwrap
+import shutil
+
+ROOT = Path("athena-dbt-like-pro")
+
+if ROOT.exists():
+    shutil.rmtree(ROOT)
+
+def write(path: str, content: str):
+    file_path = ROOT / path
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(textwrap.dedent(content).strip() + "\n", encoding="utf-8")
+
+def write_json(path: str, obj):
+    file_path = ROOT / path
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+# =========================================================
+# Estrutura
+# =========================================================
+
+dirs = [
+    ".vscode",
+    "config",
+    "metadata",
+    "macros",
+    "models/bronze",
+    "models/silver_padronizado",
+    "models/silver_integrado",
+    "models/gold/fatos",
+    "models/gold/dimensoes",
+    "models/marts",
+    "tests/generic",
+    "tests/models",
+    "scripts",
+    "docs",
+    "target/compiled",
+    "target/logs",
+]
+
+for d in dirs:
+    (ROOT / d).mkdir(parents=True, exist_ok=True)
+
+# =========================================================
+# README
+# =========================================================
+
+write("README.md", """
+# Athena dbt-like Pro
+
+Mini-framework para trabalhar com Amazon Athena pelo VS Code usando uma abordagem inspirada em dbt.
+
+## Ideia
+
+```text
+VS Code
+  ↓
+SQL modular
+  ↓
+Athena
+  ↓
+Glue Data Catalog
+  ↓
+S3 / Iceberg
+  ↓
+QuickSight
+````
+
+## Fluxo oficial
+
+```text
+bronze_fonte
+  ↓
+silver_padronizado
+  ↓
+silver_integrado
+  ↓
+gold
+  ↓
+mart
+```
+
+## Instalação
+
+```bash
+pip install -r requirements.txt
+aws configure sso
+# ou aws configure
+```
+
+Copie:
+
+```bash
+cp config/profiles.example.yml config/profiles.yml
+```
+
+Ajuste:
+
+```yaml
+athena:
+  region_name: sa-east-1
+  work_group: primary
+  s3_staging_dir: s3://seu-bucket-athena-results/
+```
+
+## Comandos
+
+Listar modelos:
+
+```bash
+python scripts/list_models.py
+```
+
+Rodar um modelo:
+
+```bash
+python scripts/run_model.py view_silver_padronizado_cobranca_boletos
+```
+
+Rodar tudo:
+
+```bash
+python scripts/build.py
+```
+
+Rodar testes:
+
+```bash
+python scripts/test_model.py
+```
+
+Explorar Athena:
+
+```bash
+python scripts/catalog_explorer.py databases
+python scripts/catalog_explorer.py tables silver_db
+python scripts/catalog_explorer.py show-create silver_db view_silver_padronizado_cobranca_boletos
+```
+
+""")
+
+write("requirements.txt", """
+pyathena[pandas]>=3.9.0
+pandas>=2.0.0
+PyYAML>=6.0.0
+boto3>=1.34.0
+sqlparse>=0.5.0
+""")
+
+write(".gitignore", """
+config/profiles.yml
+target/logs/
+target/compiled/
+**pycache**/
+*.pyc
+.env
+""")
+
+# =========================================================
+
+# Config
+
+# =========================================================
+
+write("config/profiles.example.yml", """
+athena:
+region_name: sa-east-1
+work_group: primary
+s3_staging_dir: s3://seu-bucket-athena-results/
+output_database_default: workspace_db
+
+s3:
+artifact_bucket: s3://seu-bucket/projetos/athena-dbt-like/
+""")
+
+# =========================================================
+
+# Metadata
+
+# =========================================================
+
+write("metadata/sources.yml", """
+sources:
+
+* name: bronze_db
+  description: Bases bronze próximas da origem.
+  tables:
+
+  * name: tabela_bronze_fonte_sap_boletos
+    description: Boletos pagos recebidos do SAP.
+
+  * name: tabela_bronze_fonte_legado_debito_conta
+    description: Débitos em conta.
+
+  * name: tabela_bronze_fonte_backoffice_fluxo_apartado
+    description: Pagamentos manuais ou apartados.
+    """)
+
+write("metadata/models.yml", """
+models:
+
+* name: view_silver_padronizado_cobranca_boletos
+  path: models/silver_padronizado/view_silver_padronizado_cobranca_boletos.sql
+  database: silver_db
+  materialization: view
+  order: 10
+  grain: 1 linha = 1 boleto + 1 contrato + 1 produto + 1 data_ref
+
+* name: view_silver_padronizado_cobranca_debito_conta
+  path: models/silver_padronizado/view_silver_padronizado_cobranca_debito_conta.sql
+  database: silver_db
+  materialization: view
+  order: 11
+  grain: 1 linha = 1 pagamento por débito + contrato + produto + data_ref
+
+* name: view_silver_integrado_cobranca_pagamentos_conciliados
+  path: models/silver_integrado/view_silver_integrado_cobranca_pagamentos_conciliados.sql
+  database: silver_db
+  materialization: view
+  order: 20
+  grain: 1 linha = 1 pagamento consolidado deduplicado
+
+* name: iceberg_gold_fato_pagadoria
+  path: models/gold/fatos/iceberg_gold_fato_pagadoria.sql
+  database: gold_db
+  materialization: iceberg
+  order: 30
+  grain: 1 linha = 1 pagamento elegível por contrato + produto + data_ref
+
+* name: iceberg_gold_dimensao_cliente_scd2
+  path: models/gold/dimensoes/iceberg_gold_dimensao_cliente_scd2.sql
+  database: gold_db
+  materialization: iceberg
+  order: 31
+  grain: 1 linha = 1 versão histórica de cliente
+
+* name: view_gold_mart_cobranca_pagadoria_quicksight
+  path: models/marts/view_gold_mart_cobranca_pagadoria_quicksight.sql
+  database: gold_db
+  materialization: view
+  order: 40
+  grain: 1 linha = 1 mês + 1 escritório
+  """)
+
+# =========================================================
+
+# SQL Models
+
+# =========================================================
+
+write("models/silver_padronizado/view_silver_padronizado_cobranca_boletos.sql", """
+-- model: view_silver_padronizado_cobranca_boletos
+-- materialization: view
+-- database: silver_db
+-- grain: 1 linha = 1 boleto + 1 contrato + 1 produto + 1 data_ref
+
+CREATE OR REPLACE VIEW silver_db.view_silver_padronizado_cobranca_boletos AS
+SELECT
+dt_ref AS p_dt_ref,
+
+```
+cast(substr(cast(dt_ref as varchar), 1, 6) as integer) AS mes_ref_yyyymm,
+dt_ref AS dt_ref_yyyymmdd,
+cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as date) AS dt_ref_date,
+cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as timestamp) AS ts_ref,
+
+cast(contrato as varchar) AS contrato,
+cast(produto as varchar) AS produto,
+right(regexp_replace(cast(cnpj_raiz as varchar), '[^0-9]', ''), 14) AS cnpj_canonico,
+upper(trim(cast(escritorio as varchar))) AS escritorio,
+
+cast(boleto as varchar) AS boleto,
+try_cast(vl_pago as decimal(18,2)) AS vl_pago,
+try_cast(vl_desconto_boleto as decimal(18,2)) AS vl_desconto_boleto,
+coalesce(try_cast(flag_cancelado as integer), 0) AS flag_cancelado,
+
+'BOLETO' AS origem_pagamento,
+cast(null as varchar) AS tp_acordo,
+
+current_timestamp AS dt_ingestao_modelo,
+'manual_local' AS id_execucao,
+
+md5(
+    concat(
+        coalesce(cast(contrato as varchar), ''),
+        '|', coalesce(cast(produto as varchar), ''),
+        '|', coalesce(cast(boleto as varchar), ''),
+        '|', coalesce(cast(dt_ref as varchar), '')
+    )
+) AS hash_chave_negocio,
+
+md5(
+    concat(
+        coalesce(cast(vl_pago as varchar), ''),
+        '|', coalesce(cast(vl_desconto_boleto as varchar), ''),
+        '|', coalesce(cast(flag_cancelado as varchar), '')
+    )
+) AS hash_atributos
+```
+
+FROM bronze_db.tabela_bronze_fonte_sap_boletos;
+""")
+
+write("models/silver_padronizado/view_silver_padronizado_cobranca_debito_conta.sql", """
+-- model: view_silver_padronizado_cobranca_debito_conta
+-- materialization: view
+-- database: silver_db
+-- grain: 1 linha = 1 débito + 1 contrato + 1 produto + 1 data_ref
+
+CREATE OR REPLACE VIEW silver_db.view_silver_padronizado_cobranca_debito_conta AS
+SELECT
+dt_ref AS p_dt_ref,
+
+```
+cast(substr(cast(dt_ref as varchar), 1, 6) as integer) AS mes_ref_yyyymm,
+dt_ref AS dt_ref_yyyymmdd,
+cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as date) AS dt_ref_date,
+cast(date_parse(cast(dt_ref as varchar), '%Y%m%d') as timestamp) AS ts_ref,
+
+cast(contrato as varchar) AS contrato,
+cast(produto as varchar) AS produto,
+right(regexp_replace(cast(cnpj_raiz as varchar), '[^0-9]', ''), 14) AS cnpj_canonico,
+upper(trim(cast(escritorio as varchar))) AS escritorio,
+
+cast(null as varchar) AS boleto,
+try_cast(vl_pago as decimal(18,2)) AS vl_pago,
+cast(null as decimal(18,2)) AS vl_desconto_boleto,
+0 AS flag_cancelado,
+
+'DEBITO_CONTA' AS origem_pagamento,
+cast(null as varchar) AS tp_acordo,
+
+current_timestamp AS dt_ingestao_modelo,
+'manual_local' AS id_execucao,
+
+md5(
+    concat(
+        coalesce(cast(contrato as varchar), ''),
+        '|', coalesce(cast(produto as varchar), ''),
+        '|', coalesce(cast(dt_ref as varchar), ''),
+        '|DEBITO_CONTA'
+    )
+) AS hash_chave_negocio,
+
+md5(
+    concat(
+        coalesce(cast(vl_pago as varchar), ''),
+        '|DEBITO_CONTA'
+    )
+) AS hash_atributos
+```
+
+FROM bronze_db.tabela_bronze_fonte_legado_debito_conta;
+""")
+
+write("models/silver_integrado/view_silver_integrado_cobranca_pagamentos_conciliados.sql", """
+-- model: view_silver_integrado_cobranca_pagamentos_conciliados
+-- materialization: view
+-- database: silver_db
+-- grain: 1 linha = 1 pagamento consolidado deduplicado
+
+CREATE OR REPLACE VIEW silver_db.view_silver_integrado_cobranca_pagamentos_conciliados AS
+WITH unificado AS (
+SELECT * FROM silver_db.view_silver_padronizado_cobranca_boletos
+WHERE flag_cancelado = 0
+
+```
+UNION ALL
+
+SELECT * FROM silver_db.view_silver_padronizado_cobranca_debito_conta
+```
+
+),
+
+dedup AS (
+SELECT
+*,
+row_number() OVER (
+PARTITION BY contrato, produto, dt_ref_yyyymmdd, vl_pago, origem_pagamento
+ORDER BY
+CASE origem_pagamento
+WHEN 'BOLETO' THEN 1
+WHEN 'DEBITO_CONTA' THEN 2
+ELSE 9
+END,
+ts_ref DESC
+) AS rn
+FROM unificado
+)
+
+SELECT
+p_dt_ref,
+mes_ref_yyyymm,
+dt_ref_yyyymmdd,
+dt_ref_date,
+ts_ref,
+contrato,
+produto,
+cnpj_canonico,
+escritorio,
+boleto,
+vl_pago,
+vl_desconto_boleto,
+flag_cancelado,
+origem_pagamento,
+tp_acordo,
+dt_ingestao_modelo,
+id_execucao,
+hash_chave_negocio,
+hash_atributos
+FROM dedup
+WHERE rn = 1;
+""")
+
+write("models/gold/fatos/iceberg_gold_fato_pagadoria.sql", """
+-- model: iceberg_gold_fato_pagadoria
+-- materialization: iceberg
+-- database: gold_db
+-- grain: 1 linha = 1 pagamento elegível por contrato + produto + data_ref
+
+CREATE TABLE IF NOT EXISTS gold_db.iceberg_gold_fato_pagadoria (
+mes_ref_yyyymm        integer,
+dt_ref_date           date,
+contrato              varchar,
+produto               varchar,
+cnpj_canonico          varchar,
+escritorio             varchar,
+origem_pagamento       varchar,
+boleto                 varchar,
+vl_pago                decimal(18,2),
+vl_regul               decimal(18,2),
+fl_elegivel_comissao   boolean,
+fl_elegivel_regul      boolean,
+hash_chave_negocio     varchar,
+hash_atributos         varchar,
+dt_ingestao_modelo     timestamp,
+id_execucao            varchar
+)
+WITH (
+table_type='ICEBERG',
+format='PARQUET',
+write_compression='SNAPPY',
+partitioning=ARRAY['mes_ref_yyyymm'],
+location='s3://SEU_BUCKET/gold/iceberg_gold_fato_pagadoria/'
+);
+
+INSERT INTO gold_db.iceberg_gold_fato_pagadoria
+SELECT
+mes_ref_yyyymm,
+dt_ref_date,
+contrato,
+produto,
+cnpj_canonico,
+escritorio,
+origem_pagamento,
+boleto,
+vl_pago,
+vl_pago AS vl_regul,
+true AS fl_elegivel_comissao,
+true AS fl_elegivel_regul,
+hash_chave_negocio,
+hash_atributos,
+current_timestamp AS dt_ingestao_modelo,
+id_execucao
+FROM silver_db.view_silver_integrado_cobranca_pagamentos_conciliados
+WHERE vl_pago > 0;
+""")
+
+write("models/gold/dimensoes/iceberg_gold_dimensao_cliente_scd2.sql", """
+-- model: iceberg_gold_dimensao_cliente_scd2
+-- materialization: iceberg
+-- database: gold_db
+-- grain: 1 linha = 1 versão histórica de cliente
+
+CREATE TABLE IF NOT EXISTS gold_db.iceberg_gold_dimensao_cliente_scd2 (
+sk_cliente            varchar,
+cnpj_canonico          varchar,
+nome_cliente           varchar,
+segmento               varchar,
+hash_atributos         varchar,
+dt_inicio_vigencia     date,
+dt_fim_vigencia        date,
+fl_atual               boolean,
+dt_ingestao_modelo     timestamp,
+id_execucao            varchar
+)
+WITH (
+table_type='ICEBERG',
+format='PARQUET',
+write_compression='SNAPPY',
+partitioning=ARRAY['fl_atual'],
+location='s3://SEU_BUCKET/gold/iceberg_gold_dimensao_cliente_scd2/'
+);
+""")
+
+write("models/marts/view_gold_mart_cobranca_pagadoria_quicksight.sql", """
+-- model: view_gold_mart_cobranca_pagadoria_quicksight
+-- materialization: view
+-- database: gold_db
+-- grain: 1 linha = 1 mês + 1 escritório
+
+CREATE OR REPLACE VIEW gold_db.view_gold_mart_cobranca_pagadoria_quicksight AS
+SELECT
+mes_ref_yyyymm,
+escritorio,
+count(*) AS qtd_pagamentos,
+count(DISTINCT cnpj_canonico) AS qtd_clientes,
+sum(vl_pago) AS vl_pago_total,
+sum(vl_regul) AS vl_regul_total,
+sum(CASE WHEN fl_elegivel_comissao THEN vl_pago ELSE 0 END) AS vl_base_comissao
+FROM gold_db.iceberg_gold_fato_pagadoria
+GROUP BY 1,2;
+""")
+
+# =========================================================
+
+# Tests
+
+# =========================================================
+
+write("tests/generic/not_null.sql", """
+-- generic_test: not_null
+-- params: database, table, column
+
+SELECT count(*) AS qtd_erros
+FROM {{ database }}.{{ table }}
+WHERE {{ column }} IS NULL;
+""")
+
+write("tests/generic/unique_combination.sql", """
+-- generic_test: unique_combination
+-- params: database, table, columns_csv
+
+SELECT count(*) AS qtd_erros
+FROM (
+SELECT {{ columns_csv }}, count(*) AS qtd
+FROM {{ database }}.{{ table }}
+GROUP BY {{ columns_csv }}
+HAVING count(*) > 1
+);
+""")
+
+write("tests/generic/accepted_values.sql", """
+-- generic_test: accepted_values
+-- params: database, table, column, values_csv
+
+SELECT count(*) AS qtd_erros
+FROM {{ database }}.{{ table }}
+WHERE {{ column }} NOT IN ({{ values_csv }});
+""")
+
+write("tests/models/view_silver_padronizado_cobranca_boletos__not_null_contrato.sql", """
+SELECT count(*) AS qtd_erros
+FROM silver_db.view_silver_padronizado_cobranca_boletos
+WHERE contrato IS NULL;
+""")
+
+write("tests/models/view_silver_padronizado_cobranca_boletos__unique_boleto.sql", """
+SELECT count(*) AS qtd_erros
+FROM (
+SELECT contrato, produto, boleto, dt_ref_yyyymmdd, count(*) AS qtd
+FROM silver_db.view_silver_padronizado_cobranca_boletos
+GROUP BY 1,2,3,4
+HAVING count(*) > 1
+);
+""")
+
+write("tests/models/iceberg_gold_fato_pagadoria__vl_pago_positivo.sql", """
+SELECT count(*) AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria
+WHERE vl_pago < 0;
+""")
+
+# =========================================================
+
+# Scripts
+
+# =========================================================
+
+write("scripts/common.py", r"""
+from pathlib import Path
+import yaml
+from pyathena import connect
+import pandas as pd
+from datetime import datetime
+
+ROOT = Path(**file**).resolve().parents[1]
+
+def load_yaml(path: str):
+with open(ROOT / path, "r", encoding="utf-8") as f:
+return yaml.safe_load(f)
+
+def load_profile():
+profile_path = ROOT / "config" / "profiles.yml"
+if not profile_path.exists():
+profile_path = ROOT / "config" / "profiles.example.yml"
+return load_yaml(str(profile_path.relative_to(ROOT)))
+
+def get_conn():
+cfg = load_profile()["athena"]
+return connect(
+s3_staging_dir=cfg["s3_staging_dir"],
+region_name=cfg.get("region_name", "sa-east-1"),
+work_group=cfg.get("work_group", "primary"),
+)
+
+def run_sql(sql: str):
+conn = get_conn()
+return pd.read_sql(sql, conn)
+
+def load_models():
+data = load_yaml("metadata/models.yml")
+return sorted(data["models"], key=lambda x: x.get("order", 999))
+
+def find_model(name: str):
+for model in load_models():
+if model["name"] == name:
+return model
+raise ValueError(f"Modelo não encontrado: {name}")
+
+def read_sql_file(path: str):
+return (ROOT / path).read_text(encoding="utf-8")
+
+def split_statements(sql: str):
+parts = [p.strip() for p in sql.split(";") if p.strip()]
+return [p + ";" for p in parts]
+
+def log(message: str):
+ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+print(f"[{ts}] {message}")
+""")
+
+write("scripts/list_models.py", """
+from common import load_models
+
+for m in load_models():
+print(f"{m.get('order', 999):03d} | {m['name']} | {m.get('materialization')} | {m.get('path')}")
+""")
+
+write("scripts/run_model.py", """
+import sys
+from common import find_model, read_sql_file, split_statements, run_sql, log
+
+if len(sys.argv) < 2:
+raise SystemExit("Uso: python scripts/run_model.py <nome_modelo>")
+
+model_name = sys.argv[1]
+model = find_model(model_name)
+sql = read_sql_file(model["path"])
+
+log(f"Iniciando modelo: {model_name}")
+
+for i, stmt in enumerate(split_statements(sql), start=1):
+log(f"Executando statement {i}")
+run_sql(stmt)
+
+log(f"Modelo finalizado: {model_name}")
+""")
+
+write("scripts/build.py", """
+from common import load_models, read_sql_file, split_statements, run_sql, log
+
+for model in load_models():
+log(f"BUILD: {model['name']}")
+sql = read_sql_file(model["path"])
+
+```
+for i, stmt in enumerate(split_statements(sql), start=1):
+    log(f"  statement {i}")
+    run_sql(stmt)
+```
+
+log("Build completo.")
+""")
+
+write("scripts/test_model.py", """
+from common import ROOT, run_sql, log
+
+tests_dir = ROOT / "tests" / "models"
+failed = 0
+
+for path in sorted(tests_dir.glob("*.sql")):
+log(f"Teste: {path.name}")
+df = run_sql(path.read_text(encoding="utf-8"))
+qtd_erros = int(df.iloc[0, 0])
+
+```
+if qtd_erros == 0:
+    print(f"PASS | {path.name}")
+else:
+    print(f"FAIL | {path.name} | qtd_erros={qtd_erros}")
+    failed += 1
+```
+
+if failed:
+raise SystemExit(f"{failed} teste(s) falharam.")
+
+log("Todos os testes passaram.")
+""")
+
+write("scripts/catalog_explorer.py", """
+import sys
+from common import run_sql
+
+def usage():
+print('''
+Uso:
+python scripts/catalog_explorer.py databases
+python scripts/catalog_explorer.py tables <database>
+python scripts/catalog_explorer.py describe <database> <table>
+python scripts/catalog_explorer.py show-create <database> <table>
+''')
+
+if len(sys.argv) < 2:
+usage()
+raise SystemExit(1)
+
+cmd = sys.argv[1]
+
+if cmd == "databases":
+print(run_sql("SHOW DATABASES").to_string(index=False))
+
+elif cmd == "tables":
+db = sys.argv[2]
+print(run_sql(f"SHOW TABLES IN {db}").to_string(index=False))
+
+elif cmd == "describe":
+db, table = sys.argv[2], sys.argv[3]
+print(run_sql(f"DESCRIBE {db}.{table}").to_string(index=False))
+
+elif cmd == "show-create":
+db, table = sys.argv[2], sys.argv[3]
+df = run_sql(f"SHOW CREATE TABLE {db}.{table}")
+print(df.iloc[0, 0])
+
+else:
+usage()
+raise SystemExit(1)
+""")
+
+write("scripts/compile_sql.py", """
+from common import ROOT, load_models, read_sql_file, log
+
+target = ROOT / "target" / "compiled"
+target.mkdir(parents=True, exist_ok=True)
+
+for model in load_models():
+sql = read_sql_file(model["path"])
+out = target / f"{model['name']}.sql"
+out.write_text(sql, encoding="utf-8")
+log(f"Compilado: {out}")
+""")
+
+write("scripts/sync_to_s3.py", """
+import subprocess
+from common import load_profile, ROOT
+
+cfg = load_profile()["s3"]
+dest = cfg["artifact_bucket"]
+
+subprocess.run(
+["aws", "s3", "sync", str(ROOT), dest, "--exclude", "target/logs/*"],
+check=True
+)
+
+print(f"Sincronizado para {dest}")
+""")
+
+# =========================================================
+
+# VS Code
+
+# =========================================================
+
+write_json(".vscode/tasks.json", {
+"version": "2.0.0",
+"tasks": [
+{
+"label": "athena: list models",
+"type": "shell",
+"command": "python scripts/list_models.py",
+"problemMatcher": []
+},
+{
+"label": "athena: build all",
+"type": "shell",
+"command": "python scripts/build.py",
+"problemMatcher": []
+},
+{
+"label": "athena: run tests",
+"type": "shell",
+"command": "python scripts/test_model.py",
+"problemMatcher": []
+},
+{
+"label": "athena: compile sql",
+"type": "shell",
+"command": "python scripts/compile_sql.py",
+"problemMatcher": []
+},
+{
+"label": "athena: sync to s3",
+"type": "shell",
+"command": "python scripts/sync_to_s3.py",
+"problemMatcher": []
+},
+{
+"label": "athena: show databases",
+"type": "shell",
+"command": "python scripts/catalog_explorer.py databases",
+"problemMatcher": []
+}
+]
+})
+
+write_json(".vscode/settings.json", {
+"files.associations": {
+"*.sql": "sql",
+"*.yml": "yaml"
+},
+"editor.formatOnSave": False,
+"terminal.integrated.defaultProfile.windows": "PowerShell"
+})
+
+write_json(".vscode/athena.code-snippets", {
+"Athena Silver Padronizado View": {
+"prefix": "athena_silver_view",
+"body": [
+"-- model: view_silver_padronizado_${1:dominio}*${2:entidade}",
+"-- materialization: view",
+"-- database: silver_db",
+"-- grain: ${3:declare o grao}",
+"",
+"CREATE OR REPLACE VIEW silver_db.view_silver_padronizado*${1}*${2} AS",
+"SELECT",
+"    ${4:particao} AS p*${4},",
+"    current_timestamp AS dt_ingestao_modelo",
+"FROM bronze_db.${5:tabela_origem};"
+],
+"description": "Template de view silver padronizada Athena"
+},
+"Athena Test Count Errors": {
+"prefix": "athena_test_qtd_erros",
+"body": [
+"SELECT count(*) AS qtd_erros",
+"FROM ${1:database}.${2:table}",
+"WHERE ${3:condicao_de_erro};"
+],
+"description": "Teste SQL retornando qtd_erros"
+}
+})
+
+# =========================================================
+
+# Docs
+
+# =========================================================
+
+write("docs/CONVENCOES.md", """
+
+# Convenções
+
+## Naming
+
+```text
+<materializacao>_<camada>_<tipo_logico>_<dominio>_<entidade>[_<contexto>]
+```
+
+## Exemplos
+
+```text
+tabela_bronze_fonte_sap_boletos
+view_silver_padronizado_cobranca_boletos
+view_silver_integrado_cobranca_pagamentos_conciliados
+iceberg_gold_fato_pagadoria
+view_gold_mart_cobranca_pagadoria_quicksight
+```
+
+## Onde colocar regra
+
+```text
+Regra de estrutura -> silver_padronizado
+Regra de integração -> silver_integrado
+Regra de verdade de negócio -> gold
+Regra de consumo -> mart
+Regra parametrizável -> tabela de regra
+```
+
+## Testes
+
+Todo teste deve retornar:
+
+```sql
+SELECT count(*) AS qtd_erros
+```
+
+Regra:
+
+```text
+0 = passou
+> 0 = falhou
+```
+
+""")
+
+write("docs/ROADMAP.md", """
+
+# Roadmap
+
+1. Ajustar `config/profiles.yml`
+2. Ajustar nomes reais dos databases
+3. Substituir `s3://SEU_BUCKET/`
+4. Rodar `python scripts/list_models.py`
+5. Rodar modelos silver
+6. Rodar testes
+7. Promover gold Iceberg
+8. Conectar mart no QuickSight
+9. Orquestrar com Step Functions
+   """)
+
+print(f"Estrutura criada em: {ROOT.resolve()}")
+print("Arquivos criados com sucesso.")
+
+````
+
+Depois de rodar, abra a pasta no VS Code:
+
+```bash
+code athena-dbt-like-pro
+````
+
+Primeiro ajuste:
+
+```text
+config/profiles.example.yml
+```
+
+para:
+
+```text
+config/profiles.yml
+```
+
+e coloque seu bucket real de resultado do Athena.
