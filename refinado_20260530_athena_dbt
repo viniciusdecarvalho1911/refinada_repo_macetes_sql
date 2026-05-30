@@ -985,3 +985,228 @@ config/profiles.yml
 ```
 
 e coloque seu bucket real de resultado do Athena.
+
+
+-------------------------------------------
+
+Sim. A arquitetura fica assim:
+
+```text
+Athena table: ctrl_db.saved_queries
+        ↓
+VS Code / Python
+        ↓
+PyAthena lê named_query + sql_texto
+        ↓
+gera notebooks .ipynb
+        ↓
+você abre no VS Code com células SQL
+```
+
+## 1. Estrutura esperada da tabela
+
+Exemplo mínimo:
+
+```sql
+CREATE TABLE ctrl_db.saved_queries (
+    named_query varchar,
+    dominio varchar,
+    etapa varchar,
+    ordem_execucao integer,
+    database_contexto varchar,
+    sql_texto varchar,
+    fl_ativo boolean
+);
+```
+
+## 2. Script Python gerador de notebooks
+
+Crie:
+
+```text
+scripts/export_saved_queries_to_ipynb.py
+```
+
+```python
+from pathlib import Path
+import json
+import re
+import pandas as pd
+from pyathena import connect
+
+S3_STAGING = "s3://seu-bucket-athena-results/"
+REGION = "sa-east-1"
+WORKGROUP = "primary"
+
+OUTPUT_DIR = Path("notebooks/generated")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+conn = connect(
+    s3_staging_dir=S3_STAGING,
+    region_name=REGION,
+    work_group=WORKGROUP,
+)
+
+def slugify(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"[^a-z0-9_\\-]+", "_", text)
+    return re.sub(r"_+", "_", text).strip("_")
+
+sql = """
+SELECT
+    named_query,
+    coalesce(dominio, 'geral') AS dominio,
+    coalesce(etapa, 'sem_etapa') AS etapa,
+    coalesce(ordem_execucao, 999999) AS ordem_execucao,
+    coalesce(database_contexto, 'default') AS database_contexto,
+    sql_texto
+FROM ctrl_db.saved_queries
+WHERE fl_ativo = true
+ORDER BY dominio, etapa, ordem_execucao, named_query
+"""
+
+df = pd.read_sql(sql, conn)
+
+for dominio, grupo in df.groupby("dominio"):
+    cells = []
+
+    cells.append({
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            f"# Saved Queries — {dominio}\\n",
+            "\\n",
+            "Notebook gerado automaticamente a partir de `ctrl_db.saved_queries`.\\n"
+        ]
+    })
+
+    for _, row in grupo.iterrows():
+        cells.append({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                f"## {row['ordem_execucao']} — {row['named_query']}\\n",
+                f"- Etapa: `{row['etapa']}`\\n",
+                f"- Database: `{row['database_contexto']}`\\n"
+            ]
+        })
+
+        cells.append({
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                f"-- named_query: {row['named_query']}\\n",
+                f"-- etapa: {row['etapa']}\\n",
+                f"-- database: {row['database_contexto']}\\n",
+                "\\n",
+                row["sql_texto"].strip(),
+                "\\n"
+            ]
+        })
+
+    notebook = {
+        "cells": cells,
+        "metadata": {
+            "kernelspec": {
+                "display_name": "SQL",
+                "language": "sql",
+                "name": "sql"
+            },
+            "language_info": {
+                "name": "sql"
+            }
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5
+    }
+
+    output_path = OUTPUT_DIR / f"{slugify(dominio)}_saved_queries.ipynb"
+    output_path.write_text(
+        json.dumps(notebook, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+    print(f"Gerado: {output_path}")
+```
+
+## 3. Rodar no VS Code
+
+```bash
+python scripts/export_saved_queries_to_ipynb.py
+```
+
+Saída:
+
+```text
+notebooks/generated/cobranca_pagadoria_saved_queries.ipynb
+notebooks/generated/cobranca_recjud_saved_queries.ipynb
+```
+
+## 4. Versão com um notebook por named query
+
+Troque o loop final por:
+
+```python
+for _, row in df.iterrows():
+    nome = slugify(row["named_query"])
+
+    notebook = {
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    f"# {row['named_query']}\\n",
+                    f"- Domínio: `{row['dominio']}`\\n",
+                    f"- Etapa: `{row['etapa']}`\\n",
+                    f"- Ordem: `{row['ordem_execucao']}`\\n"
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    row["sql_texto"].strip(),
+                    "\\n"
+                ]
+            }
+        ],
+        "metadata": {},
+        "nbformat": 4,
+        "nbformat_minor": 5
+    }
+
+    output_path = OUTPUT_DIR / f"{nome}.ipynb"
+    output_path.write_text(json.dumps(notebook, ensure_ascii=False, indent=2), encoding="utf-8")
+```
+
+## Melhor desenho
+
+Eu faria assim:
+
+```text
+saved_queries
+    ↓
+notebooks/generated/
+    ├── cobranca_pagadoria_saved_queries.ipynb
+    ├── cobranca_recjud_saved_queries.ipynb
+    └── cobranca_colchao_saved_queries.ipynb
+```
+
+E manteria a tabela `saved_queries` com estas colunas obrigatórias:
+
+```text
+named_query
+dominio
+etapa
+ordem_execucao
+database_contexto
+sql_texto
+fl_ativo
+```
+
+Isso vira uma réplica operacional das Named Queries do Athena, só que versionável, pesquisável e usável direto no VS Code.
