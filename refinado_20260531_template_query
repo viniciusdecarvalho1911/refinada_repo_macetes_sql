@@ -1,0 +1,228 @@
+---
+
+tipo: athena_query
+
+nome_logico: fechamento_pagadoria_mensal
+
+status: ativo
+
+camada: gold
+
+dominio:
+
+- cobranca
+    
+- pagadoria
+    
+
+tecnologias:
+
+- athena
+    
+- iceberg
+    
+- step_functions
+    
+
+operacoes:
+
+- merge
+    
+
+database: workspace_db
+
+workgroup: cobranca
+
+materializacao: merge
+
+frequencia: diaria
+
+owner: vinicius
+
+step_function:
+
+- sf_pagadoria_fechamento
+    
+
+glue_job:
+
+dashboard:
+
+- quicksight_pagadoria_executivo
+    
+
+tabelas_origem:
+
+- view_silver_integrado_cobranca_pagamentos_consolidados
+    
+- tabela_gold_agregado_pagadoria_mensal
+    
+
+tabelas_destino:
+
+- iceberg_gold_fato_pagadoria
+    
+
+tags:
+
+- pagadoria
+    
+- regul
+    
+- fechamento
+    
+
+---
+
+# Fechamento Pagadoria Mensal
+
+## Objetivo
+
+Consolidar os pagamentos elegíveis para cálculo de regul e comissão da pagadoria.
+
+---
+
+# Regra de Negócio
+
+## Entradas
+
+- Boletos pagos não cancelados
+    
+- Débito em conta elegível
+    
+- Backoffice elegível
+    
+
+## Exclusões
+
+- Colchão
+    
+- VIJUD primeira aparição
+    
+
+## Critérios
+
+1. BOLETO possui prioridade máxima
+    
+2. DÉBITO entra apenas como delta positivo
+    
+3. BD entra apenas como delta positivo
+    
+
+---
+
+# Dependências
+
+## Upstream
+
+- [[view_silver_integrado_cobranca_pagamentos_consolidados]]
+    
+- [[tabela_gold_agregado_pagadoria_mensal]]
+    
+
+## Downstream
+
+- [[iceberg_gold_fato_pagadoria]]
+    
+- [[Dashboard Pagadoria]]
+    
+
+---
+
+# Variáveis de Execução
+
+|Variável|Descrição|
+|---|---|
+|anomes_ref|Mês de referência|
+|id_execucao|Execução Step Functions|
+
+---
+
+# SQL
+
+```sql
+MERGE INTO workspace_db.iceberg_gold_fato_pagadoria tgt
+USING (
+    SELECT *
+    FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+) src
+ON (
+    tgt.contrato = src.contrato
+    AND tgt.produto = src.produto
+)
+WHEN MATCHED THEN UPDATE SET
+    vl_regul = src.vl_regul
+WHEN NOT MATCHED THEN INSERT (
+    contrato,
+    produto,
+    vl_regul
+)
+VALUES (
+    src.contrato,
+    src.produto,
+    src.vl_regul
+);
+```
+
+---
+
+# Como Executar
+
+## Athena
+
+Executar diretamente no Workgroup:
+
+```text
+cobranca
+```
+
+## Step Functions
+
+Estado:
+
+```text
+AthenaMergePagadoria
+```
+
+---
+
+# Validações
+
+## Rowcount
+
+```sql
+SELECT COUNT(*)
+FROM workspace_db.iceberg_gold_fato_pagadoria;
+```
+
+## Duplicidade
+
+```sql
+SELECT
+    contrato,
+    produto,
+    COUNT(*)
+FROM workspace_db.iceberg_gold_fato_pagadoria
+GROUP BY 1,2
+HAVING COUNT(*) > 1;
+```
+
+---
+
+# Histórico
+
+## 2026-05-31
+
+- Inclusão de BD elegível
+    
+
+## 2026-06-03
+
+- Ajuste regra de delta positivo
+    
+
+---
+
+# Observações
+
+Esta query é utilizada pelo fechamento oficial da pagadoria.
