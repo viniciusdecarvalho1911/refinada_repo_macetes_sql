@@ -1,0 +1,696 @@
+# Nota Técnica — Buscas Profissionais no Obsidian para Catálogo Athena
+
+## Objetivo
+
+Criar um sistema de buscas reutilizáveis para localizar rapidamente:
+
+* Queries Athena
+* Padrões SQL
+* Erros recorrentes
+* Dependências entre tabelas
+* Regras de negócio
+* CTAS
+* MERGE Iceberg
+* Step Functions
+* Glue Jobs
+* QuickSight
+
+A proposta é transformar o Obsidian em um catálogo navegável de SQL e conhecimento operacional.
+
+---
+
+# Modelo Mental
+
+Existem quatro formas principais de pesquisar:
+
+```text
+Search
+    ↓
+Query
+    ↓
+DataviewJS
+    ↓
+Dataview por Metadados
+```
+
+Cada uma resolve um problema diferente.
+
+| Ferramenta | Melhor uso                    |
+| ---------- | ----------------------------- |
+| Search     | Investigação rápida           |
+| Query      | Busca salva simples           |
+| DataviewJS | Busca textual estruturada     |
+| Dataview   | Catálogo baseado em metadados |
+
+---
+
+# Quando usar cada abordagem
+
+## Search
+
+Use quando:
+
+* estiver explorando
+* não souber exatamente o que procura
+* quiser velocidade
+
+Exemplo:
+
+```text
+MERGE INTO
+```
+
+---
+
+## Query
+
+Use quando:
+
+* quiser salvar uma busca simples
+* quiser montar dashboards rápidos
+
+Exemplo:
+
+```query
+MERGE INTO
+```
+
+---
+
+## DataviewJS
+
+Use quando:
+
+* quiser tabela
+* quiser mostrar caminho
+* quiser combinar filtros
+* quiser AND / OR / NOT sofisticados
+
+---
+
+## Dataview
+
+Use quando:
+
+* possuir YAML estruturado
+* quiser máxima performance
+* quiser construir um Data Catalog
+
+---
+
+# Search do Obsidian
+
+## Operadores
+
+### AND
+
+O AND é implícito.
+
+Busca:
+
+```text
+MERGE INTO iceberg_gold
+```
+
+Equivale a:
+
+```text
+MERGE
+AND INTO
+AND iceberg_gold
+```
+
+---
+
+### OR
+
+```text
+"MERGE INTO" OR "INSERT INTO"
+```
+
+---
+
+### NOT
+
+```text
+MERGE -INSERT
+```
+
+ou
+
+```text
+"MERGE INTO" -path:old
+```
+
+---
+
+### Frase exata
+
+```text
+"MERGE INTO"
+```
+
+---
+
+### Busca por pasta
+
+```text
+path:saved_queries "MERGE INTO"
+```
+
+```text
+path:recent_queries FAILED
+```
+
+---
+
+# Exemplos de Search úteis
+
+## MERGE em Gold
+
+```text
+"MERGE INTO" iceberg_gold
+```
+
+---
+
+## MERGE ou INSERT
+
+```text
+"MERGE INTO" OR "INSERT INTO"
+```
+
+---
+
+## Pagadoria
+
+```text
+pagadoria "MERGE INTO"
+```
+
+---
+
+## Erros de coluna
+
+```text
+FAILED COLUMN_NOT_FOUND
+```
+
+---
+
+## CTAS
+
+```text
+"CREATE TABLE" "WITH (" "external_location"
+```
+
+---
+
+## Athena + Step Functions
+
+```text
+startQueryExecution athena
+```
+
+---
+
+# Query Blocks
+
+## MERGE
+
+```query
+MERGE INTO
+```
+
+---
+
+## ROW_NUMBER
+
+```query
+ROW_NUMBER
+```
+
+---
+
+## CTAS
+
+```query
+CREATE TABLE
+WITH
+```
+
+---
+
+## Iceberg
+
+```query
+iceberg_gold
+```
+
+---
+
+## Pagadoria
+
+```query
+pagadoria
+```
+
+---
+
+# DataviewJS — Busca Simples
+
+## Buscar MERGE no Vault inteiro
+
+```dataviewjs
+const termo = "MERGE INTO".toUpperCase();
+
+let pages = dv.pages();
+let rows = [];
+
+for (let p of pages) {
+  let content = await dv.io.load(p.file.path);
+
+  if (content && content.toUpperCase().includes(termo)) {
+    rows.push([
+      p.file.link,
+      p.file.path
+    ]);
+  }
+}
+
+dv.table(["Arquivo", "Caminho"], rows);
+```
+
+---
+
+## Ignorando old/
+
+```dataviewjs
+const termo = "MERGE INTO".toUpperCase();
+
+let pages = dv.pages()
+  .where(p => !p.file.path.toLowerCase().includes("old/"));
+
+let rows = [];
+
+for (let p of pages) {
+  let content = await dv.io.load(p.file.path);
+
+  if (content && content.toUpperCase().includes(termo)) {
+    rows.push([
+      p.file.link,
+      p.file.path
+    ]);
+  }
+}
+
+dv.table(["Arquivo", "Caminho"], rows);
+```
+
+---
+
+# DataviewJS — Pesquisas Compostas
+
+## AND
+
+Encontrar notas que contenham:
+
+```text
+MERGE INTO
+e
+iceberg_gold
+```
+
+```dataviewjs
+const termos = ["MERGE INTO", "iceberg_gold"];
+
+let rows = [];
+
+for (let p of dv.pages()) {
+  let content = await dv.io.load(p.file.path);
+  let upper = (content || "").toUpperCase();
+
+  if (termos.every(t => upper.includes(t.toUpperCase()))) {
+    rows.push([
+      p.file.link,
+      p.file.path
+    ]);
+  }
+}
+
+dv.table(["Arquivo", "Caminho"], rows);
+```
+
+---
+
+## OR
+
+```dataviewjs
+const termos = [
+  "MERGE INTO",
+  "INSERT INTO",
+  "CREATE TABLE"
+];
+
+let rows = [];
+
+for (let p of dv.pages()) {
+  let content = await dv.io.load(p.file.path);
+  let upper = (content || "").toUpperCase();
+
+  if (termos.some(t => upper.includes(t.toUpperCase()))) {
+    rows.push([
+      p.file.link,
+      p.file.path
+    ]);
+  }
+}
+
+dv.table(["Arquivo", "Caminho"], rows);
+```
+
+---
+
+## AND + NOT
+
+```dataviewjs
+const obrigatorios = ["MERGE INTO"];
+const proibidos = ["old/"];
+
+let rows = [];
+
+for (let p of dv.pages()) {
+  let content = await dv.io.load(p.file.path);
+
+  let texto =
+    ((content || "") + " " + p.file.path)
+      .toUpperCase();
+
+  const okObrigatorios =
+    obrigatorios.every(t =>
+      texto.includes(t.toUpperCase())
+    );
+
+  const okProibidos =
+    proibidos.every(t =>
+      !texto.includes(t.toUpperCase())
+    );
+
+  if (okObrigatorios && okProibidos) {
+    rows.push([
+      p.file.link,
+      p.file.path
+    ]);
+  }
+}
+
+dv.table(["Arquivo", "Caminho"], rows);
+```
+
+---
+
+# Template Universal
+
+```dataviewjs
+const obrigatorios = [
+  "MERGE INTO"
+];
+
+const opcionais = [
+  "iceberg_gold",
+  "gold_db"
+];
+
+const proibidos = [
+  "old/"
+];
+
+let pages = dv.pages();
+let rows = [];
+
+for (let p of pages) {
+
+  let content =
+    await dv.io.load(p.file.path);
+
+  let texto =
+    ((content || "") + " " + p.file.path)
+      .toUpperCase();
+
+  const temObrigatorios =
+    obrigatorios.every(t =>
+      texto.includes(t.toUpperCase())
+    );
+
+  const temAlgumOpcional =
+    opcionais.length === 0 ||
+    opcionais.some(t =>
+      texto.includes(t.toUpperCase())
+    );
+
+  const naoTemProibidos =
+    proibidos.every(t =>
+      !texto.includes(t.toUpperCase())
+    );
+
+  if (
+    temObrigatorios &&
+    temAlgumOpcional &&
+    naoTemProibidos
+  ) {
+    rows.push([
+      p.file.link,
+      p.file.path
+    ]);
+  }
+}
+
+dv.table(
+  ["Arquivo", "Caminho"],
+  rows
+);
+```
+
+---
+
+# Metadados (YAML)
+
+O ideal é enriquecer os arquivos gerados.
+
+Exemplo:
+
+```yaml
+---
+tipo: athena_query
+
+database: workspace_db
+workgroup: cobranca
+
+status: SUCCEEDED
+
+operacoes:
+  - merge
+  - insert
+
+tecnologias:
+  - athena
+  - iceberg
+
+camadas:
+  - gold
+
+tabelas:
+  - iceberg_gold_fato_pagadoria
+---
+```
+
+---
+
+# Dataview baseado em YAML
+
+## Todas as queries MERGE
+
+```dataview
+TABLE
+file.link,
+database,
+workgroup
+FROM "saved_queries"
+WHERE contains(operacoes,"merge")
+```
+
+---
+
+## Todas as queries Iceberg
+
+```dataview
+TABLE
+file.link
+FROM "saved_queries"
+WHERE contains(tecnologias,"iceberg")
+```
+
+---
+
+## Todas as queries que usam uma tabela
+
+```dataview
+TABLE
+file.link,
+database
+FROM "saved_queries"
+WHERE contains(
+  tabelas,
+  "iceberg_gold_fato_pagadoria"
+)
+```
+
+---
+
+## Todos os erros
+
+```dataview
+TABLE
+file.link,
+status,
+user_email
+FROM "recent_queries"
+WHERE status = "FAILED"
+```
+
+---
+
+# Dashboard Athena
+
+Arquivo:
+
+```text
+00-Dashboard-Athena.md
+```
+
+Estrutura:
+
+````markdown
+# Athena
+
+## MERGEs
+
+```query
+MERGE INTO
+````
+
+## CTAS
+
+```query
+CREATE TABLE
+WITH
+```
+
+## ROW_NUMBER
+
+```query
+ROW_NUMBER
+```
+
+## Erros
+
+```query
+FAILED
+```
+
+## Iceberg
+
+```query
+iceberg_gold
+```
+
+## Pagadoria
+
+```query
+pagadoria
+```
+
+````
+
+---
+
+# Estratégia Recomendada
+
+## Search
+
+Use para:
+
+```text
+investigar
+descobrir
+explorar
+````
+
+---
+
+## Query
+
+Use para:
+
+```text
+buscas rápidas
+dashboards simples
+```
+
+---
+
+## DataviewJS
+
+Use para:
+
+```text
+AND
+OR
+NOT
+filtros de pasta
+tabelas
+painéis
+```
+
+---
+
+## Dataview
+
+Use para:
+
+```text
+catálogo
+metadados
+lineage
+governança
+```
+
+---
+
+# Conclusão
+
+Quando o catálogo Athena estiver gerando YAML automaticamente, você deixa de procurar SQL e passa a consultar metadados.
+
+A evolução natural é:
+
+```text
+Search
+    ↓
+Query
+    ↓
+DataviewJS
+    ↓
+Dataview
+    ↓
+Data Catalog Pessoal
+```
+
+Nesse estágio você consegue responder rapidamente:
+
+* Onde essa tabela é usada?
+* Quais queries fazem MERGE?
+* Quais CTAS existem?
+* Quem executa mais consultas?
+* Quais erros estão recorrentes?
+* Quais padrões SQL podem ser reaproveitados?
+* Quais ativos deveriam virar produto oficial?
