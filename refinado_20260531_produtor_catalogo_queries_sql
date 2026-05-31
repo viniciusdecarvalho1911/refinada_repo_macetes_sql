@@ -1,0 +1,710 @@
+Abaixo está um **modelo completo operacional**.
+
+# 1. Arquitetura final
+
+```text
+Athena / tabelas já existentes
+   ↓
+Athena cria visões filtradas
+   ↓
+Glue Job lê queries salvas/recentes
+   ↓
+Glue gera arquivos .md no S3
+   ↓
+Step Functions orquestra tudo
+   ↓
+VS Code local baixa somente novos/alterados
+   ↓
+arquivos removidos da AWS vão para old/
+   ↓
+old > 30 dias é apagado
+```
+
+Isso segue bem seu padrão de transformar SQL disperso em ativo reutilizável, com naming, rastreabilidade e navegação.
+
+---
+
+# 2. Estrutura S3
+
+```text
+s3://SEU-BUCKET/athena-query-catalog/
+  current/
+    saved_queries/
+    recent_queries/
+      succeeded/
+      failed_cancelled/
+  manifest/
+    manifest_current.csv
+  glue-temp/
+  athena-results/
+```
+
+---
+
+# 3. Athena SQL — tabelas base esperadas
+
+Se a outra equipe já tem tabelas parecidas, adapte só os nomes.
+
+## 3.1 Saved queries
+
+```sql
+CREATE EXTERNAL TABLE IF NOT EXISTS ctrl_db.catalogo_saved_queries (
+    named_query     string,
+    database_name   string,
+    workgroup       string,
+    owner_email     string,
+    description     string,
+    sql_text        string,
+    updated_at      timestamp
+)
+STORED AS PARQUET
+LOCATION 's3://SEU-BUCKET/catalogo-base/saved_queries/';
+```
+
+## 3.2 Recent queries
+
+```sql
+CREATE EXTERNAL TABLE IF NOT EXISTS ctrl_db.catalogo_recent_queries (
+    query_execution_id string,
+    user_email         string,
+    database_name      string,
+    workgroup          string,
+    status             string,
+    sql_text           string,
+    submitted_at       timestamp,
+    completed_at       timestamp,
+    bytes_scanned      bigint,
+    error_message      string,
+    output_location    string
+)
+STORED AS PARQUET
+LOCATION 's3://SEU-BUCKET/catalogo-base/recent_queries/';
+```
+
+---
+
+# 4. Athena SQL — views de consumo do Glue
+
+## 4.1 Saved queries com hash
+
+```sql
+CREATE OR REPLACE VIEW ctrl_db.view_md_saved_queries AS
+SELECT
+    named_query,
+    database_name,
+    workgroup,
+    owner_email,
+    description,
+    sql_text,
+    updated_at,
+    md5(regexp_replace(lower(trim(sql_text)), '\\s+', ' ')) AS hash_sql
+FROM ctrl_db.catalogo_saved_queries
+WHERE sql_text IS NOT NULL;
+```
+
+## 4.2 Recent queries filtráveis
+
+```sql
+CREATE OR REPLACE VIEW ctrl_db.view_md_recent_queries AS
+SELECT
+    query_execution_id,
+    lower(user_email) AS user_email,
+    database_name,
+    workgroup,
+    status,
+    sql_text,
+    submitted_at,
+    completed_at,
+    bytes_scanned,
+    error_message,
+    output_location,
+    md5(regexp_replace(lower(trim(sql_text)), '\\s+', ' ')) AS hash_sql
+FROM ctrl_db.catalogo_recent_queries
+WHERE sql_text IS NOT NULL;
+```
+
+---
+
+# 5. Glue Job — gera os arquivos `.md` no S3
+
+Crie um Glue Job Python Shell ou Glue Spark Python. Para esse caso, **Python Shell é suficiente**.
+
+Nome sugerido:
+
+```text
+glue_job_gera_catalogo_athena_md
+```
+
+## Script Glue
+
+```python
+import sys
+import re
+import hashlib
+import boto3
+import awswrangler as wr
+from datetime import datetime, timezone
+
+# =========================================================
+# PARAMETROS
+# =========================================================
+
+BUCKET = "SEU-BUCKET"
+BASE_PREFIX = "athena-query-catalog"
+DATABASE = "ctrl_db"
+
+EMAILS_PERMITIDOS = [
+    "email1@empresa.com",
+    "email2@empresa.com",
+]
+
+REGION = "sa-east-1"
+
+s3 = boto3.client("s3", region_name=REGION)
+
+
+# =========================================================
+# FUNCOES
+# =========================================================
+
+def slugify(texto: str, max_len: int = 120) -> str:
+    texto = str(texto or "").lower().strip()
+    texto = re.sub(r"[^a-z0-9_-]+", "_", texto)
+    texto = re.sub(r"_+", "_", texto).strip("_")
+    return texto[:max_len] or "sem_nome"
+
+
+def normalize_sql(sql: str) -> str:
+    return re.sub(r"\s+", " ", str(sql or "")).strip().lower()
+
+
+def hash_sql(sql: str) -> str:
+    return hashlib.md5(normalize_sql(sql).encode("utf-8")).hexdigest()
+
+
+def yaml_escape(value):
+    if value is None:
+        return ""
+    return str(value).replace('"', "'")
+
+
+def put_text_s3(key: str, body: str):
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=key,
+        Body=body.encode("utf-8"),
+        ContentType="text/markdown; charset=utf-8"
+    )
+
+
+def delete_prefix(prefix: str):
+    paginator = s3.get_paginator("list_objects_v2")
+    to_delete = []
+
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            to_delete.append({"Key": obj["Key"]})
+
+            if len(to_delete) == 1000:
+                s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_delete})
+                to_delete = []
+
+    if to_delete:
+        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_delete})
+
+
+def render_saved_md(row) -> str:
+    return f"""---
+tipo: athena_saved_query
+named_query: "{yaml_escape(row.get('named_query'))}"
+database: "{yaml_escape(row.get('database_name'))}"
+workgroup: "{yaml_escape(row.get('workgroup'))}"
+owner_email: "{yaml_escape(row.get('owner_email'))}"
+updated_at_origem: "{yaml_escape(row.get('updated_at'))}"
+hash_sql: "{yaml_escape(row.get('hash_sql'))}"
+dt_geracao_md: "{datetime.now(timezone.utc).isoformat()}"
+---
+
+# {row.get('named_query')}
+
+## Notas
+
+{row.get('description') or 'Query salva no Athena.'}
+
+## SQL
+
+```sql
+{row.get('sql_text') or '-- SQL não disponível'}
+```
+"""
+
+def render_recent_md(row) -> str:  
+status = str(row.get("status") or "").upper()
+
+```
+if status in {"FAILED", "ERROR", "CANCELLED"}:
+    notas = f"Erro retornado:\n\n{row.get('error_message') or 'Sem mensagem de erro.'}"
+else:
+    notas = "Query executada com sucesso."
+
+return f"""---
+```
+
+## tipo: athena_recent_query  
+query_execution_id: "{yaml_escape(row.get('query_execution_id'))}"  
+user_email: "{yaml_escape(row.get('user_email'))}"  
+database: "{yaml_escape(row.get('database_name'))}"  
+workgroup: "{yaml_escape(row.get('workgroup'))}"  
+status: "{yaml_escape(row.get('status'))}"  
+submitted_at: "{yaml_escape(row.get('submitted_at'))}"  
+completed_at: "{yaml_escape(row.get('completed_at'))}"  
+bytes_scanned: "{yaml_escape(row.get('bytes_scanned'))}"  
+output_location: "{yaml_escape(row.get('output_location'))}"  
+hash_sql: "{yaml_escape(row.get('hash_sql'))}"  
+dt_geracao_md: "{datetime.now(timezone.utc).isoformat()}"
+
+# Recent Query — {row.get('query_execution_id')}
+
+## Notas
+
+{notas}
+
+## SQL
+
+```sql
+{row.get('sql_text') or '-- SQL não disponível'}
+```
+
+"""
+
+# =========================================================
+
+# LIMPA CURRENT ANTES DE REGERAR
+
+# =========================================================
+
+delete_prefix(f"{BASE_PREFIX}/current/")
+
+# =========================================================
+
+# SAVED QUERIES
+
+# =========================================================
+
+df_saved = wr.athena.read_sql_query(  
+sql="""  
+SELECT *  
+FROM ctrl_db.view_md_saved_queries  
+""",  
+database=DATABASE,  
+ctas_approach=False,  
+workgroup="SEU_WORKGROUP",  
+s3_output=f"s3://{BUCKET}/{BASE_PREFIX}/athena-results/"  
+)
+
+manifest_rows = []
+
+for _, row in df_saved.iterrows():  
+r = row.to_dict()
+
+```
+workgroup = slugify(r.get("workgroup") or "sem_workgroup")
+named_query = slugify(r.get("named_query"))
+key = f"{BASE_PREFIX}/current/saved_queries/{workgroup}/{named_query}.md"
+
+body = render_saved_md(r)
+put_text_s3(key, body)
+
+manifest_rows.append({
+    "s3_key": key,
+    "tipo": "saved_query",
+    "status": "ACTIVE",
+    "hash_sql": r.get("hash_sql"),
+    "size_bytes": len(body.encode("utf-8")),
+    "dt_manifest": datetime.now(timezone.utc).isoformat()
+})
+```
+
+# =========================================================
+
+# RECENT QUERIES
+
+# =========================================================
+
+emails_sql = ", ".join(f"'{e.lower()}'" for e in EMAILS_PERMITIDOS)
+
+sql_recent = f"""  
+SELECT *  
+FROM ctrl_db.view_md_recent_queries  
+WHERE lower(user_email) IN ({emails_sql})  
+AND (  
+status = 'SUCCEEDED'  
+OR (  
+status IN ('FAILED', 'ERROR', 'CANCELLED')  
+AND submitted_at >= current_timestamp - interval '30' day  
+)  
+)  
+"""
+
+df_recent = wr.athena.read_sql_query(  
+sql=sql_recent,  
+database=DATABASE,  
+ctas_approach=False,  
+workgroup="SEU_WORKGROUP",  
+s3_output=f"s3://{BUCKET}/{BASE_PREFIX}/athena-results/"  
+)
+
+for _, row in df_recent.iterrows():  
+r = row.to_dict()
+
+```
+status = str(r.get("status") or "").upper()
+submitted_at = str(r.get("submitted_at") or "sem_data")
+ano_mes = submitted_at[:7] if len(submitted_at) >= 7 else "sem_data"
+
+pasta_status = "failed_cancelled" if status in {"FAILED", "ERROR", "CANCELLED"} else "succeeded"
+
+query_id = slugify(r.get("query_execution_id"))
+filename = f"{submitted_at[:10]}__{query_id}.md"
+
+key = f"{BASE_PREFIX}/current/recent_queries/{pasta_status}/{ano_mes}/{filename}"
+
+body = render_recent_md(r)
+put_text_s3(key, body)
+
+manifest_rows.append({
+    "s3_key": key,
+    "tipo": "recent_query",
+    "status": status,
+    "hash_sql": r.get("hash_sql"),
+    "size_bytes": len(body.encode("utf-8")),
+    "dt_manifest": datetime.now(timezone.utc).isoformat()
+})
+```
+
+# =========================================================
+
+# MANIFEST
+
+# =========================================================
+
+import pandas as pd
+
+df_manifest = pd.DataFrame(manifest_rows)
+
+manifest_key = f"{BASE_PREFIX}/manifest/manifest_current.csv"
+
+csv_body = df_manifest.to_csv(index=False)
+
+s3.put_object(  
+Bucket=BUCKET,  
+Key=manifest_key,  
+Body=csv_body.encode("utf-8"),  
+ContentType="text/csv; charset=utf-8"  
+)
+
+print(f"Arquivos gerados: {len(manifest_rows)}")  
+print(f"Manifest: s3://{BUCKET}/{manifest_key}")
+
+``
+
+# 6. Step Functions
+
+Essa state machine roda o Glue Job.
+
+```json
+{
+  "Comment": "Gera catalogo de queries Athena em Markdown no S3",
+  "StartAt": "GerarMarkdownNoS3",
+  "States": {
+    "GerarMarkdownNoS3": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "glue_job_gera_catalogo_athena_md"
+      },
+      "Next": "Sucesso",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Glue.AWSGlueException",
+            "Glue.ConcurrentRunsExceededException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Falha"
+        }
+      ]
+    },
+    "Sucesso": {
+      "Type": "Succeed"
+    },
+    "Falha": {
+      "Type": "Fail",
+      "Cause": "Falha ao gerar catalogo Athena MD"
+    }
+  }
+}
+````
+
+Você pode acionar isso por EventBridge todo dia. O Step Functions é apropriado aqui por orquestrar jobs e tratar `Retry`, `Catch`, `Succeed` e `Fail`.
+
+---
+
+# 7. Script local — espelha S3 para máquina
+
+Esse script faz exatamente sua regra:
+
+```text
+se arquivo AWS novo → baixa
+se arquivo AWS mudou tamanho → baixa
+se arquivo local existe e AWS não existe → move para old/
+se old > 30 dias → apaga
+```
+
+## `sync_s3_athena_md.py`
+
+```python
+from pathlib import Path
+from datetime import datetime, timedelta
+import boto3
+import shutil
+
+AWS_PROFILE = "SEU_PROFILE"
+REGION = "sa-east-1"
+
+BUCKET = "SEU-BUCKET"
+PREFIX = "athena-query-catalog/current/"
+
+LOCAL_ROOT = Path(r"C:\Users\SEU_USUARIO\Documents\athena-vault")
+LOCAL_CURRENT = LOCAL_ROOT / "athena-query-catalog" / "current"
+LOCAL_OLD = LOCAL_ROOT / "athena-query-catalog" / "old"
+
+RETENCAO_OLD_DIAS = 30
+
+
+def get_s3_client():
+    session = boto3.Session(profile_name=AWS_PROFILE, region_name=REGION)
+    return session.client("s3")
+
+
+def list_s3_files(s3):
+    files = {}
+
+    paginator = s3.get_paginator("list_objects_v2")
+
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=PREFIX):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+
+            if key.endswith("/"):
+                continue
+
+            files[key] = {
+                "size": obj["Size"],
+                "etag": obj["ETag"].replace('"', ""),
+                "last_modified": obj["LastModified"],
+            }
+
+    return files
+
+
+def local_path_from_s3_key(key: str) -> Path:
+    relative = key.replace("athena-query-catalog/current/", "")
+    return LOCAL_CURRENT / relative
+
+
+def s3_key_from_local_path(local_path: Path) -> str:
+    relative = local_path.relative_to(LOCAL_CURRENT).as_posix()
+    return f"athena-query-catalog/current/{relative}"
+
+
+def old_path_from_current_path(local_path: Path) -> Path:
+    relative = local_path.relative_to(LOCAL_CURRENT)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return LOCAL_OLD / timestamp / relative
+
+
+def should_download(local_path: Path, s3_meta: dict) -> bool:
+    if not local_path.exists():
+        return True
+
+    if local_path.stat().st_size != s3_meta["size"]:
+        return True
+
+    return False
+
+
+def download_new_or_changed(s3, s3_files):
+    for key, meta in s3_files.items():
+        local_path = local_path_from_s3_key(key)
+
+        if should_download(local_path, meta):
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            s3.download_file(BUCKET, key, str(local_path))
+            print(f"baixado/atualizado: {key}")
+        else:
+            print(f"igual, ignorado: {key}")
+
+
+def move_missing_local_to_old(s3_files):
+    if not LOCAL_CURRENT.exists():
+        return
+
+    s3_keys = set(s3_files.keys())
+
+    for local_file in LOCAL_CURRENT.rglob("*.md"):
+        local_key = s3_key_from_local_path(local_file)
+
+        if local_key not in s3_keys:
+            dest = old_path_from_current_path(local_file)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(local_file), str(dest))
+            print(f"movido para old: {local_file}")
+
+
+def cleanup_old():
+    if not LOCAL_OLD.exists():
+        return
+
+    limite = datetime.now() - timedelta(days=RETENCAO_OLD_DIAS)
+
+    for file in LOCAL_OLD.rglob("*"):
+        if file.is_file():
+            modified = datetime.fromtimestamp(file.stat().st_mtime)
+
+            if modified < limite:
+                file.unlink()
+                print(f"apagado old > 30 dias: {file}")
+
+    for folder in sorted(LOCAL_OLD.rglob("*"), reverse=True):
+        if folder.is_dir() and not any(folder.iterdir()):
+            folder.rmdir()
+
+
+def main():
+    s3 = get_s3_client()
+
+    s3_files = list_s3_files(s3)
+
+    download_new_or_changed(s3, s3_files)
+    move_missing_local_to_old(s3_files)
+    cleanup_old()
+
+    print("sync finalizado")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+# 8. BAT local
+
+```bat
+@echo off
+
+cd /d C:\Users\SEU_USUARIO\Documents\athena-md-sync
+
+aws sso login --profile SEU_PROFILE
+
+python sync_s3_athena_md.py
+
+pause
+```
+
+---
+
+# 9. Como rodar no VS Code
+
+```bash
+cd C:\Users\SEU_USUARIO\Documents\athena-md-sync
+python -m venv .venv
+.venv\Scripts\activate
+pip install boto3
+aws sso login --profile SEU_PROFILE
+python sync_s3_athena_md.py
+```
+
+---
+
+# 10. Resultado local
+
+```text
+athena-vault/
+  athena-query-catalog/
+    current/
+      saved_queries/
+        cobranca/
+          fechamento_pagadoria.md
+
+      recent_queries/
+        succeeded/
+          2026-05/
+            2026-05-30__abc123.md
+
+        failed_cancelled/
+          2026-05/
+            2026-05-30__def456.md
+
+    old/
+      20260630_080000/
+        recent_queries/
+          failed_cancelled/
+            2026-04/
+              2026-04-20__erro_antigo.md
+```
+
+---
+
+# Sugestões para fazer funcionar bem
+
+Comece simples:
+
+```text
+1. gerar só saved_queries
+2. validar arquivos .md no S3
+3. baixar localmente
+4. depois incluir recent_queries
+5. depois incluir limpeza old
+```
+
+Não tente montar tudo perfeito no primeiro dia.
+
+Melhorias fortes:
+
+```text
+1. Extrair tabelas referenciadas do SQL
+2. Gerar index_por_tabela.md
+3. Gerar index_por_usuario.md
+4. Gerar index_erros_ultimos_30_dias.md
+5. Adicionar tags Obsidian por workgroup/database/status
+6. Guardar output_location, mas nunca baixar CSV automaticamente
+7. Separar recent queries SUCCEEDED por 90 dias e erros por 30 dias
+8. Criar allowlist de usuários em tabela Athena, não hardcoded no Glue
+9. Criar manifest com hash do conteúdo do .md, não só tamanho
+10. Criar dashboard simples no QuickSight com volume de queries por usuário/status
+```
+
+A melhoria mais importante: criar uma tabela de configuração.
+
+```sql
+CREATE TABLE ctrl_db.config_athena_query_catalog_users (
+    user_email varchar,
+    fl_ativo boolean,
+    dt_inicio date,
+    dt_fim date
+);
+```
+
+Aí você não precisa editar Glue Job para mudar os usuários monitorados.
