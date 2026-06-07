@@ -1,0 +1,551 @@
+# Framework — DSL de Documentação SQL para Athena
+
+## Objetivo
+
+Criar um padrão de documentação embutido no SQL que permita responder rapidamente:
+
+- O que esta CTE faz?
+    
+- Qual o grão?
+    
+- Qual a regra?
+    
+- Qual a fonte?
+    
+- Qual o filtro?
+    
+- Qual o output?
+    
+- Qual o impacto no negócio?
+    
+- Quem consome?
+    
+- Como validar?
+    
+
+A ideia é transformar SQL em um ativo documentado, pesquisável e navegável, aproximando-se de conceitos encontrados em:
+
+- Kimball (grão, processo, fatos e dimensões)
+    
+- Analytics Engineering / dbt (documentação próxima ao código)
+    
+- Data Vault (linhagem e rastreabilidade)
+    
+- Data as Product (ownership e consumidores)
+    
+
+---
+
+# Filosofia
+
+## Regra principal
+
+Toda CTE relevante deve possuir:
+
+### Documentação mínima (obrigatória)
+
+Responsável por explicar:
+
+- o que é
+    
+- o que entra
+    
+- o que sai
+    
+- qual regra representa
+    
+- qual o impacto
+    
+
+### Documentação adicional (opcional)
+
+Responsável por explicar:
+
+- detalhes técnicos
+    
+- performance
+    
+- criticidade
+    
+- algoritmos
+    
+- riscos
+    
+- auditoria
+    
+
+---
+
+# Prefixos — Documentação mínima
+
+## Modelagem
+
+```text
+>>processo
+>>grao_entrada
+>>grao_saida
+>>chave_negocio
+```
+
+---
+
+## Engenharia
+
+```text
+>>fonte
+>>upstream
+>>downstream
+>>owner
+>>teste
+```
+
+---
+
+## Negócio
+
+```text
+>>regra_negocio
+>>impacto_negocio
+>>consumidor
+>>dashboard
+```
+
+---
+
+## Athena / Performance
+
+```text
+>>particao
+>>particao_filtro
+>>performance
+>>scan_estimado
+```
+
+---
+
+## Conhecimento
+
+```text
+>>motivo
+>>decisao
+>>historico
+>>observacao
+```
+
+---
+
+# Prefixos — Documentação adicional
+
+## Metadados
+
+```text
+>>id
+>>nome
+>>tipo
+>>status
+>>criticidade
+>>dominio
+>>tema
+```
+
+---
+
+## Modelagem complementar
+
+```text
+>>mudanca_grao
+>>dependencia
+>>join
+```
+
+---
+
+## Filtros
+
+```text
+>>filtro
+>>janela
+>>criterio
+```
+
+---
+
+## Lógica
+
+```text
+>>logica
+>>algoritmo
+>>prioridade
+>>deduplicacao
+```
+
+---
+
+## Performance detalhada
+
+```text
+>>scan
+>>pruning
+>>custo
+```
+
+---
+
+## Qualidade
+
+```text
+>>qualidade
+>>expectativa
+>>risco
+```
+
+---
+
+## Saída
+
+```text
+>>colunas_saida
+>>output
+>>destino
+```
+
+---
+
+## Consumo
+
+```text
+>>uso
+```
+
+---
+
+# Template Oficial
+
+```sql
+/*
+=====================================================
+DOCUMENTAÇÃO MÍNIMA
+=====================================================
+
+>>processo
+
+>>grao_entrada
+
+>>grao_saida
+
+>>chave_negocio
+
+>>fonte
+
+>>upstream
+
+>>downstream
+
+>>owner
+
+>>teste
+
+>>regra_negocio
+
+>>impacto_negocio
+
+>>consumidor
+
+>>dashboard
+
+>>particao
+
+>>particao_filtro
+
+>>performance
+
+>>scan_estimado
+
+>>motivo
+
+>>decisao
+
+>>historico
+
+>>observacao
+
+=====================================================
+DOCUMENTAÇÃO ADICIONAL
+=====================================================
+
+>>id
+
+>>nome
+
+>>tipo
+
+>>status
+
+>>criticidade
+
+>>dominio
+
+>>tema
+
+>>mudanca_grao
+
+>>dependencia
+
+>>join
+
+>>filtro
+
+>>janela
+
+>>criterio
+
+>>logica
+
+>>algoritmo
+
+>>prioridade
+
+>>deduplicacao
+
+>>scan
+
+>>pruning
+
+>>custo
+
+>>qualidade
+
+>>expectativa
+
+>>risco
+
+>>colunas_saida
+
+>>output
+
+>>destino
+
+>>uso
+
+=====================================================
+*/
+```
+
+# Exemplo Real
+
+```sql
+/*
+=====================================================
+DOCUMENTAÇÃO MÍNIMA
+=====================================================
+
+>>processo
+Pagadoria judicial / exclusão de clientes judicializados.
+
+>>grao_entrada
+1 linha = contrato + produto + dt_foto
+
+>>grao_saida
+1 linha = contrato + produto
+
+>>chave_negocio
+contrato
+produto
+
+>>fonte
+workspace_db.view_silver_padronizado_juridico_vijud
+
+>>upstream
+view_silver_padronizado_juridico_vijud
+parametros_data
+
+>>downstream
+view_silver_integrado_cobranca_pagamentos_consolidados
+
+>>owner
+vinicius
+
+>>teste
+count(*) = count(distinct contrato || '|' || produto)
+
+>>regra_negocio
+Cliente é considerado judicializado no mês quando aparece
+na primeira foto disponível da VIJUD dentro do mês analisado.
+
+>>impacto_negocio
+Remove da base elegível de pagamento/comissionamento contratos judicializados.
+
+>>consumidor
+Pagadoria / cobrança
+
+>>dashboard
+quicksight_pagadoria
+
+>>particao
+p_dt_foto
+
+>>particao_filtro
+p_dt_foto between dt_ini and dt_fim
+
+>>performance
+Partition pruning pela partição física p_dt_foto.
+
+>>scan_estimado
+Somente partições do mês analisado.
+
+>>motivo
+Evitar selecionar fotos tardias do mês e garantir critério estável.
+
+>>decisao
+Usar primeira ocorrência mensal por contrato/produto.
+
+>>historico
+Padrão adotado para compatibilizar snapshot diário com análise mensal.
+
+>>observacao
+mesref é coluna lógica; p_dt_foto é coluna física para pruning.
+
+=====================================================
+DOCUMENTAÇÃO ADICIONAL
+=====================================================
+
+>>id
+PAG-023
+
+>>nome
+vijud_primeira_ocorrencia_mes
+
+>>tipo
+dedup
+
+>>status
+producao
+
+>>criticidade
+alta
+
+>>dominio
+cobranca
+
+>>tema
+pagadoria
+
+>>mudanca_grao
+sim
+
+>>dependencia
+parametros_data
+
+>>filtro
+mês corrente
+
+>>janela
+dt_ini até dt_fim
+
+>>criterio
+primeiro p_dt_foto dentro do mês
+
+>>logica
+row_number por contrato/produto ordenando p_dt_foto asc
+
+>>algoritmo
+row_number
+
+>>prioridade
+menor p_dt_foto
+
+>>deduplicacao
+contrato + produto
+
+>>pruning
+sim
+
+>>custo
+baixo se p_dt_foto for filtrado
+
+>>qualidade
+1 linha por contrato/produto
+
+>>expectativa
+sem duplicidade após rn = 1
+
+>>risco
+explosão de linhas se o filtro de rn for removido
+
+>>colunas_saida
+contrato
+produto
+escritorio
+p_dt_foto
+
+>>destino
+pagamentos_consolidados
+
+>>uso
+exclusão/elegibilidade na pagadoria
+
+=====================================================
+*/
+```
+
+# Benefícios
+
+## Para desenvolvimento
+
+- SQL mais legível
+    
+- Menor dependência de contexto tácito
+    
+- Facilidade de manutenção
+    
+
+## Para arquitetura
+
+- Mapeamento de grãos
+    
+- Mapeamento de regras
+    
+- Mapeamento de dependências
+    
+- Mapeamento de consumidores
+    
+
+## Para governança
+
+- Catálogo automático de regras
+    
+- Catálogo automático de fontes
+    
+- Catálogo automático de testes
+    
+- Catálogo automático de ownership
+    
+
+## Para Athena
+
+- Identificação rápida de filtros de partição
+    
+- Revisão de performance
+    
+- Análise de custo e scan
+    
+
+## Para automação futura
+
+Os prefixos podem ser parseados posteriormente para gerar:
+
+- documentação estilo dbt
+    
+- lineage
+    
+- inventário de regras
+    
+- inventário de dashboards
+    
+- inventário de modelos
+    
+- wiki técnica automática
+    
+- índice navegável no Obsidian
+    
+- catálogo de SQL corporativo
