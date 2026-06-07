@@ -1,0 +1,1208 @@
+
+
+## Objetivo
+
+Usar Python como “console operacional” do Athena, tanto no VS Code quanto em Glue Notebook.
+
+A ideia não é substituir o motor Athena. O motor continua sendo o Athena. O que você substitui é a interface gráfica.
+
+Segundo o material da AWS, o Athena consulta dados no S3 via SQL, usa metadados do Glue Data Catalog e salva resultados no S3. O Glue Data Catalog organiza databases, tabelas e schemas usados pelo Athena.
+
+---
+
+## 1. Modelo mental
+
+```text
+VS Code / Glue Notebook
+        ↓
+Python
+        ↓
+PyAthena ou boto3
+        ↓
+Athena
+        ↓
+Glue Data Catalog + S3
+        ↓
+resultado em pandas / arquivo / Excel
+```
+
+Use:
+
+```text
+PyAthena → rodar SQL e trazer resultado
+boto3 Athena → controlar execuções, workgroups, histórico, APIs do Athena
+boto3 Glue → listar databases, tabelas, colunas e metadados
+```
+
+---
+
+## 2. Quando usar cada um
+
+|Necessidade|Melhor ferramenta|
+|---|---|
+|Rodar `SELECT` e trazer DataFrame|PyAthena|
+|Rodar `CREATE VIEW`, `CTAS`, `INSERT`, `MERGE`|PyAthena ou boto3 Athena|
+|Listar workgroups|boto3 Athena|
+|Ver query execution status|boto3 Athena|
+|Listar databases e tabelas|boto3 Glue|
+|Ver colunas de uma tabela|boto3 Glue ou `DESCRIBE` no Athena|
+|Usar arquivos `.sql` versionados|Python + PyAthena|
+
+---
+
+## 3. Configuração básica no VS Code
+
+Instale:
+
+```bash
+pip install pyathena pandas boto3 openpyxl python-dotenv
+```
+
+Estrutura recomendada:
+
+```text
+projeto-athena/
+├── notebooks/
+│   └── exploracao_pagadoria.ipynb
+├── sql/
+│   ├── 001_amostra_pagamentos.sql
+│   ├── 002_describe_tabela.sql
+│   └── 003_create_view.sql
+├── outputs/
+│   └── resultados.xlsx
+└── src/
+    └── athena_utils.py
+```
+
+---
+
+## 4. Conexão com PyAthena
+
+```python
+from pyathena import connect
+import pandas as pd
+
+REGION = "sa-east-1"
+DATABASE = "workspace_db"
+WORKGROUP = "cobranca"
+S3_STAGING_DIR = "s3://seu-bucket-athena-results/prefixo/"
+
+conn = connect(
+    region_name=REGION,
+    schema_name=DATABASE,
+    work_group=WORKGROUP,
+    s3_staging_dir=S3_STAGING_DIR
+)
+```
+
+O `s3_staging_dir` é obrigatório porque o Athena grava os resultados das queries em S3. A AWS também recomenda controlar localização de resultado por workgroup para governança e segurança.
+
+---
+
+## 5. Rodando SQL direto em célula
+
+```python
+sql = """
+SELECT
+    contrato,
+    produto,
+    vl_pago
+FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+LIMIT 100
+"""
+
+df = pd.read_sql(sql, conn)
+df.head()
+```
+
+Isso substitui o “colar query e executar” da interface do Athena.
+
+---
+
+## 6. Usando uma célula só para armazenar SQL
+
+No notebook:
+
+```python
+SQL_PAGAMENTOS = """
+SELECT
+    mes_ref_yyyymm,
+    origem_pagamento,
+    count(*) AS qtd_linhas,
+    sum(vl_pago) AS vl_pago
+FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+WHERE mes_ref_yyyymm = 202605
+GROUP BY 1, 2
+ORDER BY 1, 2
+"""
+```
+
+Depois:
+
+```python
+df_pagamentos = pd.read_sql(SQL_PAGAMENTOS, conn)
+df_pagamentos
+```
+
+Boa prática: célula de SQL separada da célula de execução.
+
+---
+
+## 7. Usando arquivos `.sql`
+
+Arquivo:
+
+```sql
+-- sql/001_amostra_pagamentos.sql
+
+SELECT
+    contrato,
+    produto,
+    origem_pagamento,
+    vl_pago
+FROM workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados
+WHERE mes_ref_yyyymm = {{anomes}}
+LIMIT 100
+```
+
+Python:
+
+```python
+from pathlib import Path
+
+def read_sql(path: str, **params) -> str:
+    sql = Path(path).read_text(encoding="utf-8")
+    for key, value in params.items():
+        sql = sql.replace("{{" + key + "}}", str(value))
+    return sql
+
+sql = read_sql("sql/001_amostra_pagamentos.sql", anomes=202605)
+
+df = pd.read_sql(sql, conn)
+df.head()
+```
+
+Esse padrão é muito melhor que salvar query solta em named query: permite versionar, buscar no VS Code, comparar mudanças e reaproveitar.
+
+---
+
+## 8. Exportando resultados para Excel
+
+```python
+with pd.ExcelWriter("outputs/resultado_pagadoria.xlsx", engine="openpyxl") as writer:
+    df_pagamentos.to_excel(writer, sheet_name="pagamentos", index=False)
+```
+
+Para várias abas:
+
+```python
+with pd.ExcelWriter("outputs/resultado_pagadoria.xlsx", engine="openpyxl") as writer:
+    df_pagamentos.to_excel(writer, sheet_name="pagamentos", index=False)
+    df_resumo.to_excel(writer, sheet_name="resumo", index=False)
+    df_erros.to_excel(writer, sheet_name="testes", index=False)
+```
+
+---
+
+## 9. Glue Notebook
+
+No Glue Notebook, você pode usar Python e boto3 normalmente. O material da AWS mostra que Glue Interactive Sessions funcionam em notebooks e também podem ser usadas com VS Code; o Glue usa roles, região e kernels próprios para sessão interativa.
+
+Primeira célula típica:
+
+```python
+%region sa-east-1
+%iam_role arn:aws:iam::<conta>:role/<role-glue>
+```
+
+Depois:
+
+```python
+import boto3
+import pandas as pd
+from pyathena import connect
+```
+
+Atenção: se `pyathena` não estiver disponível no ambiente Glue, você precisa adicionar a lib como dependência do job/session. Para exploração simples, muitas vezes boto3 Athena já resolve.
+
+---
+
+## 10. Rodando Athena com boto3
+
+```python
+import boto3
+import time
+
+athena = boto3.client("athena", region_name="sa-east-1")
+
+def start_query(sql, database="workspace_db", workgroup="cobranca"):
+    resp = athena.start_query_execution(
+        QueryString=sql,
+        QueryExecutionContext={"Database": database},
+        WorkGroup=workgroup
+    )
+    return resp["QueryExecutionId"]
+
+def wait_query(query_execution_id):
+    while True:
+        resp = athena.get_query_execution(QueryExecutionId=query_execution_id)
+        state = resp["QueryExecution"]["Status"]["State"]
+
+        if state in ["SUCCEEDED", "FAILED", "CANCELLED"]:
+            return resp
+
+        time.sleep(2)
+```
+
+Uso:
+
+```python
+qid = start_query("SELECT count(*) AS qtd FROM workspace_db.minha_tabela")
+status = wait_query(qid)
+
+status["QueryExecution"]["Status"]["State"]
+```
+
+---
+
+## 11. Listar workgroups
+
+```python
+resp = athena.list_work_groups()
+
+[w["Name"] for w in resp["WorkGroups"]]
+```
+
+---
+
+## 12. Listar databases com Glue
+
+```python
+glue = boto3.client("glue", region_name="sa-east-1")
+
+resp = glue.get_databases()
+
+[d["Name"] for d in resp["DatabaseList"]]
+```
+
+---
+
+## 13. Listar tabelas de um database
+
+```python
+def list_tables(database):
+    paginator = glue.get_paginator("get_tables")
+
+    tables = []
+    for page in paginator.paginate(DatabaseName=database):
+        tables.extend([t["Name"] for t in page["TableList"]])
+
+    return tables
+
+list_tables("workspace_db")
+```
+
+---
+
+## 14. Ver colunas de uma tabela
+
+Via Glue:
+
+```python
+def describe_table(database, table):
+    resp = glue.get_table(DatabaseName=database, Name=table)
+    cols = resp["Table"]["StorageDescriptor"]["Columns"]
+
+    return pd.DataFrame(cols)
+
+describe_table("workspace_db", "view_silver_integrado_cobranca_pagamentos_consolidados")
+```
+
+Via Athena:
+
+```python
+df_desc = pd.read_sql(
+    "DESCRIBE workspace_db.view_silver_integrado_cobranca_pagamentos_consolidados",
+    conn
+)
+df_desc
+```
+
+---
+
+## 15. Listar tabelas com SQL
+
+```python
+pd.read_sql("SHOW TABLES IN workspace_db", conn)
+```
+
+Listar databases:
+
+```python
+pd.read_sql("SHOW SCHEMAS", conn)
+```
+
+Ver DDL:
+
+```python
+pd.read_sql(
+    "SHOW CREATE TABLE workspace_db.minha_tabela",
+    conn
+)
+```
+
+---
+
+## 16. Template operacional de notebook
+
+```python
+# 1. Configuração
+REGION = "sa-east-1"
+DATABASE = "workspace_db"
+WORKGROUP = "cobranca"
+S3_STAGING_DIR = "s3://seu-bucket-athena-results/prefixo/"
+
+# 2. Conexão
+from pyathena import connect
+import pandas as pd
+from pathlib import Path
+
+conn = connect(
+    region_name=REGION,
+    schema_name=DATABASE,
+    work_group=WORKGROUP,
+    s3_staging_dir=S3_STAGING_DIR
+)
+
+# 3. Função para ler SQL
+def read_sql(path: str, **params) -> str:
+    sql = Path(path).read_text(encoding="utf-8")
+    for key, value in params.items():
+        sql = sql.replace("{{" + key + "}}", str(value))
+    return sql
+
+# 4. Executar SQL
+sql = read_sql("sql/001_amostra_pagamentos.sql", anomes=202605)
+df = pd.read_sql(sql, conn)
+
+# 5. Exportar
+df.to_excel("outputs/amostra_pagamentos.xlsx", index=False)
+```
+
+---
+
+## 17. Erros comuns
+
+1. Esquecer `s3_staging_dir`.
+    
+2. Usar workgroup errado.
+    
+3. A role ter Athena, mas não ter permissão no S3 de resultado.
+    
+4. A role ter Athena, mas não ter Lake Formation/Glue Catalog.
+    
+5. Trazer milhões de linhas para pandas sem necessidade.
+    
+6. Usar notebook como repositório final de SQL, em vez de salvar `.sql`.
+    
+7. Misturar query exploratória com query oficial sem naming.
+    
+
+---
+
+## 18. Recomendação prática
+
+Para sua rotina, eu usaria este padrão:
+
+```text
+.sql versionado → notebook lê → PyAthena executa → pandas valida → Excel/Parquet entrega
+```
+
+E para metadados:
+
+```text
+boto3 Athena → workgroups, execuções, status
+boto3 Glue → databases, tabelas, colunas
+SQL Athena → DESCRIBE, SHOW TABLES, SHOW CREATE TABLE
+```
+
+Isso cria um fluxo muito mais próximo de analytics engineering: SQL modular, rastreável, versionável e executável fora da interface gráfica.
+
+---
+# Nota Técnica: PyAthena — Do Zero ao Uso Avançado
+
+**Versão:** 1.0 | **Público-alvo:** Analistas e usuários sem experiência prévia em Python avançado
+
+---
+
+## O que é o PyAthena?
+
+O **PyAthena** é uma biblioteca Python que permite executar consultas SQL no Amazon Athena diretamente do seu código — sem precisar abrir o console da AWS. Com ele, você pode:
+
+- Rodar queries SQL e receber os resultados como uma tabela (DataFrame do Pandas)
+- Automatizar consultas que você faria manualmente no console
+- Organizar suas queries em arquivos `.sql` reutilizáveis
+- Usar as APIs do Athena para listar workgroups, databases, tabelas e muito mais
+
+---
+
+## Parte 1: Configuração inicial
+
+### 1.1 Instalação
+
+No terminal (VS Code) ou em uma célula do Glue Notebook, execute:
+
+```bash
+pip install pyathena pandas boto3
+```
+
+> **Por que o boto3?** O PyAthena usa o boto3 (SDK da AWS para Python) por baixo dos panos para se autenticar e comunicar com a AWS.
+
+---
+
+### 1.2 Configurar credenciais da AWS
+
+O PyAthena precisa saber **quem você é** na AWS. Existem duas formas principais:
+
+#### Opção A — Arquivo de credenciais (recomendado para VS Code local)
+
+Crie ou edite o arquivo `~/.aws/credentials` (Linux/Mac) ou `C:\Users\SeuNome\.aws\credentials` (Windows):
+
+```ini
+[default]
+aws_access_key_id     = AKIAIOSFODNN7EXAMPLE
+aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
+E o arquivo `~/.aws/config`:
+
+```ini
+[default]
+region = us-east-1
+```
+
+> **Dica:** Nunca coloque suas credenciais diretamente no código! Use sempre o arquivo de credenciais ou variáveis de ambiente.
+
+#### Opção B — Passando credenciais diretamente no código (para testes rápidos)
+
+```python
+from pyathena import connect
+
+conn = connect(
+    aws_access_key_id='SUA_ACCESS_KEY',
+    aws_secret_access_key='SUA_SECRET_KEY',
+    s3_staging_dir='s3://seu-bucket/pasta-temporaria/',
+    region_name='us-east-1'
+)
+```
+
+#### Opção C — IAM Role (recomendado no Glue Notebook)
+
+No AWS Glue, o notebook já tem uma IAM Role atribuída. Você não precisa de credenciais — basta passar o `s3_staging_dir`:
+
+```python
+from pyathena import connect
+
+conn = connect(
+    s3_staging_dir='s3://seu-bucket/athena-results/',
+    region_name='us-east-1'
+)
+```
+
+---
+
+### 1.3 O que é o `s3_staging_dir`?
+
+O Athena **sempre salva os resultados das queries em um bucket S3** antes de devolvê-los para você. O `s3_staging_dir` é o endereço desse bucket.
+
+Você pode encontrá-lo no console da AWS: **Athena → Settings → Query result location**
+
+---
+
+## Parte 2: Executando queries SQL
+
+### 2.1 A forma mais simples — query direto no código
+
+```python
+import pandas as pd
+from pyathena import connect
+
+# Criar a conexão
+conn = connect(
+    s3_staging_dir='s3://meu-bucket/athena-results/',
+    region_name='us-east-1'
+)
+
+# Executar uma query e carregar como DataFrame
+df = pd.read_sql("SELECT * FROM meu_database.minha_tabela LIMIT 100", conn)
+
+print(df.head())
+```
+
+---
+
+### 2.2 Guardar a query SQL em uma variável (célula separada)
+
+Uma boa prática é separar o SQL do código Python. Isso facilita a leitura e manutenção:
+
+```python
+# Célula 1 — Define a query
+query = """
+    SELECT
+        cliente_id,
+        nome,
+        SUM(valor_compra) AS total_gasto
+    FROM meu_database.vendas
+    WHERE data_venda >= DATE '2024-01-01'
+    GROUP BY cliente_id, nome
+    ORDER BY total_gasto DESC
+    LIMIT 50
+"""
+
+# Célula 2 — Executa a query
+df = pd.read_sql(query, conn)
+df.head(10)
+```
+
+> **Dica para Glue Notebook:** Separe cada etapa em células diferentes. Assim você pode reexecutar só a query sem recriar a conexão.
+
+---
+
+### 2.3 Usar arquivos `.sql` externos
+
+Para queries grandes ou reutilizáveis, salve o SQL em um arquivo separado.
+
+**Passo 1:** Crie o arquivo `minha_query.sql` com o conteúdo:
+
+```sql
+-- minha_query.sql
+SELECT
+    produto_id,
+    descricao,
+    COUNT(*) AS qtd_vendas,
+    SUM(receita)  AS receita_total
+FROM meu_database.vendas
+WHERE ano = 2024
+GROUP BY produto_id, descricao
+ORDER BY receita_total DESC
+```
+
+**Passo 2:** No Python, leia e execute o arquivo:
+
+```python
+# Lê o arquivo .sql
+with open('minha_query.sql', 'r', encoding='utf-8') as f:
+    query = f.read()
+
+# Executa
+df = pd.read_sql(query, conn)
+df.head()
+```
+
+**Passo 3 (opcional):** Parametrize o SQL para reutilizar com valores diferentes:
+
+```sql
+-- relatorio_vendas.sql
+SELECT *
+FROM meu_database.vendas
+WHERE ano = {ano}
+  AND regiao = '{regiao}'
+```
+
+```python
+with open('relatorio_vendas.sql', 'r') as f:
+    template = f.read()
+
+# Substitui os parâmetros
+query = template.format(ano=2024, regiao='Sudeste')
+df = pd.read_sql(query, conn)
+```
+
+---
+
+### 2.4 Usando o PandasCursor (mais eficiente para grandes volumes)
+
+O `PandasCursor` é mais rápido que o `pd.read_sql` para resultados grandes:
+
+```python
+from pyathena import connect
+from pyathena.pandas.cursor import PandasCursor
+
+conn = connect(
+    s3_staging_dir='s3://meu-bucket/athena-results/',
+    region_name='us-east-1',
+    cursor_class=PandasCursor
+)
+
+cursor = conn.cursor()
+df = cursor.execute("SELECT * FROM meu_database.tabela LIMIT 1000").as_pandas()
+```
+
+---
+
+## Parte 3: APIs do Athena — Explorando metadados
+
+O PyAthena expõe as APIs do Athena via **boto3**, permitindo listar workgroups, databases, tabelas e detalhes de schemas sem escrever SQL.
+
+### 3.1 Criar o cliente boto3 do Athena
+
+```python
+import boto3
+
+athena = boto3.client('athena', region_name='us-east-1')
+```
+
+---
+
+### 3.2 Listar Workgroups
+
+```python
+response = athena.list_work_groups()
+
+for wg in response['WorkGroups']:
+    print(f"Nome: {wg['Name']} | Estado: {wg['State']}")
+```
+
+**Saída esperada:**
+
+```
+Nome: primary         | Estado: ENABLED
+Nome: equipe-analytics| Estado: ENABLED
+Nome: dev-sandbox     | Estado: DISABLED
+```
+
+---
+
+### 3.3 Descrever um Workgroup específico
+
+```python
+response = athena.get_work_group(WorkGroup='primary')
+wg = response['WorkGroup']
+
+print(f"Nome: {wg['Name']}")
+print(f"Descrição: {wg.get('Description', 'Sem descrição')}")
+print(f"Local de saída S3: {wg['Configuration']['ResultConfiguration']['OutputLocation']}")
+```
+
+---
+
+### 3.4 Listar Databases (schemas)
+
+```python
+response = athena.list_databases(CatalogName='AwsDataCatalog')
+
+print("Databases disponíveis:")
+for db in response['DatabaseList']:
+    print(f"  → {db['Name']}")
+```
+
+> **O que é `AwsDataCatalog`?** É o catálogo padrão da AWS que conecta o Athena ao AWS Glue Data Catalog, onde ficam os metadados das suas tabelas.
+
+---
+
+### 3.5 Listar tabelas de um database
+
+```python
+response = athena.list_table_metadata(
+    CatalogName='AwsDataCatalog',
+    DatabaseName='meu_database'
+)
+
+print("Tabelas em 'meu_database':")
+for tabela in response['TableMetadataList']:
+    print(f"  → {tabela['Name']} ({tabela['TableType']})")
+```
+
+**Saída esperada:**
+
+```
+Tabelas em 'meu_database':
+  → vendas          (EXTERNAL_TABLE)
+  → clientes        (EXTERNAL_TABLE)
+  → produtos        (EXTERNAL_TABLE)
+  → vw_resumo_mensal (VIRTUAL_VIEW)
+```
+
+---
+
+### 3.6 Descrever uma tabela (DESCRIBE TABLE)
+
+Para ver colunas, tipos e partições de uma tabela específica:
+
+```python
+response = athena.get_table_metadata(
+    CatalogName='AwsDataCatalog',
+    DatabaseName='meu_database',
+    TableName='vendas'
+)
+
+tabela = response['TableMetadata']
+print(f"Tabela: {tabela['Name']}")
+print(f"Tipo: {tabela['TableType']}")
+print("\nColunas:")
+for col in tabela['Columns']:
+    print(f"  {col['Name']:30s} {col['Type']}")
+
+print("\nPartições:")
+for part in tabela.get('PartitionKeys', []):
+    print(f"  {part['Name']:30s} {part['Type']}")
+```
+
+**Saída esperada:**
+
+```
+Tabela: vendas
+Tipo: EXTERNAL_TABLE
+
+Colunas:
+  venda_id                       string
+  cliente_id                     string
+  produto_id                     string
+  valor_compra                   double
+  data_venda                     date
+
+Partições:
+  ano                            int
+  mes                            int
+```
+
+---
+
+### 3.7 Listar execuções de queries recentes
+
+```python
+response = athena.list_query_executions(WorkGroup='primary', MaxResults=10)
+
+ids = response['QueryExecutionIds']
+detalhes = athena.batch_get_query_execution(QueryExecutionIds=ids)
+
+for q in detalhes['QueryExecutions']:
+    status = q['Status']['State']
+    tempo = q['Statistics'].get('TotalExecutionTimeInMillis', 0) / 1000
+    print(f"[{status}] {tempo:.1f}s — {q['Query'][:80]}...")
+```
+
+---
+
+## Parte 4: Dicas de uso no VS Code vs Glue Notebook
+
+### No VS Code
+
+|Situação|Recomendação|
+|---|---|
+|Credenciais|Use `~/.aws/credentials`|
+|Organização|Mantenha queries em arquivos `.sql` numa pasta `/queries`|
+|Debug|Use `print(df.dtypes)` para verificar tipos das colunas|
+|Performance|Use `PandasCursor` para resultados acima de 10 mil linhas|
+
+### No Glue Notebook
+
+|Situação|Recomendação|
+|---|---|
+|Credenciais|Não necessário — use IAM Role do job|
+|Organização|Guarde queries em variáveis com nomes descritivos|
+|Células|Separe: 1ª célula = conexão, demais = queries individuais|
+|Reutilização|Defina a query numa célula e execute em outra|
+
+---
+
+## Parte 5: Tratamento de erros comuns
+
+```python
+from pyathena.error import DatabaseError, OperationalError
+
+try:
+    df = pd.read_sql(query, conn)
+except DatabaseError as e:
+    print(f"Erro de banco de dados: {e}")
+    # Causas comuns: tabela não existe, sintaxe SQL errada
+except OperationalError as e:
+    print(f"Erro operacional: {e}")
+    # Causas comuns: sem permissão, S3 inacessível
+```
+
+---
+
+## Referência rápida — Métodos boto3 do Athena
+
+| Método                                                                 | O que faz                  |
+| ---------------------------------------------------------------------- | -------------------------- |
+| `list_work_groups()`                                                   | Lista todos os workgroups  |
+| `get_work_group(WorkGroup=...)`                                        | Detalha um workgroup       |
+| `list_databases(CatalogName=...)`                                      | Lista databases/schemas    |
+| `list_table_metadata(CatalogName=..., DatabaseName=...)`               | Lista tabelas              |
+| `get_table_metadata(CatalogName=..., DatabaseName=..., TableName=...)` | Descreve uma tabela        |
+| `list_query_executions(WorkGroup=...)`                                 | Lista execuções recentes   |
+| `batch_get_query_execution(QueryExecutionIds=[...])`                   | Detalhes de execuções      |
+| `get_query_results(QueryExecutionId=...)`                              | Resultados de uma execução |
+
+---
+
+_Nota técnica gerada para uso interno. Versão 1.0._
+
+---
+Se você quer algo parecido com o autocomplete da interface do Athena, há várias formas.
+
+## 1. SQL puro no Athena
+
+Listar tabelas que contenham `iceb`:
+
+```sql
+SHOW TABLES IN workspace_db;
+```
+
+Mas isso não filtra.
+
+Uma alternativa melhor é consultar o catálogo do Glue via `information_schema`:
+
+```sql
+SELECT table_schema,
+       table_name
+FROM information_schema.tables
+WHERE lower(table_name) LIKE '%iceb%'
+ORDER BY table_name;
+```
+
+Exemplo de resultado:
+
+```text
+iceberg_gold_fato_pagadoria
+iceberg_gold_dim_cliente
+iceberg_gold_mart_cobranca
+```
+
+---
+
+## 2. PyAthena
+
+Crie uma função:
+
+```python
+def find_tables(texto):
+    sql = f"""
+    SELECT
+        table_schema,
+        table_name
+    FROM information_schema.tables
+    WHERE lower(table_name) LIKE '%{texto.lower()}%'
+    ORDER BY table_name
+    """
+
+    return pd.read_sql(sql, conn)
+
+find_tables("iceb")
+```
+
+Resultado:
+
+```text
+workspace_db.iceberg_gold_fato_pagadoria
+workspace_db.iceberg_gold_dim_cliente
+workspace_db.iceberg_gold_mart_cobranca
+```
+
+---
+
+## 3. Via boto3 + Glue (mais rápido)
+
+Nem consulta o Athena.
+
+```python
+import boto3
+
+glue = boto3.client("glue")
+
+def search_tables(database, texto):
+    tables = []
+
+    paginator = glue.get_paginator("get_tables")
+
+    for page in paginator.paginate(DatabaseName=database):
+        for table in page["TableList"]:
+            nome = table["Name"]
+
+            if texto.lower() in nome.lower():
+                tables.append(nome)
+
+    return sorted(tables)
+
+search_tables("workspace_db", "iceb")
+```
+
+Isso costuma ser mais rápido porque consulta o catálogo diretamente.
+
+---
+
+## 4. VS Code estilo "Telescope"
+
+Você pode montar um script:
+
+```python
+search_tables("workspace_db", input("> "))
+```
+
+Digitando:
+
+```text
+> iceb
+```
+
+Retorna:
+
+```text
+iceberg_gold_fato_pagadoria
+iceberg_gold_dim_cliente
+iceberg_gold_mart_cobranca
+```
+
+---
+
+## 5. Melhor ainda: cache local
+
+Baixe todas as tabelas do catálogo uma vez:
+
+```python
+catalogo_tabelas.csv
+```
+
+Exemplo:
+
+```text
+workspace_db,iceberg_gold_fato_pagadoria
+workspace_db,iceberg_gold_dim_cliente
+workspace_db,view_silver_integrado_cobranca_pagamentos
+...
+```
+
+Depois pesquise localmente:
+
+```python
+df[df["table_name"].str.contains("iceb", case=False)]
+```
+
+A busca fica instantânea, sem bater na AWS.
+
+---
+
+## 6. Aproximando do autocomplete do Athena
+
+Você pode criar um helper:
+
+```python
+def ls(pattern=""):
+    sql = f"""
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE lower(table_name) LIKE '%{pattern.lower()}%'
+    ORDER BY table_name
+    """
+
+    return pd.read_sql(sql, conn)
+```
+
+Uso:
+
+```python
+ls("iceb")
+ls("pagad")
+ls("silver")
+ls("jurid")
+```
+
+Muito parecido com:
+
+```text
+:Telescope find_files
+```
+
+só que para o catálogo Athena.
+
+Para sua rotina de Athena + VS Code, eu provavelmente manteria um comando tipo:
+
+```python
+db("iceb")
+```
+
+que procura simultaneamente:
+
+```text
+databases
+tabelas
+views
+named_queries
+arquivos .sql locais
+```
+
+virando uma espécie de "Telescope do Lakehouse". Isso combina bem com o padrão de catálogo e naming que você já está usando (`bronze → silver_padronizado → silver_integrado → gold`) .
+
+---
+A solução está **quase boa**, mas tem um ponto importante: o `Expression` do `list_table_metadata` **não é LIKE Hive**, é um **regex filter** para nomes de tabelas, segundo a documentação da API do Athena. ([AWS Documentation](https://docs.aws.amazon.com/athena/latest/APIReference/API_ListTableMetadata.html?utm_source=chatgpt.com "ListTableMetadata - Amazon Athena"))
+
+Então eu corrigiria assim:
+
+```python
+response = athena.list_table_metadata(
+    CatalogName="AwsDataCatalog",
+    DatabaseName="meu_database",
+    Expression=".*iceb.*"
+)
+```
+
+E para paginação:
+
+```python
+def search_tables_athena(database, termo, catalog="AwsDataCatalog"):
+    paginator = athena.get_paginator("list_table_metadata")
+
+    expression = f".*{termo}.*"
+
+    tabelas = []
+    for page in paginator.paginate(
+        CatalogName=catalog,
+        DatabaseName=database,
+        Expression=expression
+    ):
+        tabelas.extend(t["Name"] for t in page["TableMetadataList"])
+
+    return sorted(tabelas)
+```
+
+Avaliação:
+
+```text
+Opção 1 — filtro local: boa para cache/autocomplete rápido.
+Opção 2 — Expression: boa para reduzir retorno da API, mas precisa regex.
+Problema principal: %iceb% está errado se a API espera regex.
+```
+
+Versões corretas:
+
+```python
+Expression="iceb.*"     # começa com iceb
+Expression=".*iceb.*"   # contém iceb
+Expression=".*2024"     # termina com 2024
+```
+
+Para uso diário no VS Code, eu faria híbrido: carrega catálogo uma vez com paginação, salva em cache local e filtra em memória para parecer autocomplete instantâneo.
+
+---
+Use um padrão de **CTE enxuta + CTE de inspeção opcional**.
+
+A regra é:
+
+> Na query produtiva, cada CTE deve selecionar só as colunas necessárias.  
+> Na query de debug, você cria “snapshots” pequenos para inspecionar estrutura e volume.
+
+## 1. Padrão produtivo
+
+Evite:
+
+```sql
+SELECT *
+```
+
+Prefira:
+
+```sql
+vijud_mes AS (
+    SELECT
+        contrato,
+        produto,
+        p_dt_foto,
+        mesref,
+        escritorio
+    FROM workspace_db.view_silver_padronizado_juridico_vijud v
+    CROSS JOIN parametros p
+    WHERE v.p_dt_foto BETWEEN p.dt_ini AND p.dt_fim
+)
+```
+
+Cada CTE deve responder:
+
+```text
+quais colunas entram?
+quais colunas saem?
+qual é o grão?
+```
+
+## 2. CTE de auditoria de etapas
+
+Crie uma CTE final só para contar linhas e chaves por etapa:
+
+```sql
+auditoria_etapas AS (
+    SELECT
+        'vijud_mes' AS etapa,
+        count(*) AS qtd_linhas,
+        count(DISTINCT contrato || '|' || produto) AS qtd_contrato_produto
+    FROM vijud_mes
+
+    UNION ALL
+
+    SELECT
+        'boletos_mes' AS etapa,
+        count(*) AS qtd_linhas,
+        count(DISTINCT contrato || '|' || produto) AS qtd_contrato_produto
+    FROM boletos_mes
+
+    UNION ALL
+
+    SELECT
+        'pagamentos_unificados' AS etapa,
+        count(*) AS qtd_linhas,
+        count(DISTINCT contrato || '|' || produto) AS qtd_contrato_produto
+    FROM pagamentos_unificados
+)
+
+SELECT *
+FROM auditoria_etapas;
+```
+
+Isso mostra onde a query “explode” sem precisar abrir todas as linhas.
+
+## 3. CTE de amostra por etapa
+
+Para ver colunas e valores sem explodir:
+
+```sql
+debug_vijud AS (
+    SELECT *
+    FROM vijud_mes
+    LIMIT 50
+)
+```
+
+Ou melhor:
+
+```sql
+SELECT *
+FROM vijud_mes
+TABLESAMPLE BERNOULLI (1)
+LIMIT 50;
+```
+
+## 4. Convenção que funciona muito bem
+
+Comente cada CTE assim:
+
+```sql
+-- etapa: vijud_mes
+-- grão esperado: 1 linha = 1 contrato + 1 produto no primeiro dt_foto do mês
+-- colunas de saída: contrato, produto, p_dt_foto, mesref, escritorio
+vijud_mes AS (
+    ...
+)
+```
+
+## 5. Minha régua prática
+
+```text
+CTE de fonte        → poucas colunas + filtro de partição
+CTE de regra        → adiciona flags e rn
+CTE de dedup        → filtra rn = 1
+CTE de integração   → faz joins
+CTE final           → só colunas finais
+CTE auditoria       → count por etapa
+```
+
+Isso evita query imensa, mantém rastreabilidade e mostra exatamente onde linhas/colunas estão aumentando.
