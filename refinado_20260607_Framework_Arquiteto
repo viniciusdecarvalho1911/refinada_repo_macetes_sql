@@ -1,0 +1,449 @@
+Isso é algo que vejo separar profissionais operacionais de profissionais que acumulam vantagem ao longo dos anos.
+
+O framework que eu te sugeriria é:
+
+```text
+DEMANDA
+    ↓
+ENTENDIMENTO
+    ↓
+ANÁLISE
+    ↓
+GENERALIZAÇÃO
+    ↓
+MODELAGEM
+    ↓
+PRODUTIZAÇÃO
+    ↓
+AUTOMAÇÃO
+    ↓
+CATALOGAÇÃO
+    ↓
+REUTILIZAÇÃO
+    ↓
+NOVA DEMANDA
+```
+
+A ideia é simples:
+
+> Nenhuma demanda termina quando a resposta é entregue.
+>
+> Ela termina quando o conhecimento gerado pode ser reutilizado.
+
+---
+
+# Framework A.R.Q.U.I.T.E.T.O
+
+## A — Absorver
+
+Objetivo:
+
+Entender a demanda antes de abrir SQL.
+
+Perguntas:
+
+```text
+O que estão perguntando?
+
+Qual decisão depende disso?
+
+Quem é o consumidor?
+
+Isso é recorrente?
+
+Isso é sintoma ou problema?
+```
+
+Saída:
+
+```text
+REQ-001
+```
+
+Exemplo:
+
+```text
+REQ-143
+Diferença entre Escobs e Pagadoria
+```
+
+---
+
+# R — Representar
+
+Transformar o problema em entidades.
+
+Não pensar:
+
+```text
+preciso fazer uma query
+```
+
+Pensar:
+
+```text
+quais objetos existem aqui?
+```
+
+Exemplo:
+
+Demanda:
+
+```text
+Diferença Escobs x Produção
+```
+
+Entidades:
+
+```text
+cnpj
+pagamento
+escritório
+produção
+regularização
+```
+
+Saída:
+
+```text
+Mapa conceitual
+```
+
+---
+
+# Q — Questionar
+
+Etapa mais negligenciada.
+
+Pergunta principal:
+
+```text
+isso acontece uma única vez?
+```
+
+Se:
+
+```text
+SIM
+```
+
+Faça análise.
+
+Se:
+
+```text
+NÃO
+```
+
+Comece a pensar em ativo.
+
+---
+
+# U — Unificar
+
+Identificar padrões.
+
+Exemplo:
+
+Hoje:
+
+```text
+Por que caiu eficiência?
+```
+
+Amanhã:
+
+```text
+Por que subiu?
+```
+
+Depois:
+
+```text
+Por que escritório caiu?
+```
+
+Na verdade tudo é:
+
+```text
+Análise de causa raiz
+```
+
+Então você cria:
+
+```text
+Framework de decomposição
+```
+
+em vez de 30 queries.
+
+Isso está muito alinhado ao seu playbook de cobrança:
+
+```text
+DEMANDA
+↓
+DADO
+↓
+ANÁLISE
+↓
+INSIGHT
+↓
+AÇÃO
+↓
+COMUNICAÇÃO
+```
+
+
+
+---
+
+# I — Industrializar
+
+Transformar a lógica em componente.
+
+Possíveis ativos:
+
+## SQL
+
+```text
+view_silver_integrado_*
+```
+
+## Tabela
+
+```text
+iceberg_gold_fato_*
+```
+
+## Mart
+
+```text
+view_gold_mart_*
+```
+
+## Teste
+
+```text
+tb_resultado_teste
+```
+
+## Template
+
+```text
+template_analise_causa_raiz
+```
+
+## Dashboard
+
+```text
+quicksight_causa_raiz
+```
+
+Seu material já segue exatamente essa linha de transformação de regra em ativo reutilizável.
+
+---
+
+# T — Tornar observável
+
+Agora o ativo precisa gerar confiança.
+
+Criar:
+
+```text
+Testes
+Lineage
+Documentação
+Owner
+Monitoramento
+```
+
+Exemplos:
+
+```text
+grain test
+not null
+accepted values
+rowcount
+```
+
+---
+
+# E — Empacotar
+
+Aqui nasce o produto de dados.
+
+Estrutura:
+
+```text
+Objetivo
+Grão
+Entradas
+Regras
+Saídas
+Consumidores
+```
+
+Muito parecido com o que você já faz nos templates de SQL e modelos.
+
+---
+
+# T — Tornar descobrível
+
+Se ninguém acha, não existe.
+
+Criar:
+
+```text
+Naming
+Tags
+Índice
+Documentação
+```
+
+Exemplo:
+
+```text
+PAG-001
+REG-003
+MET-005
+ERR-002
+```
+
+---
+
+# O — Operar e evoluir
+
+Agora o ativo entra em produção.
+
+Coletar:
+
+```text
+Quem usa?
+Quantas vezes?
+Quais dúvidas?
+Quais exceções?
+```
+
+E alimentar a próxima versão.
+
+---
+
+# O ciclo completo
+
+Uma demanda percorre 4 estágios de maturidade.
+
+## Nível 1 — Resposta
+
+```text
+Recebi
+↓
+SQL
+↓
+Resposta
+```
+
+Valor:
+
+```text
+baixo
+```
+
+---
+
+## Nível 2 — Análise reutilizável
+
+```text
+Recebi
+↓
+SQL
+↓
+Template
+↓
+Resposta
+```
+
+Valor:
+
+```text
+médio
+```
+
+---
+
+## Nível 3 — Produto analítico
+
+```text
+Recebi
+↓
+Modelagem
+↓
+Mart
+↓
+Dashboard
+```
+
+Valor:
+
+```text
+alto
+```
+
+---
+
+## Nível 4 — Capability
+
+```text
+Recebi
+↓
+Framework
+↓
+Mart
+↓
+Narrativa
+↓
+Dashboard
+↓
+Automação
+```
+
+Valor:
+
+```text
+muito alto
+```
+
+---
+
+# O checklist final de toda demanda
+
+Antes de encerrar uma entrega, responda:
+
+```text
+[ ] Resolvi a pergunta?
+
+[ ] Descobri uma regra nova?
+
+[ ] Descobri uma entidade nova?
+
+[ ] Descobri uma métrica nova?
+
+[ ] Descobri um teste novo?
+
+[ ] Descobri um dashboard novo?
+
+[ ] Descobri um padrão recorrente?
+
+[ ] Isso merece uma tabela?
+
+[ ] Isso merece uma mart?
+
+[ ] Isso merece um framework?
+
+[ ] Isso merece documentação?
+```
+
+Se a maioria das respostas for "sim", você não recebeu apenas uma demanda.
+
+Você encontrou matéria-prima para construir um novo ativo organizacional.
+
+Esse raciocínio é exatamente o que diferencia alguém que acumula SQLs de alguém que acumula patrimônio analítico.
