@@ -1,0 +1,90 @@
+Sim. No Athena/Trino, você pode tratar o texto como:
+
+```text
+texto bruto
+→ split por linha
+→ unnest das linhas
+→ split por pipe
+→ pegar posições do array
+```
+
+Exemplo:
+
+```sql
+WITH entrada AS (
+    SELECT
+        'contrato|produto|valor
+123|A|100.50
+456|B|200.75
+789|C|300.00' AS txt
+),
+
+linhas AS (
+    SELECT
+        row_number() OVER () AS nr_linha,
+        linha
+    FROM entrada
+    CROSS JOIN UNNEST(
+        regexp_split(txt, '\r?\n')
+    ) AS t(linha)
+),
+
+dados AS (
+    SELECT
+        nr_linha,
+        split(linha, '|') AS campos
+    FROM linhas
+    WHERE nr_linha > 1 -- ignora cabeçalho
+)
+
+SELECT
+    campos[1] AS contrato,
+    campos[2] AS produto,
+    cast(campos[3] AS decimal(18,2)) AS valor
+FROM dados;
+```
+
+Resultado lógico:
+
+```text
+contrato | produto | valor
+123      | A       | 100.50
+456      | B       | 200.75
+789      | C       | 300.00
+```
+
+A ideia é bem aderente ao Athena como ferramenta de SQL ad hoc sobre dados, já que o material da AWS descreve o Athena como serviço para rodar consultas SQL interativas sem gerenciar infraestrutura .
+
+Versão mais robusta, limpando espaços:
+
+```sql
+WITH entrada AS (
+    SELECT
+        'contrato | produto | valor
+123 | A | 100.50
+456 | B | 200.75' AS txt
+),
+
+linhas AS (
+    SELECT
+        row_number() OVER () AS nr_linha,
+        trim(linha) AS linha
+    FROM entrada
+    CROSS JOIN UNNEST(regexp_split(txt, '\r?\n')) AS t(linha)
+),
+
+dados AS (
+    SELECT
+        transform(split(linha, '|'), x -> trim(x)) AS campos
+    FROM linhas
+    WHERE nr_linha > 1
+)
+
+SELECT
+    campos[1] AS contrato,
+    campos[2] AS produto,
+    cast(campos[3] AS decimal(18,2)) AS valor
+FROM dados;
+```
+
+Isso é ótimo para massa pequena/manual, tipo tabela auxiliar temporária dentro de uma query. Para regra recorrente, melhor promover para uma tabela de regra/seed ou camada silver/gold.
