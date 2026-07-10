@@ -1,0 +1,1335 @@
+
+
+## Nota técnica com consultas de exemplo para Athena/Trino
+
+Os exemplos abaixo seguem um contrato operacional simples:
+
+```text
+	0 erros     = teste aprovado
+1+ erros    = teste reprovado
+```
+
+Sempre que possível, cada consulta retorna uma única coluna:
+
+```sql
+qtd_erros
+```
+
+Esse formato facilita a execução pelo Athena, a leitura pelo Step Functions e o registro em uma tabela como `ctrl.tb_resultado_teste`. Ele também separa corretamente falha técnica da query de falha lógica nos dados.
+
+---
+
+# 1. Integridade estrutural
+
+## 1.1 Null Check — Verificação de Valores Nulos
+
+### O que valida
+
+Campos obrigatórios que não podem estar vazios.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** pagamento sem contrato, produto ou data.
+    
+- **Dia a dia:** usuário sem e-mail.
+    
+- **Empresa:** produto sem código ou fornecedor.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria
+WHERE contrato IS NULL
+   OR produto IS NULL
+   OR dt_ref_date IS NULL
+   OR vl_caixa IS NULL;
+```
+
+### Versão com diagnóstico
+
+```sql
+SELECT
+    sum(CASE WHEN contrato IS NULL THEN 1 ELSE 0 END) AS contrato_nulo,
+    sum(CASE WHEN produto IS NULL THEN 1 ELSE 0 END) AS produto_nulo,
+    sum(CASE WHEN dt_ref_date IS NULL THEN 1 ELSE 0 END) AS data_nula,
+    sum(CASE WHEN vl_caixa IS NULL THEN 1 ELSE 0 END) AS caixa_nulo
+FROM gold_db.iceberg_gold_fato_pagadoria;
+```
+
+---
+
+## 1.2 Data Type Validation — Validação de Tipo de Dados
+
+### O que valida
+
+Se valores armazenados como texto podem ser convertidos para o tipo esperado.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** valor pago com texto ou caracteres inválidos.
+    
+- **Dia a dia:** idade preenchida como `"vinte"`.
+    
+- **Empresa:** quantidade ou peso em formato não numérico.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM bronze_db.tabela_bronze_fonte_pagamentos
+WHERE vl_pago IS NOT NULL
+  AND try_cast(vl_pago AS decimal(18,2)) IS NULL;
+```
+
+### Validando várias colunas
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM bronze_db.tabela_bronze_fonte_pagamentos
+WHERE
+       (
+           atr_ctr IS NOT NULL
+           AND try_cast(atr_ctr AS integer) IS NULL
+       )
+    OR (
+           vl_pago IS NOT NULL
+           AND try_cast(vl_pago AS decimal(18,2)) IS NULL
+       )
+    OR (
+           dt_pagamento IS NOT NULL
+           AND try_cast(dt_pagamento AS date) IS NULL
+       );
+```
+
+---
+
+## 1.3 Schema Drift Detection — Detecção de Mudança de Esquema
+
+### O que valida
+
+Colunas adicionadas, removidas ou com tipo alterado.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** sistema de boletos altera `vl_pago` de decimal para varchar.
+    
+- **Dia a dia:** API deixa de enviar uma propriedade.
+    
+- **Empresa:** ERP remove a coluna de estoque disponível.
+    
+
+### Estrutura de controle esperada
+
+```sql
+CREATE TABLE IF NOT EXISTS ctrl_db.tb_schema_esperado (
+    table_schema      varchar,
+    table_name        varchar,
+    column_name       varchar,
+    data_type         varchar,
+    ordinal_position  integer
+);
+```
+
+### SQL de exemplo
+
+```sql
+WITH schema_atual AS (
+    SELECT
+        table_schema,
+        table_name,
+        column_name,
+        data_type,
+        ordinal_position
+    FROM information_schema.columns
+    WHERE table_schema = 'gold_db'
+      AND table_name = 'iceberg_gold_fato_pagadoria'
+),
+
+comparacao AS (
+    SELECT
+        coalesce(e.column_name, a.column_name) AS column_name,
+        e.data_type AS tipo_esperado,
+        a.data_type AS tipo_atual,
+        e.ordinal_position AS posicao_esperada,
+        a.ordinal_position AS posicao_atual
+    FROM ctrl_db.tb_schema_esperado e
+    FULL OUTER JOIN schema_atual a
+        ON e.table_schema = a.table_schema
+       AND e.table_name = a.table_name
+       AND e.column_name = a.column_name
+    WHERE e.table_schema = 'gold_db'
+      AND e.table_name = 'iceberg_gold_fato_pagadoria'
+)
+
+SELECT count(*) AS qtd_erros
+FROM comparacao
+WHERE tipo_esperado IS NULL
+   OR tipo_atual IS NULL
+   OR tipo_esperado <> tipo_atual
+   OR posicao_esperada <> posicao_atual;
+```
+
+> Comparar posição de coluna é opcional. Em formatos colunares modernos, mudança de ordem pode não representar erro real.
+
+---
+
+# 2. Integridade das chaves e do grão
+
+## 2.1 Uniqueness Check — Verificação de Unicidade
+
+### O que valida
+
+Se uma chave que deveria ser única aparece repetida.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** mesmo boleto repetido.
+    
+- **Dia a dia:** CPF cadastrado duas vezes.
+    
+- **Empresa:** número de nota fiscal duplicado.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT boleto
+    FROM silver_db.view_silver_integrado_cobranca_boletos
+    WHERE boleto IS NOT NULL
+    GROUP BY boleto
+    HAVING count(*) > 1
+);
+```
+
+### Para inspecionar os casos
+
+```sql
+SELECT
+    boleto,
+    count(*) AS qtd_ocorrencias
+FROM silver_db.view_silver_integrado_cobranca_boletos
+WHERE boleto IS NOT NULL
+GROUP BY boleto
+HAVING count(*) > 1
+ORDER BY qtd_ocorrencias DESC;
+```
+
+---
+
+## 2.2 Grain Check — Verificação do Grão
+
+### O que valida
+
+Se a combinação de colunas que define uma linha do modelo está sendo respeitada.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** uma linha por mês, contrato e produto.
+    
+- **Dia a dia:** uma linha por usuário.
+    
+- **Empresa:** uma linha por pedido e item.
+    
+
+### SQL de exemplo
+
+Supondo o grão:
+
+```text
+1 linha = p_anomes + contrato + produto + origem_pagamento
+```
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT
+        p_anomes,
+        contrato,
+        produto,
+        origem_pagamento
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    GROUP BY
+        p_anomes,
+        contrato,
+        produto,
+        origem_pagamento
+    HAVING count(*) > 1
+);
+```
+
+### Medindo linhas excedentes
+
+```sql
+SELECT
+    coalesce(sum(qtd - 1), 0) AS qtd_erros
+FROM (
+    SELECT
+        count(*) AS qtd
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    GROUP BY
+        p_anomes,
+        contrato,
+        produto,
+        origem_pagamento
+    HAVING count(*) > 1
+);
+```
+
+A segunda forma mede quantas linhas sobraram além do grão permitido.
+
+---
+
+# 3. Integridade dos relacionamentos
+
+## 3.1 Referential Integrity Check — Verificação de Integridade Referencial
+
+### O que valida
+
+Se toda chave presente em uma tabela fato existe na dimensão ou entidade relacionada.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** pagamento de contrato inexistente.
+    
+- **Dia a dia:** pedido vinculado a cliente inexistente.
+    
+- **Empresa:** venda de produto não cadastrado.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria f
+LEFT JOIN gold_db.iceberg_gold_dimensao_contrato d
+    ON f.contrato = d.contrato
+   AND f.produto = d.produto
+WHERE d.contrato IS NULL;
+```
+
+### Evitando inflar o teste por repetição
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT DISTINCT
+        f.contrato,
+        f.produto
+    FROM gold_db.iceberg_gold_fato_pagadoria f
+    LEFT JOIN gold_db.iceberg_gold_dimensao_contrato d
+        ON f.contrato = d.contrato
+       AND f.produto = d.produto
+    WHERE d.contrato IS NULL
+);
+```
+
+---
+
+## 3.2 Foreign Key Coverage Check — Verificação de Cobertura de Chaves Estrangeiras
+
+### O que valida
+
+O percentual de registros que encontrou correspondência na tabela de referência.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** percentual de pagamentos sem contrato.
+    
+- **Dia a dia:** percentual de pedidos sem cliente conhecido.
+    
+- **Empresa:** percentual de vendas sem produto cadastrado.
+    
+
+### SQL de exemplo
+
+```sql
+WITH cobertura AS (
+    SELECT
+        count(*) AS qtd_total,
+        count_if(d.contrato IS NOT NULL) AS qtd_encontrados,
+        count_if(d.contrato IS NULL) AS qtd_orfaos
+    FROM gold_db.iceberg_gold_fato_pagadoria f
+    LEFT JOIN gold_db.iceberg_gold_dimensao_contrato d
+        ON f.contrato = d.contrato
+       AND f.produto = d.produto
+)
+
+SELECT
+    CASE
+        WHEN qtd_total = 0 THEN 0
+        WHEN cast(qtd_orfaos AS double) / qtd_total > 0.01 THEN qtd_orfaos
+        ELSE 0
+    END AS qtd_erros
+FROM cobertura;
+```
+
+Nesse exemplo, o teste falha quando mais de 1% dos registros não encontra correspondência.
+
+### Consulta de monitoramento
+
+```sql
+SELECT
+    qtd_total,
+    qtd_encontrados,
+    qtd_orfaos,
+    round(100.0 * qtd_encontrados / nullif(qtd_total, 0), 2)
+        AS perc_cobertura
+FROM cobertura;
+```
+
+---
+
+# 4. Validação de domínio e regras de negócio
+
+## 4.1 Accepted Values Check — Validação de Valores Permitidos
+
+### O que valida
+
+Se uma coluna contém apenas categorias previamente aprovadas.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** origem deve ser boleto, débito ou backoffice.
+    
+- **Dia a dia:** status de cadastro ativo ou inativo.
+    
+- **Empresa:** status do pedido dentro do fluxo oficial.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria
+WHERE origem_pagamento IS NULL
+   OR origem_pagamento NOT IN (
+       'BOLETO',
+       'DEBITO_CONTA',
+       'BACKOFFICE'
+   );
+```
+
+### Com tabela parametrizada
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria f
+LEFT JOIN ctrl_db.tb_valor_aceito v
+    ON v.nm_campo = 'origem_pagamento'
+   AND f.origem_pagamento = v.valor_aceito
+   AND v.fl_ativo = true
+WHERE v.valor_aceito IS NULL;
+```
+
+A tabela parametrizada é melhor quando os valores mudam com frequência.
+
+---
+
+## 4.2 Range Validation — Validação de Faixa
+
+### O que valida
+
+Se valores numéricos ou percentuais permanecem dentro dos limites válidos.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** desconto entre 0% e 100%.
+    
+- **Dia a dia:** idade entre 0 e 120.
+    
+- **Empresa:** temperatura dentro do limite operacional.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria
+WHERE perc_desconto_final < 0
+   OR perc_desconto_final > 1
+   OR vl_caixa < 0
+   OR vl_regul < 0;
+```
+
+### Com tolerância por regra
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM silver_db.view_silver_integrado_fabrica_sensores
+WHERE temperatura_celsius NOT BETWEEN 15 AND 85;
+```
+
+---
+
+## 4.3 Business Rule Validation — Validação de Regra de Negócio
+
+### O que valida
+
+Regras que representam a interpretação oficial do processo.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** comissão não pode superar caixa.
+    
+- **Dia a dia:** entrega não pode ocorrer antes da compra.
+    
+- **Empresa:** quantidade expedida não pode superar a produzida sem estoque anterior.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria
+WHERE vl_comissao > vl_caixa
+   OR vl_regul < vl_caixa
+   OR (
+       tp_acordo = 'A_VISTA'
+       AND abs(vl_regul - vl_caixa) > 0.01
+   );
+```
+
+### Exemplo com elegibilidade
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria
+WHERE fl_comissionado = true
+  AND fl_elegivel_comissao = false;
+```
+
+> A regra `vl_regul < vl_caixa` deve ser ajustada à semântica real do seu modelo. Em alguns contextos, regul pode ser igual ou superior ao caixa; em outros, a relação pode ser diferente.
+
+---
+
+# 5. Consistência temporal
+
+## 5.1 Date Consistency Check — Verificação de Consistência de Datas
+
+### O que valida
+
+Se os eventos obedecem à sequência temporal possível.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** pagamento anterior à emissão.
+    
+- **Dia a dia:** fim de assinatura anterior ao início.
+    
+- **Empresa:** ordem finalizada antes da abertura.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM silver_db.view_silver_integrado_cobranca_boletos
+WHERE dt_pagamento < dt_emissao
+   OR dt_cancelamento < dt_emissao;
+```
+
+### Com regra para múltiplas etapas
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM silver_db.view_silver_integrado_logistica_pedidos
+WHERE dt_separacao < dt_pedido
+   OR dt_expedicao < dt_separacao
+   OR dt_entrega < dt_expedicao;
+```
+
+---
+
+## 5.2 Data Freshness Check — Verificação de Atualização dos Dados
+
+### O que valida
+
+Quanto tempo passou desde o registro mais recente.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** pagamentos não carregados hoje.
+    
+- **Dia a dia:** API sem eventos recentes.
+    
+- **Empresa:** sensor sem leitura há duas horas.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT
+    CASE
+        WHEN max(dt_ref_date) < current_date - INTERVAL '1' DAY
+            THEN 1
+        ELSE 0
+    END AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria;
+```
+
+### Freshness em horas
+
+```sql
+SELECT
+    CASE
+        WHEN date_diff(
+            'hour',
+            max(ts_evento),
+            current_timestamp
+        ) > 2
+            THEN 1
+        ELSE 0
+    END AS qtd_erros
+FROM silver_db.view_silver_padronizado_fabrica_sensores;
+```
+
+### Retornando o atraso
+
+```sql
+SELECT
+    date_diff(
+        'hour',
+        max(ts_evento),
+        current_timestamp
+    ) AS horas_sem_atualizacao
+FROM silver_db.view_silver_padronizado_fabrica_sensores;
+```
+
+---
+
+## 5.3 Partition Completeness Check — Verificação de Completude de Partições
+
+### O que valida
+
+Se todas as partições esperadas foram recebidas.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** ausência da partição diária de pagamentos.
+    
+- **Dia a dia:** arquivo diário não entregue.
+    
+- **Empresa:** falta do turno da manhã.
+    
+
+### SQL de exemplo para a partição do dia
+
+```sql
+SELECT
+    CASE
+        WHEN count(*) = 0 THEN 1
+        ELSE 0
+    END AS qtd_erros
+FROM bronze_db.tabela_bronze_fonte_pagamentos
+WHERE p_dt_ref = cast(
+    date_format(current_date, '%Y%m%d')
+    AS integer
+);
+```
+
+### Comparando partições esperadas e recebidas
+
+```sql
+WITH esperadas AS (
+    SELECT dt_ref
+    FROM ctrl_db.dim_calendario
+    WHERE dt_ref BETWEEN current_date - INTERVAL '7' DAY
+                     AND current_date
+      AND fl_dia_util = true
+),
+
+recebidas AS (
+    SELECT DISTINCT
+        cast(
+            date_parse(cast(p_dt_ref AS varchar), '%Y%m%d')
+            AS date
+        ) AS dt_ref
+    FROM bronze_db.tabela_bronze_fonte_pagamentos
+    WHERE p_dt_ref >= cast(
+        date_format(current_date - INTERVAL '7' DAY, '%Y%m%d')
+        AS integer
+    )
+)
+
+SELECT count(*) AS qtd_erros
+FROM esperadas e
+LEFT JOIN recebidas r
+    ON e.dt_ref = r.dt_ref
+WHERE r.dt_ref IS NULL;
+```
+
+---
+
+# 6. Volume e reconciliação
+
+## 6.1 Volume Check — Verificação de Volume
+
+### O que valida
+
+Quedas ou aumentos abruptos na quantidade de registros.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** pagamentos caíram 90%.
+    
+- **Dia a dia:** quantidade de cadastros dobrou.
+    
+- **Empresa:** pedidos ou produção caíram para zero.
+    
+
+### SQL de exemplo comparando com média histórica
+
+```sql
+WITH volume_diario AS (
+    SELECT
+        dt_ref_date,
+        count(*) AS qtd_registros
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    WHERE dt_ref_date >= current_date - INTERVAL '31' DAY
+    GROUP BY dt_ref_date
+),
+
+baseline AS (
+    SELECT
+        avg(qtd_registros) AS media_historica
+    FROM volume_diario
+    WHERE dt_ref_date < current_date
+),
+
+hoje AS (
+    SELECT
+        coalesce(max(qtd_registros), 0) AS qtd_hoje
+    FROM volume_diario
+    WHERE dt_ref_date = current_date
+)
+
+SELECT
+    CASE
+        WHEN media_historica = 0 THEN 0
+        WHEN qtd_hoje < media_historica * 0.5
+          OR qtd_hoje > media_historica * 1.5
+            THEN 1
+        ELSE 0
+    END AS qtd_erros
+FROM hoje
+CROSS JOIN baseline;
+```
+
+Esse teste considera anormal uma variação maior que 50%.
+
+---
+
+## 6.2 Reconciliation Check — Verificação de Reconciliação
+
+### O que valida
+
+Se origem e destino mantêm os mesmos totais ou totais dentro de uma tolerância.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** total pago no SAP diferente da Gold.
+    
+- **Dia a dia:** total do ERP diferente do dashboard.
+    
+- **Empresa:** produção registrada diferente da entrada em estoque.
+    
+
+### SQL de exemplo
+
+```sql
+WITH origem AS (
+    SELECT
+        p_anomes,
+        sum(vl_pago) AS vl_origem
+    FROM silver_db.view_silver_padronizado_cobranca_pagamentos
+    GROUP BY p_anomes
+),
+
+destino AS (
+    SELECT
+        p_anomes,
+        sum(vl_caixa) AS vl_destino
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    GROUP BY p_anomes
+),
+
+comparacao AS (
+    SELECT
+        coalesce(o.p_anomes, d.p_anomes) AS p_anomes,
+        coalesce(o.vl_origem, 0) AS vl_origem,
+        coalesce(d.vl_destino, 0) AS vl_destino
+    FROM origem o
+    FULL OUTER JOIN destino d
+        ON o.p_anomes = d.p_anomes
+)
+
+SELECT count(*) AS qtd_erros
+FROM comparacao
+WHERE abs(vl_origem - vl_destino) > 0.01;
+```
+
+### Com tolerância percentual
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM comparacao
+WHERE abs(vl_origem - vl_destino)
+      / nullif(abs(vl_origem), 0) > 0.001;
+```
+
+Nesse exemplo, diferenças superiores a 0,1% reprovam o teste.
+
+---
+
+# 7. Qualidade estatística
+
+## 7.1 Outlier Detection — Detecção de Outliers
+
+### O que valida
+
+Valores extremamente distantes do comportamento usual.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** pagamento muito acima do ticket histórico.
+    
+- **Dia a dia:** idade de 350 anos.
+    
+- **Empresa:** preço ou quantidade muito fora do padrão.
+    
+
+### SQL com desvio-padrão
+
+```sql
+WITH estatisticas AS (
+    SELECT
+        avg(vl_caixa) AS media,
+        stddev_pop(vl_caixa) AS desvio
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    WHERE vl_caixa IS NOT NULL
+),
+
+outliers AS (
+    SELECT f.*
+    FROM gold_db.iceberg_gold_fato_pagadoria f
+    CROSS JOIN estatisticas e
+    WHERE abs(f.vl_caixa - e.media) > 4 * e.desvio
+)
+
+SELECT count(*) AS qtd_erros
+FROM outliers;
+```
+
+### SQL robusto com percentis
+
+```sql
+WITH limites AS (
+    SELECT
+        approx_percentile(vl_caixa, 0.01) AS p01,
+        approx_percentile(vl_caixa, 0.99) AS p99
+    FROM gold_db.iceberg_gold_fato_pagadoria
+)
+
+SELECT count(*) AS qtd_erros
+FROM gold_db.iceberg_gold_fato_pagadoria f
+CROSS JOIN limites l
+WHERE f.vl_caixa < l.p01
+   OR f.vl_caixa > l.p99;
+```
+
+> Nem todo outlier é erro. Em valores financeiros, o ideal é classificá-lo primeiro como alerta.
+
+---
+
+## 7.2 Distribution Check — Verificação de Distribuição
+
+### O que valida
+
+Mudanças relevantes na participação das categorias.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** cluster A passa de 30% para 80%.
+    
+- **Dia a dia:** uso de Android muda abruptamente.
+    
+- **Empresa:** concentração da produção em um único produto.
+    
+
+### SQL comparando mês atual e anterior
+
+```sql
+WITH distribuicao AS (
+    SELECT
+        p_anomes,
+        distribuicao,
+        count(*) AS qtd,
+        cast(count(*) AS double)
+            / sum(count(*)) OVER (PARTITION BY p_anomes)
+            AS share
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    WHERE p_anomes IN (202606, 202607)
+    GROUP BY
+        p_anomes,
+        distribuicao
+),
+
+comparacao AS (
+    SELECT
+        atual.distribuicao,
+        atual.share AS share_atual,
+        anterior.share AS share_anterior
+    FROM distribuicao atual
+    LEFT JOIN distribuicao anterior
+        ON atual.distribuicao = anterior.distribuicao
+       AND anterior.p_anomes = 202606
+    WHERE atual.p_anomes = 202607
+)
+
+SELECT count(*) AS qtd_erros
+FROM comparacao
+WHERE abs(
+    share_atual - coalesce(share_anterior, 0)
+) > 0.15;
+```
+
+O teste falha quando a participação muda mais de 15 pontos percentuais.
+
+---
+
+## 7.3 Historical Trend / Anomaly Detection — Detecção de Tendência ou Anomalia Histórica
+
+### O que valida
+
+Se uma métrica atual se desviou significativamente do histórico recente.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** ticket médio cai 40%.
+    
+- **Dia a dia:** tempo médio de atendimento dobra.
+    
+- **Empresa:** consumo de energia sobe 35%.
+    
+
+### SQL com z-score histórico
+
+```sql
+WITH mensal AS (
+    SELECT
+        p_anomes,
+        avg(vl_caixa) AS ticket_medio
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    GROUP BY p_anomes
+),
+
+historico AS (
+    SELECT
+        avg(ticket_medio) AS media_historica,
+        stddev_pop(ticket_medio) AS desvio_historico
+    FROM mensal
+    WHERE p_anomes BETWEEN 202601 AND 202606
+),
+
+atual AS (
+    SELECT ticket_medio
+    FROM mensal
+    WHERE p_anomes = 202607
+)
+
+SELECT
+    CASE
+        WHEN desvio_historico = 0 THEN 0
+        WHEN abs(
+            (ticket_medio - media_historica)
+            / desvio_historico
+        ) > 3
+            THEN 1
+        ELSE 0
+    END AS qtd_erros
+FROM atual
+CROSS JOIN historico;
+```
+
+### Alternativa simples com variação percentual
+
+```sql
+SELECT
+    CASE
+        WHEN abs(ticket_atual / nullif(ticket_baseline, 0) - 1) > 0.30
+            THEN 1
+        ELSE 0
+    END AS qtd_erros
+FROM mart_db.tb_monitoramento_ticket;
+```
+
+---
+
+# 8. Cargas incrementais e integração de fontes
+
+## 8.1 Incremental Consistency Check — Verificação de Consistência Incremental
+
+### O que valida
+
+Perda, repetição ou alteração indevida após uma carga incremental.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** pagamento carregado duas vezes.
+    
+- **Dia a dia:** evento reaplicado.
+    
+- **Empresa:** produção do turno processada novamente.
+    
+
+### SQL para duplicidade do lote
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT
+        hash_chave_negocio
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    WHERE id_execucao = 'execucao_20260709_01'
+    GROUP BY hash_chave_negocio
+    HAVING count(*) > 1
+);
+```
+
+### Comparação de quantidade entre staging e destino
+
+```sql
+WITH staging AS (
+    SELECT count(DISTINCT hash_chave_negocio) AS qtd_staging
+    FROM silver_db.tmp_pagadoria_incremental
+),
+
+destino AS (
+    SELECT count(DISTINCT hash_chave_negocio) AS qtd_destino
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    WHERE id_execucao = 'execucao_20260709_01'
+)
+
+SELECT
+    CASE
+        WHEN qtd_staging <> qtd_destino
+            THEN abs(qtd_staging - qtd_destino)
+        ELSE 0
+    END AS qtd_erros
+FROM staging
+CROSS JOIN destino;
+```
+
+### Detectando registros esperados que não chegaram
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM silver_db.tmp_pagadoria_incremental s
+LEFT JOIN gold_db.iceberg_gold_fato_pagadoria g
+    ON s.hash_chave_negocio = g.hash_chave_negocio
+WHERE g.hash_chave_negocio IS NULL;
+```
+
+---
+
+## 8.2 Duplicate Across Sources Check — Verificação de Duplicidade entre Fontes
+
+### O que valida
+
+Se o mesmo evento foi trazido por fontes diferentes.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** mesmo pagamento em boleto e débito.
+    
+- **Dia a dia:** mesmo cliente vindo do CRM e ERP.
+    
+- **Empresa:** fornecedor duplicado em dois cadastros.
+    
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM (
+    SELECT
+        contrato,
+        produto,
+        dt_ref_date,
+        vl_pago
+    FROM silver_db.view_silver_integrado_cobranca_pagamentos
+    GROUP BY
+        contrato,
+        produto,
+        dt_ref_date,
+        vl_pago
+    HAVING count(DISTINCT origem_pagamento) > 1
+);
+```
+
+### Investigando as fontes conflitantes
+
+```sql
+SELECT
+    contrato,
+    produto,
+    dt_ref_date,
+    vl_pago,
+    array_agg(DISTINCT origem_pagamento) AS origens,
+    count(*) AS qtd_registros
+FROM silver_db.view_silver_integrado_cobranca_pagamentos
+GROUP BY
+    contrato,
+    produto,
+    dt_ref_date,
+    vl_pago
+HAVING count(DISTINCT origem_pagamento) > 1;
+```
+
+> A chave usada no teste precisa representar o evento real. Usar somente valor e data pode gerar falsos positivos.
+
+---
+
+# 9. Governança e padronização
+
+## 9.1 Metadata Validation — Validação de Metadados
+
+### O que valida
+
+Se tabelas críticas possuem owner, descrição, domínio, criticidade e outras informações mínimas.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** Gold sem responsável.
+    
+- **Dia a dia:** dataset sem descrição.
+    
+- **Empresa:** tabela de estoque sem domínio ou SLA.
+    
+
+### Estrutura de controle recomendada
+
+```sql
+CREATE TABLE IF NOT EXISTS ctrl_db.tb_catalogo_modelos (
+    nm_database       varchar,
+    nm_tabela         varchar,
+    nm_owner          varchar,
+    ds_modelo         varchar,
+    nm_dominio        varchar,
+    nm_criticidade    varchar,
+    ds_grao           varchar,
+    fl_ativo          boolean
+);
+```
+
+### SQL de exemplo
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM ctrl_db.tb_catalogo_modelos
+WHERE fl_ativo = true
+  AND (
+         nm_owner IS NULL
+      OR trim(nm_owner) = ''
+      OR ds_modelo IS NULL
+      OR trim(ds_modelo) = ''
+      OR nm_dominio IS NULL
+      OR ds_grao IS NULL
+      OR trim(ds_grao) = ''
+  );
+```
+
+### Verificando tabelas físicas sem catálogo
+
+```sql
+WITH tabelas_fisicas AS (
+    SELECT
+        table_schema,
+        table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'gold_db'
+      AND table_type = 'BASE TABLE'
+)
+
+SELECT count(*) AS qtd_erros
+FROM tabelas_fisicas t
+LEFT JOIN ctrl_db.tb_catalogo_modelos c
+    ON t.table_schema = c.nm_database
+   AND t.table_name = c.nm_tabela
+   AND c.fl_ativo = true
+WHERE c.nm_tabela IS NULL;
+```
+
+---
+
+## 9.2 Naming Convention Validation — Validação da Convenção de Nomes
+
+### O que valida
+
+Se tabelas, views e colunas seguem o padrão arquitetural.
+
+### Exemplos de uso
+
+- **Recuperação de crédito:** evitar nomes como `pagto_final_v2`.
+    
+- **Dia a dia:** impedir mistura inconsistente de idiomas.
+    
+- **Empresa:** exigir prefixo de camada e tipo lógico.
+    
+
+O padrão definido no seu material segue a estrutura:
+
+```text
+<materializacao>_<camada>_<tipo_logico>_<dominio>_<entidade>
+```
+
+Exemplos:
+
+```text
+view_silver_padronizado_cobranca_boletos
+view_silver_integrado_cobranca_pagamentos_conciliados
+iceberg_gold_fato_pagadoria
+```
+
+Esse contrato arquitetural está formalizado no material de naming.
+
+### SQL de exemplo para tabelas
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM information_schema.tables
+WHERE table_schema IN ('silver_db', 'gold_db')
+  AND NOT regexp_like(
+      table_name,
+      '^(view|tabela|iceberg)_(bronze|silver|gold)_[a-z0-9_]+$'
+  );
+```
+
+### Regra específica para Gold
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM information_schema.tables
+WHERE table_schema = 'gold_db'
+  AND NOT regexp_like(
+      table_name,
+      '^(iceberg|tabela|view)_gold_(fato|dimensao|agregado|mart)_[a-z0-9_]+$'
+  );
+```
+
+### Verificando nomes de colunas
+
+```sql
+SELECT count(*) AS qtd_erros
+FROM information_schema.columns
+WHERE table_schema IN ('silver_db', 'gold_db')
+  AND NOT regexp_like(column_name, '^[a-z][a-z0-9_]*$');
+```
+
+Esse teste reprova nomes com espaços, maiúsculas, hífens e caracteres especiais.
+
+---
+
+# 10. Resumo das categorias
+
+|Categoria|Teste|
+|---|---|
+|Integridade estrutural|Null Check|
+|Integridade estrutural|Data Type Validation|
+|Integridade estrutural|Schema Drift Detection|
+|Chaves e grão|Uniqueness Check|
+|Chaves e grão|Grain Check|
+|Relacionamentos|Referential Integrity Check|
+|Relacionamentos|Foreign Key Coverage Check|
+|Domínio|Accepted Values Check|
+|Domínio|Range Validation|
+|Negócio|Business Rule Validation|
+|Temporal|Date Consistency Check|
+|Temporal|Data Freshness Check|
+|Temporal|Partition Completeness Check|
+|Volume|Volume Check|
+|Reconciliação|Reconciliation Check|
+|Estatística|Outlier Detection|
+|Estatística|Distribution Check|
+|Estatística|Historical Trend / Anomaly Detection|
+|Incremental|Incremental Consistency Check|
+|Integração|Duplicate Across Sources Check|
+|Governança|Metadata Validation|
+|Governança|Naming Convention Validation|
+
+---
+
+# 11. Contrato recomendado para automação
+
+Para padronizar todos os testes, cada SQL operacional pode seguir este formato:
+
+```sql
+SELECT
+    '<id_execucao>' AS id_execucao,
+    '<nome_teste>' AS nm_teste,
+    '<nome_modelo>' AS nm_modelo,
+    '<severidade>' AS severidade,
+    count(*) AS qtd_erros,
+    count(*) = 0 AS fl_aprovado,
+    current_timestamp AS dt_execucao
+FROM (
+    -- consulta que retorna os registros inválidos
+) erros;
+```
+
+Exemplo:
+
+```sql
+SELECT
+    'execucao_20260709_01' AS id_execucao,
+    'grain_pagadoria' AS nm_teste,
+    'iceberg_gold_fato_pagadoria' AS nm_modelo,
+    'CRITICAL' AS severidade,
+    count(*) AS qtd_erros,
+    count(*) = 0 AS fl_aprovado,
+    current_timestamp AS dt_execucao
+FROM (
+    SELECT
+        p_anomes,
+        contrato,
+        produto,
+        origem_pagamento
+    FROM gold_db.iceberg_gold_fato_pagadoria
+    GROUP BY
+        p_anomes,
+        contrato,
+        produto,
+        origem_pagamento
+    HAVING count(*) > 1
+) erros;
+```
+
+Isso permite que o Step Functions:
+
+```text
+executar teste
+    ↓
+ler qtd_erros
+    ↓
+avaliar severidade
+    ↓
+registrar resultado
+    ↓
+continuar, alertar ou bloquear pipeline
+```
+
+## Severidade recomendada
+
+|Severidade|Comportamento sugerido|
+|---|---|
+|`INFO`|Registrar sem interromper|
+|`WARNING`|Registrar e alertar|
+|`ERROR`|Bloquear publicação no mart|
+|`CRITICAL`|Interromper pipeline imediatamente|
+
+A separação entre erro técnico e erro lógico e o padrão de retornar uma única quantidade de erros são compatíveis com o framework de testes já estruturado para Athena e Step Functions.
