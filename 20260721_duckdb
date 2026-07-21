@@ -1,0 +1,417 @@
+A função abaixo:
+
+1. lê um arquivo .sql;
+
+
+2. substitui parâmetros como {anomes};
+
+
+3. executa a consulta no Athena via PyAthena;
+
+
+4. retorna o resultado como pandas.DataFrame;
+
+
+5. registra ou salva o resultado como tabela no DuckDB;
+
+
+6. devolve o DataFrame, a conexão DuckDB e o nome da tabela.
+
+
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+import duckdb
+import pandas as pd
+from pyathena import connect
+from pyathena.pandas.cursor import PandasCursor
+
+
+@dataclass
+class ResultadoAthenaDuckDB:
+    """
+    Resultado de uma consulta executada no Athena e disponibilizada
+    no pandas e no DuckDB.
+    """
+
+    dataframe: pd.DataFrame
+    duckdb_connection: duckdb.DuckDBPyConnection
+    nome_tabela_duckdb: str
+    sql_executado: str
+
+    def consultar_duckdb(
+        self,
+        sql: str,
+        parametros: list[Any] | None = None,
+    ) -> pd.DataFrame:
+        """
+        Executa uma consulta local no DuckDB e retorna pandas.DataFrame.
+        """
+        return self.duckdb_connection.execute(
+            sql,
+            parametros or [],
+        ).df()
+
+    def fechar(self) -> None:
+        """Fecha a conexão com o DuckDB."""
+        self.duckdb_connection.close()
+
+
+def executar_sql_athena_duckdb(
+    caminho_sql: str | Path,
+    nome_tabela_duckdb: str,
+    parametros_sql: dict[str, Any] | None = None,
+    conexao_athena=None,
+    *,
+    s3_staging_dir: str | None = None,
+    region_name: str = "sa-east-1",
+    profile_name: str | None = None,
+    schema_name: str | None = None,
+    banco_duckdb: str | Path = ":memory:",
+    modo_duckdb: Literal["view", "table"] = "view",
+) -> ResultadoAthenaDuckDB:
+    """
+    Executa um arquivo SQL no Athena, retorna o resultado como DataFrame
+    pandas e disponibiliza o resultado como tabela no DuckDB.
+
+    Parameters
+    ----------
+    caminho_sql:
+        Caminho do arquivo .sql.
+
+    nome_tabela_duckdb:
+        Nome pelo qual o resultado será acessado no DuckDB.
+
+    parametros_sql:
+        Parâmetros substituídos no SQL com str.format().
+
+        Exemplo:
+            SQL: WHERE p_anomes = {anomes}
+            Python: {"anomes": 202607}
+
+    conexao_athena:
+        Conexão PyAthena já existente. Caso não seja informada,
+        a função cria uma nova conexão.
+
+    s3_staging_dir:
+        Diretório S3 usado pelo Athena para armazenar resultados.
+        Obrigatório quando conexao_athena não é informada.
+
+    region_name:
+        Região AWS.
+
+    profile_name:
+        Nome do profile AWS local.
+
+    schema_name:
+        Database padrão do Athena.
+
+    banco_duckdb:
+        ":memory:" para banco temporário ou caminho para arquivo persistente.
+
+        Exemplos:
+            ":memory:"
+            "dados/analises.duckdb"
+
+    modo_duckdb:
+        "view":
+            registra o DataFrame diretamente no DuckDB.
+            Mais rápido e sem cópia, mas depende do DataFrame em memória.
+
+        "table":
+            cria uma tabela física no DuckDB.
+            É indicada quando banco_duckdb aponta para um arquivo persistente.
+
+    Returns
+    -------
+    ResultadoAthenaDuckDB
+        Objeto contendo DataFrame, conexão DuckDB, nome da tabela e SQL.
+    """
+
+    caminho = Path(caminho_sql)
+
+    if not caminho.exists():
+        raise FileNotFoundError(
+            f"Arquivo SQL não encontrado: {caminho.resolve()}"
+        )
+
+    if caminho.suffix.lower() != ".sql":
+        raise ValueError(
+            f"O arquivo precisa ter extensão .sql: {caminho.name}"
+        )
+
+    if not nome_tabela_duckdb.isidentifier():
+        raise ValueError(
+            "nome_tabela_duckdb deve ser um identificador válido, "
+            "como 'pagadoria' ou 'carteira_202607'."
+        )
+
+    sql_template = caminho.read_text(encoding="utf-8")
+
+    try:
+        sql_executado = sql_template.format(**(parametros_sql or {}))
+    except KeyError as erro:
+        parametro_ausente = erro.args[0]
+        raise ValueError(
+            f"O parâmetro {{{parametro_ausente}}} existe no SQL, "
+            "mas não foi informado em parametros_sql."
+        ) from erro
+
+    criou_conexao_athena = conexao_athena is None
+
+    if criou_conexao_athena:
+        if not s3_staging_dir:
+            raise ValueError(
+                "Informe s3_staging_dir quando conexao_athena "
+                "não for fornecida."
+            )
+
+        conexao_athena = connect(
+            s3_staging_dir=s3_staging_dir,
+            region_name=region_name,
+            profile_name=profile_name,
+            schema_name=schema_name,
+            cursor_class=PandasCursor,
+        )
+
+    try:
+        cursor = conexao_athena.cursor()
+
+        dataframe = cursor.execute(
+            sql_executado
+        ).as_pandas()
+
+    finally:
+        if criou_conexao_athena:
+            conexao_athena.close()
+
+    caminho_duckdb = str(banco_duckdb)
+
+    if caminho_duckdb != ":memory:":
+        Path(caminho_duckdb).parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+    conexao_duckdb = duckdb.connect(caminho_duckdb)
+
+    try:
+        nome_registro_temporario = "__resultado_athena"
+
+        conexao_duckdb.register(
+            nome_registro_temporario,
+            dataframe,
+        )
+
+        if modo_duckdb == "view":
+            conexao_duckdb.execute(
+                f"""
+                CREATE OR REPLACE VIEW {nome_tabela_duckdb} AS
+                SELECT *
+                FROM {nome_registro_temporario}
+                """
+            )
+
+        elif modo_duckdb == "table":
+            conexao_duckdb.execute(
+                f"""
+                CREATE OR REPLACE TABLE {nome_tabela_duckdb} AS
+                SELECT *
+                FROM {nome_registro_temporario}
+                """
+            )
+
+            # A tabela física já foi copiada para o DuckDB.
+            conexao_duckdb.unregister(
+                nome_registro_temporario
+            )
+
+        else:
+            raise ValueError(
+                "modo_duckdb deve ser 'view' ou 'table'."
+            )
+
+    except Exception:
+        conexao_duckdb.close()
+        raise
+
+    return ResultadoAthenaDuckDB(
+        dataframe=dataframe,
+        duckdb_connection=conexao_duckdb,
+        nome_tabela_duckdb=nome_tabela_duckdb,
+        sql_executado=sql_executado,
+    )
+
+Arquivo SQL
+
+Por exemplo, em sql/pagadoria_mensal.sql:
+
+SELECT
+    p_anomes,
+    contrato,
+    produto,
+    escritorio,
+    fila,
+    vl_caixa,
+    vl_regularizacao
+FROM gold.fato_pagadoria
+WHERE p_anomes = {anomes}
+  AND escritorio IS NOT NULL
+
+Uso com DuckDB em memória
+
+resultado = executar_sql_athena_duckdb(
+    caminho_sql="sql/pagadoria_mensal.sql",
+    nome_tabela_duckdb="pagadoria",
+    parametros_sql={
+        "anomes": 202607,
+    },
+    s3_staging_dir="s3://meu-bucket/athena-resultados/",
+    region_name="sa-east-1",
+    profile_name="meu-profile",
+    schema_name="gold",
+    banco_duckdb=":memory:",
+    modo_duckdb="view",
+)
+
+O DataFrame pandas fica disponível em:
+
+df_pagadoria = resultado.dataframe
+
+display(df_pagadoria.head())
+
+E o mesmo resultado fica disponível como tabela SQL pagadoria no DuckDB:
+
+df_resumo = resultado.consultar_duckdb(
+    """
+    SELECT
+        escritorio,
+        fila,
+        COUNT(DISTINCT contrato) AS qtd_contratos,
+        SUM(vl_caixa) AS vl_caixa,
+        SUM(vl_regularizacao) AS vl_regularizacao,
+        SUM(vl_caixa)
+            / NULLIF(SUM(vl_regularizacao), 0)
+            AS caixa_sobre_regularizacao
+    FROM pagadoria
+    GROUP BY
+        escritorio,
+        fila
+    ORDER BY
+        vl_caixa DESC
+    """
+)
+
+display(df_resumo)
+
+Consulta parametrizada no DuckDB
+
+df_escritorio = resultado.consultar_duckdb(
+    """
+    SELECT *
+    FROM pagadoria
+    WHERE escritorio = ?
+      AND vl_caixa >= ?
+    ORDER BY vl_caixa DESC
+    """,
+    parametros=[
+        "BELLINATI",
+        1_000,
+    ],
+)
+
+display(df_escritorio)
+
+Salvar fisicamente em arquivo DuckDB
+
+Para manter os dados após o encerramento do notebook, use um arquivo .duckdb e modo_duckdb="table":
+
+resultado = executar_sql_athena_duckdb(
+    caminho_sql="sql/pagadoria_mensal.sql",
+    nome_tabela_duckdb="pagadoria_202607",
+    parametros_sql={
+        "anomes": 202607,
+    },
+    s3_staging_dir="s3://meu-bucket/athena-resultados/",
+    region_name="sa-east-1",
+    profile_name="meu-profile",
+    schema_name="gold",
+    banco_duckdb="dados/analises.duckdb",
+    modo_duckdb="table",
+)
+
+Agora a tabela fica gravada em:
+
+dados/analises.duckdb
+
+Você pode fechar a conexão:
+
+resultado.fechar()
+
+E abrir o banco posteriormente:
+
+import duckdb
+
+conexao = duckdb.connect("dados/analises.duckdb")
+
+df = conexao.execute(
+    """
+    SELECT
+        escritorio,
+        SUM(vl_caixa) AS vl_caixa
+    FROM pagadoria_202607
+    GROUP BY escritorio
+    ORDER BY vl_caixa DESC
+    """
+).df()
+
+Usando uma conexão Athena já criada
+
+Isso evita recriar a conexão a cada consulta:
+
+from pyathena import connect
+from pyathena.pandas.cursor import PandasCursor
+
+
+conexao_athena = connect(
+    s3_staging_dir="s3://meu-bucket/athena-resultados/",
+    region_name="sa-east-1",
+    profile_name="meu-profile",
+    schema_name="gold",
+    cursor_class=PandasCursor,
+)
+
+Depois:
+
+resultado = executar_sql_athena_duckdb(
+    caminho_sql="sql/pagadoria_mensal.sql",
+    nome_tabela_duckdb="pagadoria",
+    parametros_sql={
+        "anomes": 202607,
+    },
+    conexao_athena=conexao_athena,
+    banco_duckdb=":memory:",
+    modo_duckdb="view",
+)
+
+Diferença entre view e table
+
+Use view para exploração durante o notebook:
+
+modo_duckdb="view"
+banco_duckdb=":memory:"
+
+O DuckDB lê diretamente o DataFrame, sem copiar os dados para uma tabela física.
+
+Use table para persistência:
+
+modo_duckdb="table"
+banco_duckdb="dados/analises.duckdb"
+
+Nesse caso, o resultado é copiado e salvo dentro do arquivo DuckDB.
+
+Para seu workspace, eu usaria view em análises rápidas e table para bases intermediárias locais reutilizáveis.
