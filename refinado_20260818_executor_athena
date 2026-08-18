@@ -1,0 +1,1654 @@
+Eu passaria para outra IA uma especificação quase como um PRD + arquitetura + critérios de aceite, para reduzir ao máximo as decisões implícitas. Algo assim:
+
+Prompt — Construção do Extrator Athena Desktop em Tkinter
+
+Você é um engenheiro de software sênior especializado em Python, Tkinter, AWS Athena, boto3, S3, aplicações desktop Windows, PyInstaller, UX para usuários não técnicos e arquitetura orientada a configuração.
+
+Sua tarefa é construir um aplicativo desktop chamado:
+
+Extrator Athena
+
+O objetivo é permitir que usuários não técnicos executem consultas SQL do Amazon Athena e recebam os resultados localmente, sem precisar usar:
+
+- VS Code;
+- Jupyter;
+- Python diretamente;
+- terminal;
+- pip;
+- venv;
+- ODBC;
+- JDBC;
+- Power Query conectado diretamente ao Athena;
+- conhecimento de SQL;
+- conhecimento de boto3.
+
+Para o usuário final, a experiência deve ser aproximadamente:
+
+Abrir ExtratorAthena.exe
+        ↓
+Colar credenciais AWS
+        ↓
+Escolher uma query ou "Todas"
+        ↓
+Preencher parâmetros, caso existam
+        ↓
+Confirmar
+        ↓
+Executar
+        ↓
+Receber arquivos na pasta de resultados
+
+A aplicação deve ser construída em Python utilizando Tkinter e deve poder ser empacotada posteriormente como um único executável Windows por meio de PyInstaller.
+
+---
+
+1. Princípio arquitetural principal
+
+A característica mais importante do projeto é:
+
+«O executável não deve conhecer previamente as queries existentes.»
+
+O programa deve funcionar como um motor genérico de execução de queries.
+
+As queries devem existir externamente ao executável em uma pasta:
+
+Extrator_Athena/
+│
+├── ExtratorAthena.exe
+├── config.json
+│
+├── queries/
+│   ├── Pagadoria/
+│   │   ├── caixa.sql
+│   │   └── comissao.sql
+│   │
+│   ├── Carteira/
+│   │   ├── vigor.sql
+│   │   └── colchao.sql
+│   │
+│   └── Auditoria/
+│       └── duplicidades.sql
+│
+└── output/
+
+Se o desenvolvedor adicionar amanhã:
+
+queries/
+└── Renova/
+    └── conversao.sql
+
+a nova query deve automaticamente aparecer na interface na próxima vez que o programa for aberto ou quando o usuário clicar em:
+
+Recarregar queries
+
+Nenhuma destas ações deve ser necessária:
+
+- alterar código Python;
+- recompilar o ".exe";
+- gerar nova versão;
+- reinstalar o programa.
+
+O ".exe" deve ser apenas o motor.
+
+As consultas SQL devem funcionar como plugins declarativos.
+
+---
+
+2. Descoberta automática das queries
+
+Ao iniciar, o programa deve pesquisar recursivamente:
+
+queries/**/*.sql
+
+Exemplos:
+
+queries/Pagadoria/caixa.sql
+queries/Pagadoria/comissao.sql
+queries/Carteira/vigor.sql
+queries/Auditoria/duplicidades.sql
+
+A estrutura de diretórios deve ser aproveitada para organização visual.
+
+Por exemplo:
+
+Pagadoria / caixa
+Pagadoria / comissao
+Carteira / vigor
+Auditoria / duplicidades
+
+Não limitar a quantidade de subpastas artificialmente.
+
+A descoberta deve ocorrer dinamicamente.
+
+---
+
+3. Seleção de queries
+
+A interface deve permitir dois modos.
+
+Modo 1 — queries selecionadas
+
+O usuário pode selecionar uma ou mais consultas individualmente.
+
+Exemplo:
+
+Pagadoria / Caixa
+Pagadoria / Comissão
+Auditoria / Duplicidades
+
+Modo 2 — todas
+
+Deve existir uma opção claramente visível:
+
+☐ Executar todas as queries
+
+Quando marcada, todas as queries disponíveis devem ser selecionadas para execução.
+
+---
+
+4. Convenção de parâmetros SQL
+
+As queries podem possuir parâmetros.
+
+A sintaxe padrão será:
+
+{{nome_parametro}}
+
+Exemplo:
+
+SELECT
+    *
+FROM gold.tb_pagadoria
+WHERE p_anomes = '{{anomes}}'
+
+Outro exemplo:
+
+SELECT
+    *
+FROM gold.tb_pagadoria
+WHERE p_anomes = '{{anomes}}'
+  AND escritorio = '{{escritorio}}'
+
+O programa deve utilizar uma expressão regular para detectar automaticamente todos os parâmetros existentes.
+
+Exemplo:
+
+WHERE p_anomes = '{{anomes}}'
+AND escritorio = '{{escritorio}}'
+
+deve resultar em:
+
+anomes
+escritorio
+
+Parâmetros repetidos dentro da mesma query devem aparecer apenas uma vez no formulário.
+
+---
+
+5. Coleta dos parâmetros
+
+Se uma query não possuir parâmetros:
+
+SELECT current_date
+
+nenhuma janela adicional deve ser aberta.
+
+Se possuir parâmetros, deve ser aberta uma janela Tkinter específica para aquela query.
+
+Exemplo:
+
+Parâmetros — Pagadoria / Caixa
+
+anomes
+[ 202608 ]
+
+escritorio
+[ NOVA_QUEST ]
+
+[ Salvar parâmetros ]
+[ Cancelar ]
+
+A coleta deve acontecer query por query.
+
+Imagine que o usuário selecionou:
+
+Query A
+Query B
+Query C
+Query D
+
+O processo deve ser:
+
+Query A
+↓
+possui parâmetros?
+↓
+abre formulário
+↓
+salva valores
+
+Query B
+↓
+possui parâmetros?
+↓
+abre formulário
+↓
+salva valores
+
+Query C
+↓
+sem parâmetros
+↓
+continua
+
+Query D
+↓
+possui parâmetros?
+↓
+abre formulário
+↓
+salva valores
+
+Importante:
+
+«Nenhuma query deve começar a executar enquanto todos os parâmetros de todas as queries selecionadas não tiverem sido coletados.»
+
+Primeiro montar todo o plano de execução.
+
+Depois executar.
+
+---
+
+6. Reutilização inteligente de parâmetros
+
+Se várias queries utilizarem o mesmo parâmetro:
+
+{{anomes}}
+
+o valor anteriormente informado deve aparecer como sugestão na query seguinte.
+
+Exemplo:
+
+Query 1:
+
+anomes = 202608
+
+Query 2 deve abrir com:
+
+anomes
+[ 202608 ]
+
+já preenchido.
+
+Entretanto, o usuário ainda poderá alterar o valor.
+
+Não assumir obrigatoriamente que parâmetros de mesmo nome devem possuir sempre o mesmo valor.
+
+Eles são apenas reutilizados como sugestão.
+
+---
+
+7. Plano de execução
+
+Depois de coletar todos os parâmetros, mostrar uma confirmação.
+
+Exemplo:
+
+Serão executadas:
+
+Pagadoria / Caixa
+    anomes = 202608
+
+Pagadoria / Comissão
+    anomes = 202608
+    escritorio = NOVA_QUEST
+
+Auditoria / Duplicidades
+    sem parâmetros
+
+Os resultados existentes serão arquivados antes da execução.
+
+[ Executar ]
+[ Cancelar ]
+
+Somente após o usuário clicar em:
+
+Executar
+
+o processamento deve começar.
+
+---
+
+8. Credenciais AWS
+
+A aplicação NÃO deverá exigir que o usuário configure:
+
+~/.aws/credentials
+AWS CLI
+aws configure
+profiles
+SSO
+variáveis de ambiente
+
+A interface deve possuir uma área grande de texto:
+
+Credenciais AWS
+
+O usuário deve poder copiar diretamente as credenciais temporárias disponibilizadas pelo console AWS e dar apenas:
+
+Ctrl + V
+
+na aplicação.
+
+O conteúdo normalmente possuirá:
+
+AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY
+AWS_SESSION_TOKEN
+
+O parser deve aceitar, pelo menos, formatos como:
+
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_SESSION_TOKEN="..."
+
+também:
+
+set AWS_ACCESS_KEY_ID=...
+set AWS_SECRET_ACCESS_KEY=...
+set AWS_SESSION_TOKEN=...
+
+e:
+
+$Env:AWS_ACCESS_KEY_ID="..."
+$Env:AWS_SECRET_ACCESS_KEY="..."
+$Env:AWS_SESSION_TOKEN="..."
+
+Também deve tolerar:
+
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_SESSION_TOKEN=...
+
+O usuário não deve precisar separar manualmente as três credenciais.
+
+A aplicação deve fazer o parsing automaticamente.
+
+---
+
+9. Segurança das credenciais
+
+As credenciais AWS:
+
+Access Key
+Secret Access Key
+Session Token
+
+devem permanecer apenas em memória.
+
+Nunca gravar em:
+
+config.json
+logs
+txt
+csv
+cache
+history
+SQLite
+arquivo temporário
+
+Nunca mostrar "Secret Access Key" ou "Session Token" no log.
+
+Nunca imprimir credenciais completas em exceções.
+
+Ao fechar o aplicativo, elas devem desaparecer junto com o processo.
+
+---
+
+10. Criação da sessão AWS
+
+Depois do parsing:
+
+session = boto3.Session(
+    aws_access_key_id=...,
+    aws_secret_access_key=...,
+    aws_session_token=...,
+    region_name=...
+)
+
+Criar:
+
+athena = session.client("athena")
+s3 = session.client("s3")
+
+Não depender de um profile AWS previamente configurado.
+
+---
+
+11. Configuração do Athena
+
+A interface deve permitir informar:
+
+Region
+Database
+Workgroup
+S3 Output Location
+
+Exemplo:
+
+Region
+sa-east-1
+
+Database
+gold
+
+Workgroup
+primary
+
+Athena Result Location
+s3://meu-bucket/athena-results/
+
+Essas configurações podem ser persistidas no:
+
+config.json
+
+porque não são credenciais.
+
+Exemplo:
+
+{
+  "region": "sa-east-1",
+  "database": "gold",
+  "workgroup": "primary",
+  "athena_output_s3": "s3://bucket/athena-results/",
+  "queries_dir": "queries",
+  "local_output_dir": "output",
+  "history_dir_name": "historico"
+}
+
+---
+
+12. Execução no Athena
+
+Para cada query:
+
+SQL original
+      ↓
+substituição dos parâmetros
+      ↓
+SQL final
+      ↓
+start_query_execution
+
+Usar:
+
+athena.start_query_execution(...)
+
+com:
+
+QueryString
+Database
+WorkGroup
+OutputLocation
+
+Depois capturar:
+
+QueryExecutionId
+
+e consultar periodicamente:
+
+get_query_execution()
+
+até obter:
+
+SUCCEEDED
+FAILED
+CANCELLED
+
+Enquanto estiver:
+
+QUEUED
+RUNNING
+
+aguardar.
+
+Nunca travar a interface Tkinter.
+
+---
+
+13. Threading
+
+Toda execução AWS deve acontecer em uma thread separada.
+
+A thread principal do Tkinter não pode ficar bloqueada.
+
+Enquanto as queries executam, a UI deve continuar respondendo.
+
+Mostrar:
+
+barra de progresso
+
+ou pelo menos:
+
+Executando...
+
+e atualizar os logs.
+
+Não atualizar widgets Tkinter diretamente da worker thread.
+
+Usar:
+
+root.after(...)
+
+para operações na interface.
+
+---
+
+14. Resultados
+
+O objetivo inicial é exportar os resultados como:
+
+CSV
+
+O fluxo preferencial é:
+
+Athena
+   ↓
+resultado gravado no S3
+   ↓
+obter OutputLocation
+   ↓
+S3
+   ↓
+download_file()
+   ↓
+pasta local
+
+Não trazer milhões de linhas obrigatoriamente por:
+
+GetQueryResults
+→ DataFrame
+→ Pandas
+
+Preferir baixar diretamente o resultado produzido pelo Athena no S3.
+
+---
+
+15. Nome dos arquivos
+
+Cada query deve gerar um arquivo baseado em seu nome.
+
+Exemplo:
+
+queries/Pagadoria/caixa_colchao.sql
+
+pode gerar:
+
+Pagadoria_caixa_colchao.csv
+
+ou:
+
+caixa_colchao.csv
+
+Criar uma função que sanitize nomes inválidos do Windows.
+
+Tratar caracteres:
+
+< > : " / \ | ? *
+
+Nunca permitir colisão silenciosa.
+
+Caso já exista um arquivo inesperadamente, criar nome alternativo.
+
+---
+
+16. Pasta de resultados
+
+O usuário deve poder selecionar a pasta local onde os resultados serão gravados.
+
+Exemplo:
+
+C:\Users\usuario\Documents\Extracoes
+
+A interface deve ter:
+
+[ caminho atual                         ] [ Escolher pasta ]
+
+Se a pasta não existir, criá-la automaticamente.
+
+---
+
+17. Arquivamento automático
+
+Este é um requisito obrigatório.
+
+Antes de iniciar uma nova rodada de execução, o programa deve verificar o conteúdo atual da pasta de resultados.
+
+Exemplo antes:
+
+output/
+├── caixa.csv
+├── comissao.csv
+└── carteira.csv
+
+Antes de executar novas queries, esses arquivos deverão ser retirados da raiz e movidos para o histórico.
+
+A execução nova somente começa depois dessa etapa.
+
+---
+
+18. Estrutura do histórico
+
+A estrutura deve ser:
+
+output/
+└── historico/
+    └── AAAAMM/
+        └── AAAAMMDD/
+            └── arquivos
+
+Exemplo:
+
+output/
+└── historico/
+    └── 202608/
+        └── 20260817/
+            ├── caixa.csv
+            ├── comissao.csv
+            └── carteira.csv
+
+No mês seguinte:
+
+historico/
+├── 202608/
+│   ├── 20260817/
+│   └── 20260818/
+│
+└── 202609/
+    ├── 20260901/
+    └── 20260902/
+
+---
+
+19. Data utilizada para arquivamento
+
+A pasta histórica de cada arquivo deve ser determinada individualmente pela data de criação do arquivo.
+
+Exemplo:
+
+arquivo A
+criado em 17/08/2026
+→ historico/202608/20260817/
+
+arquivo B
+criado em 18/08/2026
+→ historico/202608/20260818/
+
+Como o ambiente alvo principal é Windows, utilizar preferencialmente o timestamp adequado à data de criação disponível pelo sistema.
+
+Adicionar fallback razoável para sistemas onde creation time não esteja disponível de forma equivalente.
+
+---
+
+20. Criação automática das pastas
+
+Nenhuma pasta deve precisar existir previamente.
+
+Se não existir:
+
+output/
+
+criar.
+
+Se não existir:
+
+output/historico/
+
+criar.
+
+Se não existir:
+
+output/historico/202608/
+
+criar.
+
+Se não existir:
+
+output/historico/202608/20260818/
+
+criar.
+
+Utilizar:
+
+mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+ou comportamento equivalente.
+
+---
+
+21. Não arquivar o próprio histórico
+
+Quando analisar a pasta:
+
+output/
+
+não mover:
+
+historico/
+
+para dentro dela mesma.
+
+Somente resultados existentes na raiz devem ser candidatos ao arquivamento.
+
+---
+
+22. Colisão no histórico
+
+Imagine:
+
+historico/202608/20260818/caixa.csv
+
+já existe.
+
+Ao arquivar outro:
+
+caixa.csv
+
+não sobrescrever.
+
+Criar algo como:
+
+caixa_143522.csv
+
+ou:
+
+caixa_20260818_143522.csv
+
+O histórico nunca pode perder arquivos silenciosamente.
+
+---
+
+23. Arquivar apenas uma vez
+
+Ao executar dez queries, o histórico deve ser preparado apenas uma vez:
+
+arquivar resultados anteriores
+        ↓
+query 1
+query 2
+query 3
+...
+query 10
+
+Não fazer:
+
+query 1
+↓
+arquivar
+
+query 2
+↓
+arquivar novamente
+
+Senão os próprios resultados da execução atual seriam tratados como históricos.
+
+---
+
+24. Log da aplicação
+
+A interface deve possuir uma área de log.
+
+Exemplo:
+
+[08:10:01] 12 queries encontradas.
+[08:10:15] Arquivando resultados anteriores.
+[08:10:15] Arquivado: caixa.csv
+[08:10:16] [1/3] Executando Pagadoria / Caixa
+[08:10:16] QueryExecutionId: abc...
+[08:10:31] Salvo: caixa.csv
+[08:10:31] [2/3] Executando Pagadoria / Comissão
+...
+[08:11:04] Execução concluída.
+
+O log deve ajudar a diagnosticar problemas.
+
+Nunca imprimir:
+
+Secret Access Key
+Session Token
+
+---
+
+25. Tratamento de erros
+
+Tratar pelo menos:
+
+- nenhuma query encontrada;
+- nenhuma query selecionada;
+- parâmetro obrigatório vazio;
+- credenciais incompletas;
+- credenciais expiradas;
+- AccessDenied;
+- database inexistente;
+- tabela inexistente;
+- erro SQL;
+- workgroup inválido;
+- S3 inválido;
+- falta de permissão no S3;
+- query FAILED;
+- query CANCELLED;
+- erro no download;
+- erro ao criar pasta;
+- erro ao mover histórico.
+
+Mostrar mensagens compreensíveis para usuário não técnico.
+
+Evitar despejar somente um traceback.
+
+O traceback pode ser registrado internamente no log técnico se necessário, mas a mensagem principal deve ser amigável.
+
+---
+
+26. Comportamento em caso de query com erro
+
+Se forem selecionadas várias queries e uma falhar, implementar uma política explícita.
+
+Para a primeira versão, prefira:
+
+falhou uma query
+      ↓
+interromper execução
+      ↓
+mostrar qual query falhou
+      ↓
+mostrar motivo do Athena
+
+Estruturar o código de forma que futuramente seja possível adicionar:
+
+Continuar mesmo com erro
+
+como configuração.
+
+---
+
+27. Organização do código
+
+Evitar colocar tudo em uma função única.
+
+Separar responsabilidades.
+
+Sugestão:
+
+athena_extractor.py
+
+Config
+CredentialsParser
+QueryDiscovery
+ParameterParser
+HistoryManager
+AthenaClient
+ResultDownloader
+TkinterApp
+ParameterDialog
+
+Pode ser inicialmente um único arquivo para facilitar distribuição, desde que internamente esteja bem organizado em:
+
+- classes;
+- funções;
+- dataclasses.
+
+Posteriormente deve ser fácil quebrar em módulos.
+
+---
+
+28. Estrutura desejada do projeto-fonte
+
+Entregar:
+
+extrator_athena/
+│
+├── athena_extractor.py
+├── config.json
+├── requirements.txt
+├── build_exe.bat
+├── README.md
+│
+├── queries/
+│   ├── Pagadoria/
+│   │   ├── exemplo_anomes.sql
+│   │   └── exemplo_escritorio.sql
+│   │
+│   └── Auditoria/
+│       └── teste_conexao.sql
+│
+└── output/
+
+A pasta "output" pode ser criada dinamicamente.
+
+---
+
+29. requirements.txt
+
+Manter dependências mínimas.
+
+Preferencialmente:
+
+boto3
+pyinstaller
+
+Tkinter faz parte da instalação padrão adequada do Python no Windows e não deve ser adicionado via pip.
+
+Evitar Pandas na primeira versão se ele não for necessário.
+
+O objetivo é reduzir tamanho e complexidade.
+
+---
+
+30. PyInstaller
+
+Fornecer:
+
+build_exe.bat
+
+capaz de executar algo equivalente a:
+
+python -m pip install -r requirements.txt
+
+python -m PyInstaller ^
+    --noconfirm ^
+    --clean ^
+    --onefile ^
+    --windowed ^
+    --name ExtratorAthena ^
+    athena_extractor.py
+
+O resultado deve ser:
+
+dist/
+└── ExtratorAthena.exe
+
+---
+
+31. Requisito crítico do executável
+
+Quando rodando via PyInstaller "--onefile", NÃO utilizar ingenuamente:
+
+Path(__file__).parent
+
+para determinar a pasta onde ficam:
+
+config.json
+queries/
+output/
+
+A aplicação deve identificar a pasta real onde está o executável.
+
+Exemplo conceitual:
+
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
+
+Isso é obrigatório porque:
+
+ExtratorAthena.exe
+config.json
+queries/
+
+devem continuar externos ao executável.
+
+---
+
+32. Distribuição final
+
+O usuário final deve receber algo parecido com:
+
+Extrator Athena/
+│
+├── ExtratorAthena.exe
+├── config.json
+│
+└── queries/
+    ├── Pagadoria/
+    ├── Carteira/
+    ├── Auditoria/
+    └── Renova/
+
+Ele não deve receber obrigatoriamente:
+
+Python
+código-fonte
+venv
+requirements
+PyInstaller
+VS Code
+
+Esses itens pertencem ao ambiente de desenvolvimento.
+
+---
+
+33. UX da tela principal
+
+A interface deve ser simples e corporativa.
+
+Algo próximo de:
+
+┌─────────────────────────────────────────────────────┐
+│                  Extrator Athena                    │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│ 1. Credenciais AWS                                  │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ cole aqui o bloco copiado da AWS               │ │
+│ │                                                 │ │
+│ └─────────────────────────────────────────────────┘ │
+│                                                     │
+│ 2. Athena                                           │
+│ Region     [sa-east-1]                              │
+│ Database   [gold     ]                              │
+│ Workgroup  [primary  ]                              │
+│ S3         [s3://... ]                              │
+│                                                     │
+│ 3. Queries                                          │
+│                                                     │
+│ ☐ Executar todas                                    │
+│                                                     │
+│ Pagadoria / Caixa            anomes                 │
+│ Pagadoria / Comissão         anomes, escritorio     │
+│ Auditoria / Duplicidades     —                      │
+│                                                     │
+│ [ Abrir pasta queries ] [ Recarregar queries ]      │
+│                                                     │
+│ 4. Pasta de saída                                   │
+│ [ C:\...\output                  ] [ Escolher ]      │
+│                                                     │
+│                    [ Coletar parâmetros e executar ] │
+│                                                     │
+│ ─────────────────────────────────────────────────── │
+│ Log                                                 │
+│ ...                                                 │
+└─────────────────────────────────────────────────────┘
+
+Priorizar clareza em vez de estética sofisticada.
+
+---
+
+34. Botão "Abrir pasta queries"
+
+Adicionar:
+
+Abrir pasta queries
+
+No Windows deve abrir a pasta pelo Explorer.
+
+Isso facilita muito a manutenção.
+
+Um desenvolvedor pode simplesmente:
+
+copiar novo .sql
+
+para dentro da pasta.
+
+---
+
+35. Botão "Recarregar queries"
+
+Adicionar:
+
+Recarregar queries
+
+Assim não é necessário fechar o aplicativo depois de adicionar um novo SQL.
+
+---
+
+36. Segurança da aplicação SQL
+
+Esta aplicação é conceitualmente um:
+
+extrator
+
+e não uma ferramenta de administração do banco.
+
+Estruturar uma validação opcional que permita futuramente bloquear comandos como:
+
+DROP
+DELETE
+UPDATE
+MERGE
+INSERT
+ALTER
+CREATE
+
+e permitir prioritariamente:
+
+SELECT
+WITH
+
+Não implementar uma falsa segurança baseada apenas em "startswith()" se isso puder causar problemas com:
+
+-- comentário
+WITH ...
+
+Se implementar validação, fazer de maneira razoavelmente robusta.
+
+Também deixar claro que a autorização real continua sendo determinada por IAM/Athena.
+
+---
+
+37. Queries continuam sendo SQL normal
+
+O desenvolvedor deve conseguir abrir:
+
+queries/Pagadoria/caixa.sql
+
+e enxergar SQL perfeitamente compreensível.
+
+Exemplo:
+
+SELECT
+    p_anomes,
+    escritorio,
+    contrato,
+    produto,
+    vl_caixa
+
+FROM gold.tb_pagadoria
+
+WHERE p_anomes = '{{anomes}}'
+
+Não criar uma DSL complicada.
+
+O máximo de abstração inicial deve ser:
+
+{{parametro}}
+
+---
+
+38. Futuro: metadados declarativos
+
+A arquitetura deve ser preparada para uma futura V2 em que cada SQL possa possuir cabeçalho declarativo.
+
+Exemplo:
+
+-- @nome: Caixa Colchão
+-- @descricao: Caixa recebido da carteira Colchão
+-- @categoria: Pagadoria
+-- @owner: Recuperação ADM
+
+SELECT *
+FROM gold.tb_pagadoria
+WHERE p_anomes = '{{anomes}}'
+
+Não é obrigatório implementar tudo agora, mas não estruturar o sistema de maneira que torne isso difícil.
+
+---
+
+39. Futuro: tipos de parâmetros
+
+Preparar arquitetura para no futuro suportar:
+
+texto
+numero
+mes
+data
+lista
+boolean
+
+Exemplo futuro:
+
+parametros:
+
+  anomes:
+    tipo: mes
+
+  escritorio:
+    tipo: lista
+    valores:
+      - TODOS
+      - CRC
+      - BELLINATI
+      - NOVA_QUEST
+      - REDE_BRASIL
+      - PEREZ_REZENDE
+      - JA_REZENDE
+
+Assim:
+
+{{anomes}}
+
+poderia virar seletor de mês.
+
+E:
+
+{{escritorio}}
+
+poderia virar combobox.
+
+Por enquanto, Entry de texto é suficiente.
+
+---
+
+40. Futuro: query.sql + config.yaml
+
+A arquitetura futura poderá aceitar:
+
+queries/
+└── Pagadoria/
+    └── Caixa/
+        ├── query.sql
+        └── config.yaml
+
+Exemplo:
+
+nome: Caixa Colchão
+descricao: Caixa recebido por escritório
+categoria: Pagadoria
+
+arquivo_saida:
+  nome: caixa_colchao_{anomes}.csv
+
+parametros:
+  anomes:
+    tipo: mes
+    obrigatorio: true
+
+A primeira versão não precisa depender disso.
+
+---
+
+41. Filosofia do projeto
+
+O produto deve respeitar esta separação:
+
+DESENVOLVEDOR
+
+Python
+SQL
+Git
+Athena
+AWS
+queries/
+
+versus:
+
+USUÁRIO
+
+ExtratorAthena.exe
+
+Não distribuir um ambiente de desenvolvimento.
+
+Distribuir um produto.
+
+---
+
+42. Benefício organizacional
+
+O objetivo não é apenas facilitar downloads.
+
+Queremos substituir:
+
+Analista A
+query_final.sql
+
+Analista B
+query_final_v2.sql
+
+Analista C
+query_certa.sql
+
+Analista D
+query_final_final_agora_vai.sql
+
+por:
+
+queries oficiais
+        ↓
+Extrator Athena
+        ↓
+todos os usuários
+
+Cada relatório passa a possuir uma implementação oficial.
+
+---
+
+43. Versionamento futuro
+
+As queries devem poder ser mantidas em Git.
+
+Exemplo:
+
+extrator-athena/
+│
+├── app/
+└── queries/
+
+Assim será possível conhecer:
+
+quem alterou
+quando alterou
+qual era a versão anterior
+por que mudou
+
+O usuário final, porém, não precisa conhecer Git.
+
+---
+
+44. Escopo da V1
+
+A primeira versão deve priorizar estabilidade.
+
+Obrigatório:
+
+- Tkinter;
+- descoberta dinâmica de ".sql";
+- subpastas;
+- selecionar uma ou várias queries;
+- opção "Todas";
+- parâmetros "{{param}}";
+- formulário query por query;
+- reaproveitamento de parâmetros como sugestão;
+- credenciais AWS em um único copy/paste;
+- parsing automático de Access Key, Secret Key e Token;
+- credenciais apenas em memória;
+- Region;
+- Database;
+- Workgroup;
+- S3 Output Location;
+- execução via boto3;
+- polling do Athena;
+- execução em thread;
+- download direto do S3;
+- CSV;
+- escolha da pasta de saída;
+- criação automática de diretórios;
+- histórico antes da execução;
+- histórico por AAAAMM;
+- subpasta AAAAMMDD;
+- data baseada no arquivo;
+- proteção contra sobrescrita;
+- log;
+- tratamento de erros;
+- config externo;
+- queries externas;
+- compatibilidade com PyInstaller;
+- ".exe" não depender de recompilação para novas queries.
+
+Não adicionar complexidade desnecessária antes de tudo isso funcionar.
+
+---
+
+45. Critérios de aceite
+
+Considere o projeto aprovado somente se estes cenários funcionarem.
+
+Cenário 1
+
+Adicionar:
+
+queries/teste.sql
+
+Fechar e abrir aplicação.
+
+Resultado:
+
+teste
+
+aparece automaticamente.
+
+---
+
+Cenário 2
+
+Adicionar:
+
+SELECT *
+FROM tabela
+WHERE p_anomes = '{{anomes}}'
+
+Selecionar query.
+
+Resultado esperado:
+
+janela solicitando anomes
+
+---
+
+Cenário 3
+
+Selecionar três queries com parâmetros.
+
+Resultado esperado:
+
+formulário query 1
+formulário query 2
+formulário query 3
+confirmação
+execução
+
+Nenhuma consulta começa antes do fim da coleta.
+
+---
+
+Cenário 4
+
+Selecionar:
+
+Executar todas
+
+Resultado:
+
+todas as queries são incluídas no plano.
+
+---
+
+Cenário 5
+
+Colar:
+
+export AWS_ACCESS_KEY_ID="AAA"
+export AWS_SECRET_ACCESS_KEY="BBB"
+export AWS_SESSION_TOKEN="CCC"
+
+Resultado:
+
+as três credenciais são reconhecidas.
+
+---
+
+Cenário 6
+
+Já existem:
+
+output/
+├── a.csv
+└── b.csv
+
+Criados em:
+
+18/08/2026
+
+Nova execução.
+
+Resultado:
+
+output/
+├── novos resultados
+│
+└── historico/
+    └── 202608/
+        └── 20260818/
+            ├── a.csv
+            └── b.csv
+
+---
+
+Cenário 7
+
+A pasta:
+
+historico/202608/20260818
+
+não existe.
+
+Resultado:
+
+ela é criada automaticamente.
+
+---
+
+Cenário 8
+
+O histórico já contém:
+
+caixa.csv
+
+Resultado:
+
+o arquivo antigo não é sobrescrito.
+
+---
+
+Cenário 9
+
+Uma query Athena falha.
+
+Resultado:
+
+mostrar:
+
+Query X falhou
+
+Motivo:
+...
+
+sem travar silenciosamente.
+
+---
+
+Cenário 10
+
+Executar o ".exe" compilado.
+
+Ao lado dele existem:
+
+config.json
+queries/
+
+Resultado:
+
+o programa encontra esses arquivos corretamente.
+
+---
+
+Cenário 11
+
+Adicionar novo SQL depois do ".exe" já ter sido compilado.
+
+Resultado:
+
+a nova consulta aparece.
+
+Esse cenário é essencial.
+
+---
+
+46. Entregáveis
+
+Entregue todos estes arquivos completos:
+
+athena_extractor.py
+config.json
+requirements.txt
+build_exe.bat
+README.md
+
+Também entregue pelo menos três queries exemplo:
+
+queries/Pagadoria/caixa.sql
+queries/Pagadoria/caixa_escritorio.sql
+queries/Auditoria/teste_conexao.sql
+
+Uma query sem parâmetros.
+
+Uma query com um parâmetro.
+
+Uma query com dois parâmetros.
+
+---
+
+47. README
+
+O README deve explicar de maneira simples:
+
+1. arquitetura;
+2. como instalar dependências;
+3. como executar via Python;
+4. como gerar ".exe";
+5. como distribuir;
+6. como adicionar queries;
+7. como criar parâmetros;
+8. como colar credenciais;
+9. como configurar Athena;
+10. onde ficam os resultados;
+11. como funciona o histórico;
+12. troubleshooting básico.
+
+---
+
+48. Qualidade do código
+
+O código deve ser:
+
+- legível;
+- comentado apenas onde agrega valor;
+- modular;
+- tipado quando fizer sentido;
+- sem credenciais hardcoded;
+- sem caminhos pessoais;
+- sem dependências desnecessárias;
+- preparado para Windows;
+- fácil de evoluir.
+
+Evite overengineering.
+
+---
+
+49. Regra final
+
+Sempre que tiver que escolher entre:
+
+mais flexibilidade técnica
+
+e:
+
+menos configuração para o usuário final
+
+prefira:
+
+«menos configuração para o usuário final.»
+
+A aplicação existe justamente para transformar Athena em uma experiência próxima de:
+
+abrir
+↓
+selecionar
+↓
+colar
+↓
+executar
+↓
+receber arquivo
+
+O usuário não deve perceber que existe uma aplicação Python, boto3 ou uma API do Athena por trás.
+
+Primeiro apresente brevemente a arquitetura que pretende implementar.
+
+Depois produza os arquivos completos.
+
+Não entregue pseudocódigo no lugar das partes essenciais.
+
+O resultado deve estar suficientemente completo para ser executado e testado.Esse prompt já dá para entregar praticamente inteiro a um agente de código. O principal diferencial é que ele não descreve só “faça um Tkinter”: ele explica por que a arquitetura existe, o que pode mudar sem recompilar, o comportamento esperado em cada etapa e os critérios objetivos para saber se a implementação está correta.
