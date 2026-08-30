@@ -1,0 +1,449 @@
+# Instrução de Trabalho — Configuração do Python como Kernel no VS Code sem PowerShell
+
+## 1. Objetivo
+
+Orientar a criação de um ambiente virtual Python, a instalação do `ipykernel` e a configuração desse ambiente como interpretador e kernel de notebooks no Visual Studio Code, sem utilização do PowerShell.
+
+## 2. Escopo
+
+Esta instrução aplica-se a computadores Windows nos quais:
+
+* o PowerShell esteja bloqueado ou indisponível;
+* o Python esteja previamente instalado;
+* o Visual Studio Code esteja disponível;
+* seja necessário executar arquivos `.py` ou notebooks `.ipynb`;
+* a instalação de pacotes possa exigir um repositório corporativo.
+
+## 3. Conceitos
+
+* **Interpretador Python:** executa arquivos `.py` e é utilizado pelo terminal, pelo depurador e pelos recursos de análise de código do VS Code.
+* **Kernel Jupyter:** executa as células de notebooks `.ipynb`.
+* **Ambiente virtual (`venv`):** ambiente isolado que mantém as bibliotecas do projeto separadas das demais instalações do computador.
+* **`ipykernel`:** pacote responsável por disponibilizar um ambiente Python como kernel de notebook.
+
+A seleção do interpretador e a seleção do kernel são configurações distintas. Ambas devem apontar para o mesmo ambiente virtual.
+
+## 4. Pré-requisitos
+
+Antes de iniciar, confirmar:
+
+* Python instalado no computador;
+* caminho completo do `python.exe` conhecido;
+* extensões **Python** e **Jupyter**, da Microsoft, instaladas no VS Code;
+* permissão de gravação na pasta do projeto;
+* endereço do repositório corporativo de pacotes Python, quando aplicável.
+
+Exemplo de caminho para o Python:
+
+```text
+C:\Program Files\Python311\python.exe
+```
+
+O caminho real pode variar de acordo com a instalação existente no computador.
+
+## 5. Procedimento principal — Prompt de Comando no VS Code
+
+### 5.1. Abrir o Prompt de Comando
+
+No VS Code:
+
+1. Acesse **Terminal → New Terminal**.
+2. Clique na seta localizada ao lado do botão `+`.
+3. Selecione **Select Default Profile**.
+4. Escolha **Command Prompt**.
+5. Feche o terminal anterior, caso esteja utilizando PowerShell.
+6. Abra um novo terminal.
+
+O terminal deverá identificar-se como `cmd.exe` ou **Command Prompt**.
+
+### 5.2. Acessar a pasta do projeto
+
+Abra a pasta do projeto pelo menu:
+
+```text
+File → Open Folder
+```
+
+Confirme que o terminal está posicionado nessa pasta.
+
+Exemplo:
+
+```bat
+cd C:\Projetos\Pagadoria
+```
+
+### 5.3. Criar o ambiente virtual
+
+Execute o comando abaixo, substituindo o caminho pelo `python.exe` desejado:
+
+```bat
+"C:\caminho\do\Python311\python.exe" -m venv .venv
+```
+
+Exemplo:
+
+```bat
+"C:\Program Files\Python311\python.exe" -m venv .venv
+```
+
+Após a execução, a pasta abaixo deverá existir:
+
+```text
+C:\Projetos\Pagadoria\.venv
+```
+
+Não é necessário ativar o ambiente virtual.
+
+### 5.4. Confirmar a versão utilizada
+
+Execute:
+
+```bat
+".venv\Scripts\python.exe" --version
+```
+
+Em seguida:
+
+```bat
+".venv\Scripts\python.exe" -c "import sys; print(sys.executable); print(sys.version)"
+```
+
+O caminho exibido deverá terminar em:
+
+```text
+\.venv\Scripts\python.exe
+```
+
+A versão apresentada deverá corresponder ao Python selecionado para criar o ambiente.
+
+### 5.5. Instalar o `ipykernel`
+
+Quando o computador possuir acesso normal ao repositório configurado:
+
+```bat
+".venv\Scripts\python.exe" -m pip install --upgrade pip
+".venv\Scripts\python.exe" -m pip install ipykernel
+```
+
+Quando for obrigatório utilizar um repositório corporativo:
+
+```bat
+".venv\Scripts\python.exe" -m pip install ipykernel --index-url "https://REPOSITORIO-CORPORATIVO/simple"
+```
+
+Substitua o endereço de exemplo pelo repositório autorizado pela empresa.
+
+Não utilize repositórios externos sem autorização.
+
+### 5.6. Registrar o kernel
+
+Execute:
+
+```bat
+".venv\Scripts\python.exe" -m ipykernel install --user --name pagadoria --display-name "Python - Pagadoria"
+```
+
+Parâmetros utilizados:
+
+* `--user`: registra o kernel somente para o usuário atual, normalmente sem exigir permissão administrativa;
+* `--name pagadoria`: define o identificador interno do kernel;
+* `--display-name "Python - Pagadoria"`: define o nome exibido no VS Code.
+
+Para outro projeto, substitua `pagadoria` pelo nome correspondente, evitando espaços e caracteres especiais no parâmetro `--name`.
+
+### 5.7. Selecionar o interpretador
+
+No VS Code:
+
+1. Pressione `Ctrl + Shift + P`.
+2. Execute **Python: Select Interpreter**.
+3. Selecione **Enter interpreter path**.
+4. Clique em **Find**.
+5. Localize o arquivo:
+
+```text
+C:\caminho\do\projeto\.venv\Scripts\python.exe
+```
+
+6. Confirme a seleção.
+
+### 5.8. Selecionar o kernel
+
+1. Abra o notebook `.ipynb`.
+2. Clique em **Select Kernel**, no canto superior direito.
+3. Procure por uma das opções:
+
+```text
+Python Environments → .venv
+```
+
+ou:
+
+```text
+Jupyter Kernels → Python - Pagadoria
+```
+
+4. Selecione o ambiente configurado.
+
+## 6. Validação
+
+### 6.1. Validar pelo Prompt de Comando
+
+Execute:
+
+```bat
+".venv\Scripts\python.exe" -c "import sys, ipykernel; print('Executavel:', sys.executable); print('Versao:', sys.version); print('IPyKernel:', ipykernel.__version__)"
+```
+
+A validação será considerada bem-sucedida quando:
+
+* o executável apontar para `.venv\Scripts\python.exe`;
+* a versão do Python estiver correta;
+* a versão do `ipykernel` for exibida sem erro.
+
+### 6.2. Validar pelo notebook
+
+Execute a seguinte célula no notebook:
+
+```python
+import sys
+import ipykernel
+
+print("Executável:", sys.executable)
+print("Versão:", sys.version)
+print("IPyKernel:", ipykernel.__version__)
+```
+
+O campo `Executável` deverá apontar para o Python dentro da pasta `.venv`.
+
+## 7. Procedimento alternativo — Interface do VS Code
+
+Utilize este procedimento quando o Prompt de Comando também estiver indisponível.
+
+### 7.1. Selecionar o interpretador
+
+1. Pressione `Ctrl + Shift + P`.
+2. Execute **Python: Select Interpreter**.
+3. Selecione **Enter interpreter path**.
+4. Localize manualmente:
+
+```text
+C:\caminho\do\projeto\.venv\Scripts\python.exe
+```
+
+### 7.2. Selecionar o kernel
+
+1. Abra o notebook `.ipynb`.
+2. Clique em **Select Kernel**.
+3. Entre em **Python Environments**.
+4. Escolha o ambiente `.venv`.
+
+Se o VS Code informar que o `ipykernel` não está instalado, clique em **Install**.
+
+A instalação automática somente funcionará se o VS Code conseguir acessar o repositório Python permitido pela empresa.
+
+## 8. Procedimento alternativo — Arquivo `.bat`
+
+Quando o usuário puder executar arquivos `.bat`, crie um arquivo chamado:
+
+```text
+configurar_ambiente_python.bat
+```
+
+Salve-o na pasta principal do projeto com o conteúdo abaixo:
+
+```bat
+@echo off
+setlocal
+
+set "PYTHON_BASE=C:\caminho\do\Python311\python.exe"
+set "VENV_DIR=%~dp0.venv"
+set "KERNEL_NAME=pagadoria"
+set "KERNEL_DISPLAY=Python - Pagadoria"
+
+echo ==============================================
+echo Configuracao do ambiente Python
+echo ==============================================
+
+if not exist "%PYTHON_BASE%" (
+    echo ERRO: Python nao encontrado em:
+    echo %PYTHON_BASE%
+    echo.
+    echo Corrija a variavel PYTHON_BASE no arquivo BAT.
+    pause
+    exit /b 1
+)
+
+echo.
+echo [1/4] Validando Python...
+"%PYTHON_BASE%" --version
+
+if errorlevel 1 (
+    echo ERRO: Nao foi possivel executar o Python informado.
+    pause
+    exit /b 1
+)
+
+echo.
+echo [2/4] Criando ambiente virtual...
+"%PYTHON_BASE%" -m venv "%VENV_DIR%"
+
+if errorlevel 1 (
+    echo ERRO: Nao foi possivel criar o ambiente virtual.
+    pause
+    exit /b 1
+)
+
+echo.
+echo [3/4] Instalando ipykernel...
+"%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip
+"%VENV_DIR%\Scripts\python.exe" -m pip install ipykernel
+
+if errorlevel 1 (
+    echo ERRO: Nao foi possivel instalar o ipykernel.
+    echo Verifique o repositorio corporativo e a conexao de rede.
+    pause
+    exit /b 1
+)
+
+echo.
+echo [4/4] Registrando kernel...
+"%VENV_DIR%\Scripts\python.exe" -m ipykernel install --user --name "%KERNEL_NAME%" --display-name "%KERNEL_DISPLAY%"
+
+if errorlevel 1 (
+    echo ERRO: Nao foi possivel registrar o kernel.
+    pause
+    exit /b 1
+)
+
+echo.
+echo Validando ambiente...
+"%VENV_DIR%\Scripts\python.exe" -c "import sys, ipykernel; print('Executavel:', sys.executable); print('Versao:', sys.version); print('IPyKernel:', ipykernel.__version__)"
+
+echo.
+echo ==============================================
+echo Configuracao concluida.
+echo ==============================================
+echo.
+echo No VS Code, selecione:
+echo Interpretador: .venv\Scripts\python.exe
+echo Kernel: %KERNEL_DISPLAY%
+echo.
+pause
+
+endlocal
+```
+
+Antes de executar, altere esta linha:
+
+```bat
+set "PYTHON_BASE=C:\caminho\do\Python311\python.exe"
+```
+
+Informe o caminho real do Python instalado no computador.
+
+Para instalar pelo repositório corporativo, substitua:
+
+```bat
+"%VENV_DIR%\Scripts\python.exe" -m pip install ipykernel
+```
+
+por:
+
+```bat
+"%VENV_DIR%\Scripts\python.exe" -m pip install ipykernel --index-url "https://REPOSITORIO-CORPORATIVO/simple"
+```
+
+## 9. Tratamento de problemas
+
+### Kernel não aparece no VS Code
+
+1. Pressione `Ctrl + Shift + P`.
+2. Execute **Python Environments: Refresh All Environment Managers**.
+3. Execute **Developer: Reload Window**.
+4. Abra novamente o notebook.
+5. Verifique o menu **Select Kernel**.
+
+### VS Code seleciona outro Python
+
+Execute novamente:
+
+```text
+Ctrl + Shift + P
+→ Python: Select Interpreter
+→ Enter interpreter path
+```
+
+Selecione explicitamente:
+
+```text
+.venv\Scripts\python.exe
+```
+
+### Erro informando que o `ipykernel` não existe
+
+Execute:
+
+```bat
+".venv\Scripts\python.exe" -m pip install ipykernel
+```
+
+Não utilize apenas:
+
+```bat
+pip install ipykernel
+```
+
+O comando `pip` isolado pode instalar o pacote em outra versão do Python.
+
+### Erro de acesso ao repositório
+
+Confirmar:
+
+* endereço do repositório corporativo;
+* conexão com a rede ou VPN corporativa;
+* autorização para baixar o pacote;
+* configuração de certificado;
+* necessidade de proxy.
+
+Não desabilite a validação SSL sem autorização formal.
+
+### Ambiente virtual copiado de outro computador
+
+Não reutilize um `.venv` copiado de outra máquina. Ambientes virtuais podem armazenar referências ao Python original e deixar de funcionar quando transferidos.
+
+O ambiente deve ser recriado localmente:
+
+```bat
+"C:\caminho\do\Python311\python.exe" -m venv .venv
+```
+
+Depois, reinstale as dependências do projeto.
+
+## 10. Critérios de conclusão
+
+A configuração estará concluída quando:
+
+* a pasta `.venv` existir dentro do projeto;
+* o comando de validação apontar para `.venv\Scripts\python.exe`;
+* o `ipykernel` estiver instalado;
+* o kernel estiver registrado;
+* o VS Code utilizar o `.venv` como interpretador;
+* o notebook utilizar o mesmo `.venv` como kernel;
+* uma célula de teste for executada sem erros.
+
+## 11. Controle obrigatório
+
+Todos os comandos devem utilizar o caminho completo do `python.exe`, preferencialmente:
+
+```text
+.venv\Scripts\python.exe
+```
+
+Essa prática evita dependência de:
+
+* PowerShell;
+* ativação manual do ambiente;
+* variável de ambiente `PATH`;
+* associação incorreta com outra versão do Python;
+* permissões administrativas para instalação global.
