@@ -1,0 +1,512 @@
+from __future__ import annotations
+
+import base64
+import getpass
+import json
+import os
+
+import struct
+from pathlib import Path
+
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+
+# Identifica o formato do arquivo criptografado.
+ASSINATURA = b"ARQUIVO_CRIPTO_V1"
+
+TAMANHO_SALT = 16
+ITERACOES_PBKDF2 = 600_000
+
+# Número inteiro de 4 bytes usado para armazenar
+# o tamanho dos metadados.
+FORMATO_TAMANHO_METADATA = ">I"
+TAMANHO_CABECALHO_METADATA = struct.calcsize(
+    FORMATO_TAMANHO_METADATA
+)
+
+
+def gerar_chave(senha: str, salt: bytes) -> bytes:
+    """
+    Deriva uma chave Fernet de 32 bytes a partir da senha.
+
+
+    A mesma senha e o mesmo salt sempre produzem a mesma chave.
+    """
+    if not senha:
+        raise ValueError("A senha não pode ser vazia.")
+
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=ITERACOES_PBKDF2,
+    )
+
+    chave = kdf.derive(senha.encode("utf-8"))
+
+    return base64.urlsafe_b64encode(chave)
+
+
+def montar_pacote(
+    caminho_arquivo: Path,
+    senha: str,
+) -> bytes:
+    """
+    Lê o arquivo e monta o pacote criptografado.
+
+    Estrutura antes do Base64:
+
+        assinatura
+        salt
+        tamanho dos metadados
+        metadados criptografados
+        conteúdo criptografado
+    """
+    dados_originais = caminho_arquivo.read_bytes()
+
+    salt = os.urandom(TAMANHO_SALT)
+    chave = gerar_chave(senha, salt)
+    fernet = Fernet(chave)
+
+    metadata = {
+        "nome_original": caminho_arquivo.name,
+        "tamanho_original": len(dados_originais),
+        "versao": 1,
+    }
+
+    metadata_json = json.dumps(
+        metadata,
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    metadata_criptografada = fernet.encrypt(
+        metadata_json
+    )
+
+    conteudo_criptografado = fernet.encrypt(
+        dados_originais
+    )
+
+    tamanho_metadata = struct.pack(
+        FORMATO_TAMANHO_METADATA,
+        len(metadata_criptografada),
+    )
+
+    return (
+        ASSINATURA
+        + salt
+        + tamanho_metadata
+        + metadata_criptografada
+        + conteudo_criptografado
+    )
+
+
+def criptografar_arquivo(
+    caminho_arquivo: str | Path,
+    caminho_txt_saida: str | Path | None,
+    senha: str,
+) -> Path:
+    """
+    Criptografa qualquer arquivo e salva o resultado em um TXT Base64.
+
+    Exemplo:
+
+        relatório.xlsx
+            ↓
+        relatório.xlsx.criptografado.txt
+    """
+    caminho_arquivo = Path(caminho_arquivo).expanduser().resolve()
+
+    if not caminho_arquivo.exists():
+        raise FileNotFoundError(
+            f"Arquivo não encontrado: {caminho_arquivo}"
+        )
+
+    if not caminho_arquivo.is_file():
+        raise ValueError(
+            "O caminho informado precisa apontar para um arquivo."
+        )
+
+    if caminho_txt_saida is None:
+        caminho_txt_saida = caminho_arquivo.with_name(
+            caminho_arquivo.name + ".criptografado.txt"
+        )
+    else:
+        caminho_txt_saida = (
+            Path(caminho_txt_saida)
+            .expanduser()
+            .resolve()
+        )
+
+    pacote = montar_pacote(
+        caminho_arquivo=caminho_arquivo,
+        senha=senha,
+    )
+
+    texto_base64 = base64.b64encode(
+        pacote
+    ).decode("ascii")
+
+    caminho_txt_saida.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    caminho_txt_saida.write_text(
+        texto_base64,
+        encoding="utf-8",
+    )
+
+    return caminho_txt_saida
+
+
+def ler_pacote_base64(
+    caminho_txt: Path,
+) -> bytes:
+    """
+    Lê e valida o Base64 armazenado no arquivo TXT.
+    """
+    texto_base64 = caminho_txt.read_text(
+        encoding="utf-8"
+    ).strip()
+
+    if not texto_base64:
+        raise ValueError(
+            "O arquivo criptografado está vazio."
+        )
+
+    try:
+        return base64.b64decode(
+            texto_base64,
+            validate=True,
+        )
+    except (ValueError, base64.binascii.Error) as erro:
+        raise ValueError(
+            "O arquivo não contém um Base64 válido."
+        ) from erro
+
+
+def separar_pacote(
+    pacote: bytes,
+) -> tuple[bytes, bytes, bytes]:
+    """
+    Separa salt, metadados criptografados e conteúdo criptografado.
+    """
+    tamanho_minimo = (
+        len(ASSINATURA)
+        + TAMANHO_SALT
+        + TAMANHO_CABECALHO_METADATA
+    )
+
+    if len(pacote) <= tamanho_minimo:
+        raise ValueError(
+            "Arquivo criptografado inválido ou incompleto."
+        )
+
+    if not pacote.startswith(ASSINATURA):
+        raise ValueError(
+            "O arquivo não possui uma assinatura reconhecida."
+        )
+
+    posicao = len(ASSINATURA)
+
+    salt = pacote[
+        posicao:posicao + TAMANHO_SALT
+    ]
+    posicao += TAMANHO_SALT
+
+    bytes_tamanho_metadata = pacote[
+        posicao:posicao + TAMANHO_CABECALHO_METADATA
+    ]
+    posicao += TAMANHO_CABECALHO_METADATA
+
+    tamanho_metadata = struct.unpack(
+        FORMATO_TAMANHO_METADATA,
+        bytes_tamanho_metadata,
+    )[0]
+
+    if tamanho_metadata <= 0:
+        raise ValueError(
+            "Tamanho dos metadados inválido."
+        )
+
+    fim_metadata = posicao + tamanho_metadata
+
+    if fim_metadata >= len(pacote):
+        raise ValueError(
+            "Arquivo criptografado incompleto."
+        )
+
+    metadata_criptografada = pacote[
+        posicao:fim_metadata
+    ]
+
+    conteudo_criptografado = pacote[
+        fim_metadata:
+    ]
+
+    return (
+        salt,
+        metadata_criptografada,
+        conteudo_criptografado,
+    )
+
+
+def descriptografar_arquivo(
+    caminho_txt_criptografado: str | Path,
+    pasta_saida: str | Path | None,
+    senha: str,
+    sobrescrever: bool = False,
+) -> Path:
+    """
+    Descriptografa o TXT e recupera o arquivo original.
+
+    O nome e a extensão originais são restaurados automaticamente.
+    """
+    caminho_txt = (
+        Path(caminho_txt_criptografado)
+        .expanduser()
+        .resolve()
+    )
+
+    if not caminho_txt.exists():
+        raise FileNotFoundError(
+            f"Arquivo criptografado não encontrado: {caminho_txt}"
+        )
+
+    if not caminho_txt.is_file():
+        raise ValueError(
+            "O caminho criptografado precisa ser um arquivo."
+        )
+
+    pacote = ler_pacote_base64(caminho_txt)
+
+    (
+        salt,
+        metadata_criptografada,
+        conteudo_criptografado,
+    ) = separar_pacote(pacote)
+
+    chave = gerar_chave(
+        senha=senha,
+        salt=salt,
+    )
+
+    fernet = Fernet(chave)
+
+    try:
+        metadata_json = fernet.decrypt(
+            metadata_criptografada
+        )
+
+        dados_originais = fernet.decrypt(
+            conteudo_criptografado
+        )
+
+    except InvalidToken as erro:
+        raise ValueError(
+            "Senha incorreta ou arquivo criptografado corrompido."
+        ) from erro
+
+    try:
+        metadata = json.loads(
+            metadata_json.decode("utf-8")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as erro:
+        raise ValueError(
+            "Não foi possível interpretar os metadados."
+        ) from erro
+
+    nome_original = metadata.get("nome_original")
+
+    if not nome_original:
+        raise ValueError(
+            "O nome original não foi encontrado nos metadados."
+        )
+
+    # Path(...).name evita que um nome malicioso
+    # grave arquivos fora da pasta escolhida.
+    nome_original = Path(nome_original).name
+
+    if pasta_saida is None:
+        pasta_saida = caminho_txt.parent
+    else:
+        pasta_saida = (
+            Path(pasta_saida)
+            .expanduser()
+            .resolve()
+        )
+
+    pasta_saida.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    caminho_saida = pasta_saida / nome_original
+
+    if caminho_saida.exists() and not sobrescrever:
+        caminho_saida = gerar_nome_disponivel(
+            caminho_saida
+        )
+
+    tamanho_esperado = metadata.get(
+        "tamanho_original"
+    )
+
+    if (
+        tamanho_esperado is not None
+        and len(dados_originais) != tamanho_esperado
+    ):
+        raise ValueError(
+            "O tamanho recuperado é diferente do tamanho original. "
+            "O arquivo pode estar corrompido."
+        )
+
+    caminho_saida.write_bytes(
+        dados_originais
+    )
+
+    return caminho_saida
+
+
+def gerar_nome_disponivel(
+    caminho: Path,
+) -> Path:
+    """
+    Evita sobrescrever um arquivo existente.
+
+    Exemplo:
+
+        relatorio.xlsx
+        relatorio_recuperado_1.xlsx
+        relatorio_recuperado_2.xlsx
+    """
+    pasta = caminho.parent
+    sufixo = caminho.suffix
+    nome_base = caminho.stem
+
+    contador = 1
+
+    while True:
+        candidato = pasta / (
+            f"{nome_base}_recuperado_{contador}{sufixo}"
+        )
+
+        if not candidato.exists():
+            return candidato
+
+        contador += 1
+
+
+def solicitar_caminho(
+    mensagem: str,
+) -> Path:
+    """
+    Solicita um caminho e remove aspas inseridas pelo usuário.
+    """
+    valor = input(mensagem).strip()
+
+    valor = valor.strip('"').strip("'")
+
+    return Path(valor).expanduser()
+
+
+def menu() -> None:
+    """
+    Menu simples para criptografar e descriptografar arquivos.
+    """
+    print()
+    print("=" * 60)
+    print("CRIPTOGRAFADOR DE ARQUIVOS")
+    print("=" * 60)
+    print("1 - Criptografar arquivo")
+    print("2 - Descriptografar arquivo")
+    print("0 - Sair")
+    print()
+
+    opcao = input("Escolha uma opção: ").strip()
+
+    if opcao == "1":
+        caminho_entrada = solicitar_caminho(
+            "Caminho do arquivo que será criptografado: "
+        )
+
+        senha = getpass.getpass(
+            "Digite a senha: "
+        )
+
+        confirmacao = getpass.getpass(
+            "Confirme a senha: "
+        )
+
+        if senha != confirmacao:
+            raise ValueError(
+                "As senhas digitadas são diferentes."
+            )
+
+        caminho_saida = criptografar_arquivo(
+            caminho_arquivo=caminho_entrada,
+            caminho_txt_saida=None,
+            senha=senha,
+        )
+
+        print()
+        print("Arquivo criptografado com sucesso.")
+        print(f"Saída: {caminho_saida}")
+
+    elif opcao == "2":
+        caminho_entrada = solicitar_caminho(
+            "Caminho do TXT criptografado: "
+        )
+
+        pasta_digitada = input(
+            "Pasta de saída "
+            "(pressione Enter para usar a mesma pasta): "
+        ).strip()
+
+        pasta_saida = (
+            Path(pasta_digitada)
+            if pasta_digitada
+            else None
+        )
+
+        senha = getpass.getpass(
+            "Digite a senha: "
+        )
+
+        caminho_recuperado = descriptografar_arquivo(
+            caminho_txt_criptografado=caminho_entrada,
+            pasta_saida=pasta_saida,
+            senha=senha,
+            sobrescrever=False,
+        )
+
+        print()
+        print("Arquivo recuperado com sucesso.")
+        print(f"Saída: {caminho_recuperado}")
+
+    elif opcao == "0":
+        print("Programa encerrado.")
+
+    else:
+        raise ValueError(
+            "Opção inválida."
+        )
+
+
+if __name__ == "__main__":
+    try:
+        menu()
+
+    except KeyboardInterrupt:
+        print("\nOperação cancelada pelo usuário.")
+
+    except Exception as erro:
+        print()
+        print(f"Erro: {erro}")
+
+
+
+QVJRVUlWT19DUklQVE9fVjE3TcWl34SZnz15t0HJbYnJAAAA5GdBQUFBQUJxeHdsMG0zOHRRaG1ydUp6V2dqcjZJNG9SVi1NSVh0OVVNZk44U285UUNMUmdyRWtTS2N3czRpTzdkaE5jT3NMZ3p5aG9IMzNHdEFRQUc1dEc5UjdDZWMtaUVlZFpsS0Z4ZHlUSU9meHFLWGdfZ045WHdUUG41SXhZcVNwX0FlYVZzUjVIMlh2Y2NHQjRraWNPOXF1aGxSdVpIWE1wNDByNzc3MkNINkI4OGdNTjFoeVhSbUF5Mi1sVnVqQXZPQ2doTXN5WDc5aWtXT0FFbDJNRjI2bGdKN3BxTEE9PWdBQUFBQUJxeHdsMF9RTkM1NGFGbWtJcnY5emRQYzNselhLS25NUWt3Z0tzcTJWUnpiRjhTcXRjNGVUYkFQTVVwSF9ROGdWdEQwdGVGcE8zREpoWGUyX2I3MnQ1bnVCY1JkeGZVbjBLN2h0NV9FVDJBVjlVdkhqNWpVdXI0MnplV182ZVdjOVlmS1ZOdGJ3V3Z2LVo4OFpORXR6Z3ZiMU1OUVExcmphOEpucmJlbzRpclRNdnplOWcyY3NUdWRHT0FoMUE4RGlmS1N5RGJaYUpJZkN1dEFQd1oyWGIzeWJEWF92eGl0OXdIVDUtY3pfN3RQUTRSeUZYcGJzM0IxSjY0akZybVNoVzBSUEpiNWV0Z29CaElmRzJBQ2pvS0NlSzJ2NHEtWHVzYVFGVTIwWF9sWndvajJXUEJaaEhjWlNIcXhkZFpQYW04SC1YbDVYMDBYQnBabGY3NU5STUo1QmM2ckxnd2NwTFp1ZUxNaDZ3NWhCTEVwbmpZS2hfaHFJeHB4a1NzS1hwOTB2bTNyZksyOXFRdFNVQzdDRnVoeVZaa1NsejJHWEl2WXdTdml3UG80RERPRGQ2NkhBZnJ4M2ZYTkRDUzI4U0pXZDBMUVZkeFFZNnUyUTBNcjlSa2tDZEl6WmUzc3F2X1lVRXd0bmNNWlVjNWRKa1JYaVZMYlhEZUVMQ19qdEhERXpyNDZTcnZHMTFPMXotdHEtYkpnTzk1b1c4ZmtEYjMzcDJHSjNnXzcyTjJPdWh4VndDMGdOckphcnJjWlo3QlVmR2xNVnJnNkFFZGM0eU9zcUpSVXRqa1h3MW5CSG1mY1lrRUFwNloweGlKSTF6bUt1bG5QeFRFUks5cXhLU01xc2t4Vi1jSEhJekROYk1heFNGWG15RUc4OFFCMFpTQVJ5NjlVZ1FiV0xzcjNqWC11ZFMwT3V4YUxKR2F4SEFYTnBtZjVVVlU4SFFRSlV5ZE5DUkIxSjVNMUFHUWVIYzR0OGFoeHNyQUkzbWtHdHBYLUI3dHdVWHZhbDZnNGRMRTJicWM4Z2Q1UTFUdy05NThlSmJ2d0VmbHZvYXc0SUZLWU0yQWtWY1k2T1A2TVdrZzZMSjV6M3FIclk5T2ttUy1sNlVPOWp0YVQ0LVQ2ZlFQbWVqZjYzRnV4enl2R0RsclNZZ3V6Tk5CUC1NclVCMjBnVEM0c3lMT1J5TGIyeVAzS0hUOWNkbmtvR3BsQTZQUUZDeGtqZnZvTm1CdVYwTV8tTVFrY0VqYnc2QjNaRHlHVkJYaVdFcHdXa3FvM1JoU0liWkhWWmxpZUczR0xpWGpRMWRORVdHQ0tnM2FVb1JPUUpkekh4d1hXZXBKb0NKRHZDMmxBcFhnaTJWcm5Rd0ZFc0p4R0pzY2xOLXJaZXduWUlEbGlJMEdQRFY2cjZ2MWg3WmFjTXNvMXlIOXJjSUNZT0NaYXhORWdJb1VQYVJPS0hkZ0FOM0RsZ1BranFyMmJSWUgydlRTOWZZS0djYVNKZU9ld2dTZUdJbWN4TG5fR3F1bHlKaGM5NG1HZlFZQXRzNjdWRG1HMEM3NGdYajljektRRW5wMUpfeElwbmNBb2pnQldZVmUwaFRfU2xhSnMtTnJsZ2RfZXhGdlBqMnZzaEJFUkdXN2dZbUhoeVB2VjFoeTFyOVY2anJsTlpVWkxmTERzUHVmWDBFWUZSaHl2MVpOdVpNSGZ3YXRZVk1yR1BhWFF5V3c5a1ktRmlubmFOLXRybG8yTURpUmUxNWZDX0xXTl9jTUJhM1RPejNtSy1MUDFKSEZGUUlLN3hYeVRTdElxbFlRRWFmWkxwQkdFRWh2ZFNmQjVmdksyXzl6V3RoVHRsdnV5ZHNhY3NhTzVyUEZCeF91ZGl3dU9qbE9mRDhERHZLNjRmT3B6VzVEZDlTQmhWQjM4Y3dBTVFOM0FVWDRpNkZpMFV0a3FTd1FKaUY1TGlkZjhXSngybENBUXlyZ09QeURHM2QtNW9KSU1QbG1zQ05fT09CYW9CcnA0UW5ubnFUMU16VnJRX1pXVU1QWjYyR2tnNDV1T1RsVFRqVXBwUHZaN1FrcHhFaXp1YWtpQ2NVaWppc2Z6cmRBTTNMWDh1emhXQkp5QkREM1h0MTR5UTZtdnhMVmpMNUktcXE1bzE4eTVOMzZXMnlKME5Qa0lfWXZHZVhIY09MTmdWbE81UTVBY3h2dmtCdDV5ZUNUWkhvOXJreHZyNjVmZ05pYVhwMFVFc1ZNR19WNGYzaXJwaUhXTDVXMEV5RVN3T1lPRFJhRGFtVlRUZndoY0UzR2x1TXc5SFA0QXQwWE1HcTN1cFZUTS05UXBIVVU3aVFDeFR3NHROSU1qU2lBYkpZUkZSN212VlNSYnU0aWdQaF9CZXdGLS1rSUFsd3lvUmJUOUl2S3RITENqd1JjMHNlUzlZNWt2V3pPMGNlS2tRX1dPMzVOcTlCUUV2V3R0OGdyQnlFcTdBaVFzX0NBd3NKeE9mT09ORTc1UlpVU2t4RE9KbkltTHpYRDVwczdyV1loRG42V1ZPQWJVQ05uQ3hJdTZZSHVYY3JrMDVneU4xNGJ0ejI2QVJuOFJaRi1vckNEdC04bWg5blJRbmRXWE15U1czTjJpeHRLY3JhSHFQRW1zYk5tZ2sxYTdZUXZhRnp4M1Nqdk5IbTE1MHRFNWNGT21zS1J4ampHenZNTDd4aExteFFUVDYzX1FFdi1oY1ViaFZ0Mk5ncGs3V081QXZDVHUyVVFhbnJCd0NLUldjbUcxZlJDZVhFZEd6dXBGcnkwTm53SXQwc2F1WlhNTFNDbHNkOFc3cWU3SUJHcC1NdlBJOTVObkE1MXNnVTV3SWFOSF81Sm9YS2w3SVluNFNETFlvVzZzblVlYUpBQmV5THlPaWdBQUtlNS1xTkROUWlaSU5admtFeDlucGJNaERHbnBDMlp0WDl5RzJZZVlFQkN4SnhnNUxFaUN4a21zMVlsc1dqWFRrMzJZM192YVVBdjB5ZDk0Y2ZDSU1IazJDOGZiOUp4ZVVpWjRON2NLaE9xTU9lM0doX1B2X1pQN2lybmk0RWJ4d0hxS21Va0RWZjZGTm1yY1V0R2o5b1AtTkYwTU5xNVB3SUFFS2gzYXNCU2t5TnhFMkkzVXBCbkNjUjRPNjU4ZWJ2aFRHWmxHODRSQldvdWFjZk85bWp6N2d5TVJpdFJpMEJ3LVZvSEpYak4wMGU5Z2VjRVBQNUlPSHM0cHJNOGIybVY4U1RraURqcUNaeUh1enFESVpwZVZldTBQMUhaSS1zQVR0cFRUWkQwY2djOEVzS0wxM2dKRkpndGdXY0luQWpvNDhoRjZlWE1OaWxVMTRsMFBPWVlwdnZrZG8ybEhNdFZCaTJRcm9fWFozdklNMGNXdGdaRVhXR1lPOHpyTE4yNDRLTmFDY3R1eml3aGlJRUp3eVl3c3pXajRKVmNzcE0wUjRVSFdMeXN6UVdxNGRxRHZWei1PcUhVcUdiXzMtWks4T1dPSEV5a1JNTG9HbU82ZzE2SmdYbkhaZ2dGR2todWFpM0R0T3REQ1FGMEZBVVRvWmg3UWFQMW9fWGJiQ18yQi00VXgzS1lxZVR5R01oNTRqLVh3cDE1SkUyUzhYVndmcXFGM2VCWXZqTmo1bWFWclRxYjMzWkM5a3JEMGROblFiY3FkbHhFcmY5ZUF2MFV2VEN1Y3kwMER4T2pQODFoeUhfOWlkenlRWDlvWmhSaEVYTlJkakx0WkR4TkpxdGZaVDBZM3pWYWprQUpqS252OXVGbkpDems4SFljM3p1UlA0ZVVHd2JoX05iZXpVd29YV2dHRWdlcl9CNXJOS1drVU9ZaUZjZmJtc0tUUVhDeE1Ub21zalJUZ0l0WXN2aVRlUEVxT05kUWNtbWw5T3hDSzNjMzJrNTI0d0doZHlLeG16R1V2UDdLSEdmOW5QYV9oMVYtOWlaUXhIUFZvWkx4b09xWWR1cDVxcU1YTTlSY0xzeVlIT0VCZ0t4R0pZM0hkOGhNRWJKRDZVZ2ZxWlVDQ2t0T004ZC13b3pPTjB1WFY0LWNpUVdOdmx0VXU5clVfRFMwMmZ2eDlIS1pkdTljejNmeHFlR0gyZGR3eGRGYzBzeTJKR1ZLdV9JSFg0TnNXRHZNUkp1MktFdVY0b0xOMTRJSVFQM1pTYVBHOWItbzVLanZXTmZCOVY3ZDB6SXFuRGhjdmFGR1VhcW1HOGE5RDBVMGt3TnBIX21LS1BpN1VaVWtwT0VpRUtIZDZzMk9CdXBVU2JZcXJuaVpWZkh5bmJNRU9ZUW5uTXRRMkZhbTczOUFwOUVKdkI3WEFrSldnd1F0YVlIZVllbEdGSG0xc3JDY19OUXJkTVdNcXYtU3hkdlFEUWtucHhzQ3FYTk5pYkZCcjg3MVMtNEEtem45NExmQVFFNVZ3SGJQdThrb2ZuazhUX2VLenVGU1FJZy10UmlHd3JWWWJjY2Y2ZXNxSngybnltWGZmVUtlMEZsNTFzZnM5ZFF4V0tNOVFaN2dOWTJTcTZLYlpPYnMyZGFQTFJSRkJmX2wtSzF1VGt4Q1JJUzdPc3VzclRQZEhxNEYwM2Q5WWZyNzVaakZhX1NnT00tNEVtWV9nNG9fSDh3ZzU2NXA3WE8tOWFYd1hLSWtvMlVleHhITDNIZ1ZFYXFHSC14b1hOOGVmSW1zSlZjOU03TlpHSmpSU3llQ3UtTkNZdks5UnhXYkJpUUR3THMtcDAwS2VzWWktM0tZVXJDTFU5b2N6TU9hSWJUVTNSUllpbmZMczdRR2NLdFdqWlBnU2MwVzdIeTlGNlFCMDFCRTlxUXNuXzc0R2VHM2QtbUxlSzBaaUpsMm96cFRDQUZOMFZGQUtpbW9WUkFKdE44endveW5LSGYxLW1BSWJNZGU2UWVqT25ubE5BaVprTXBickdrVmhEb0RIMVQ3clNFNTdNMk5kdWdOTlRZOE01M21sZ3dLbWVGU2RtN1RnY1B5d1lLZjVkVEZpZzAtQ1Z3RnZjdWxkQnlPMmR0UU5TQ0YxMG42OWtma192MFRNcHZRREt3X3Zzd3lMR1lkNzlZTFVGcDMyQ0tIbmZ5VElZcVhTbDk1ektBRGljTFhmS1VaeDMyUGppZTdmQjNPZlVaeFlDb2hUZUtmdDZ0V0J0VlBIb3o3dFRvX1Vfd1FpTzFEaXRucnBqRVlrMzZrODVuam5iNk16QzZMWDMtcmR4SlBsclB5enJnaUl4MkxiNEVRYnFBc1pEM3BibV9FMW81bDdKM2c5R0xwMXE2eWVydER1NEY0Xzhra3c2Rk1qQ1VzY2szQmVsSUdCdGU4WkFqXzBFZDlhcEJTZDBBSlYybVpXazVab3RxeWFvaXNmQzdlNnRsaWNFUVVaT09XWFZhcWRUOXNvNlhXNlhNOS1fekktV2J6R09uYXFrMjQ2bmZBbHJ2a2E1SlhyQ3drbENUalQ2YXJJdDJackVxeVExMmZVUUpBSWtENk05alZQWWhESmowVEZCc1ZHVDhhTXhUXzlnVXBHd2Zqc3U4WjFVTEthV1M3a2ViUFhXTmlOX3N4NmEwa3hEU2hENHRuekNZRVE0ODlSalZQMDdvTlRUQU12RVNsM08xUmYwc2cybm5KVUlWeDBnWFlTSENnNXExcER2dDRhdF9ZWWo2Qm9yS0YzRG9uSk5FeXRIYlBLZzVER284a2pLd21nbmc0R3dsZVJSaVV1V0V0MnIyRjd0aVQ3Z1k2Z1pybi1DTS1aVkhpWFpSd2ZZVkhuajc1ZzNEcWlYRXluVkw5RGtaYXYzZkNZdUFURG8wMEJQWjlKMTFfLTNpQkp6N3FTSE9RVC1taHRjZGlFS2RnMERvRmVLNmRhVmtqY195Ynp0Q2t4eHY2clZ3dWxtZTQ2YjN1NHhIUHRRYURISmtZVXAxQUFIRmlyX083OUhwTWFtV1h0b2w2MnFfWGRKZFVwYlRvdDJ3QTA3SmtJZW9oMEVuWDJFN1JfcW9mU1ZpMmkzWmkxY0VUUzR0bzRVQjZoOUJJUk9sUWh2LWJ4eW5USUk0YWw3OXNTU1ZCaWpZY0JyQTM1Q3VpNkdlMU9Ra2Zaa0pxS0Y3clhhSDF1cGJKLU5iV3pBcWtrd09OTjcxSVVEZDJweWl6UzJiUlduSE9MMGcyc25NUTJKRndPeUwybHJyRTRYeW5tWkR1NHZWQkZaNnFqX1Faa3RxMUZKRm0tbUgtSXBLRTFUamFKSHluVXQzdmc4WHlvbGJLZExQMGF2dkFEcGFMZ3RLRzdZYXVWY3pBZGNZTEdxYnRBdmY5ZmZLeWJXZ1daM19sOGhJR2tMYkwwZnVTNDFPd1pWVTZ6V2ZtSTdYaklwcDBNRFJQVmlBUlJzR1lBMGVxRFRCNFcxUHFSOFBYbE1BOTBzaThQNm5NZldSSFNoa2tOZUhwX1FLaXE0LUc3THl2SzVjMkVENVg1a3JEMWFZNU1kX09TTmsyYnBpdEU0NXVfT01oTmdydE00dUlTTGg1bDV6cUdrSnVjQkc0UE5keGk2b29DNnk3TTZrbW5EeG9JREpXTEJwLVVCWW5abFMzWGMwa1R1MW9pODZ5RERHeGRIV1VBd3RxRHZBM0p5OTVGcjc2QTNXSVdYR04zczc0MmxZZnhRYXc2Tmh4YW9jUl9sUWYyWHJDRm9mUWtVS0Zhb3pxbXMzNXJHYlZYaHlWY1l4dlMzVTNxUERaVU12UDZiUVFKX01DVk43U1dQUnpMRTNUUUdIYlUxa3VlLXgyMXlYNE5Ea19YTE5INnB0MkxkVC12VF92cmhsbTNkTWY0c0hVcGgtZ3JGU3otU2xPcHEwdXZhQnlYMXAwcHU1Q2t4RnVCU2h5ZFU3STVleFdmeFhWZ2d6WDVQaU5PYUFOTEZ6MzNBakdVMFlUUHU4elB2cnVKYzZKdXJtMHppMVl3TlRMMGhFdjVBWjJYT2VVc2tub0REYllzUXloWjdObFJFU2ozbUNwOU9rUlFlMmh5UmVmaTZ2T3BWLXhDTjVwZjczQjA3VS1QbzRSbTI5VjlPb3ZYSnBTa1EybnVLQTNxSnhvdkp6dVNnb0tlaDJ6WUdScHMzVmxDQ3NmR0FIMlBRTDZ3R3FISzZWY2RsODJJeUhGUlRTN3JoQThRTjVVMUNRVWFRS3NhNXpBbm1JQ3dtbWtFLXhtVjRURkR0dEo2VzJlck5STDJBUm1aR01mcTNoLWhBbmhrN1lXQ1p1RDFYMFJBa09BelVqZXpONXFrS0NHTVNhdEFybFpMNEl2NXRkRi1BZjFVMHJCVUpKbGRMQm5uMDFNQ1NlX1hCdjN1eXF3U2JpVDdmSVZrOUJ4dXhGem1KU0tQdHhQRzdYUFJMa2xxRXYwM3EwTTZYUTA5X1NXYWdJbm83THVNM2Fla1F2d0pvUXBlendfcTBtY0doczlwclJoTEdYWkVrcmpFWDR2NWtmOG5yRWtfNTFZTkR3R2ljQnB5dU1GZm14RVZWTmxzTG9QWFVGZ1I5SllRdHlyR2pmYUZ2NE1wTEhId1V4RlF1ekw0a1VmUEJSVjVlY1JQbk1LejRwdFJCWHNTMVdYRWJKWnRaTEdjXzVvblNRcmp0cERUREtSNXFZS3VWNzZ0cE1XTnZBRWNGUnpUR1FUd0xicTBfWklmMy1JQW1pWFlKMElxencxVHdoanhMa0NpdVBxNUZUTUR4aWdkdmNwTDlpamIxNDdiZ2dhcFJHMDVPM0p3cV9jOVQ4QWcyOHNfYm5sbHVaRTBsX2laU3g3R1BKSzQ2bWg4bU1XZW96YmpPVHJ4Sm9BLTVzb2RMdVZLYmdLM2NYckxpVVdmWHhfNXNRRTdDLXFBWUg4bU90ZGpLZzRJdk9mb2xvMnNfUTc0NkVWbDRRb2RQVUtobkppeVZ6dDJXcUdmNk4xQlg2RFdTRkRnVmpWb2U4YjlUQkVlT3RENldLWkY2bFd4ZGYwNURaVUpxb1BlTTJZWGZVYktKU2p4QVd1akxuREVGajJSY29jck1PdHBaaGpic0hETjFyUXJoR2p5RmFWQ1BSZEtXc0tCOTR5c3dmZTNrdGRMTjRDRXFYYmttZnhSQUxCQ2doY1ZNdzZESVFKVll3TzN1RVpLeG5tNUFaeDMwU1l1UXYwOFJRSGJGQkVwQXJWSUU3RXo4VERTbV9sQjc5Smhzb3NTQ2lsWFhia2VCcF83cGZTWUhvNm81TV9jaWJqTXJEYkxtZWtiRlNYSlBWcHFIQktwUGVEOF9VSFF1eG9MZVJNdXZqQkpxYUsyaGZiSUFFSnVLZ1FSemlsSFZKVTNBblQxZE50WWhneUVlODZsQkdhLXBnUWRMU2lIanZ2eFdwMHA1dGFtdU8yVmUzeEdYelhwTS02R1REUWJmYk9pTE1ndVROekdIZVZmdndMOGdwTzBpMkRkZmtuTlEwa2tvZXZ6enJPZ21NbS1HaGlsTDFZMFBrOUM0cXNodXlEYUgtSERiZWVWbm1MVGE4ZUFhLWpNRUY4RVRqN0szbHR4T08wMUFxamFsdldEdHpwMVBrdXlESEJEcHVxblhubGZnZmJ0T294bWRsWWdkbGlqNk9pYzFWbjZTYnJpVlNzSjR5cVFUSEl6NXBzY2lGRXZOOHRSUWhPNHVXdEtnNW9tSUJxcHkxWEk5LS1GOFJKbVhwYW5jdHZxR3kzYW14d2xrSHk1WWJVUkNaSTFPMXVtZ2R0V0NZVlY4MmNKLW1XY0Z5RGo1T0Q2dDNGZmFqMm1SeExOOUpicF9hT0daZG5RZ0FfSTY3SGlpWTh2X0VaeDFaWEpIVXBkMWJmWjRWQlEwRU5FTzhoWXdTSXVQTkZjV2xIdTlmRXJOdHZlY1c3RkpHUFpWQmlpV3RsWDR1MHBfNzRVODdKLVM1TjRxYVYtbzktMHpGWXJNR2xsSFJ6Q2lVV2liSlR4bVpSNlNvdkNlczhhSnUtcDB4WDRmZWtzWkVqRGhwWXlqUld6eDNJTW1KSmhRc2pPWjVoQy1RRWFWUVJMWUZ0MVBDTkJRS0JlYXhPMlRvM2dpN1l1d01pd1VFSEw2MEdXWXZCaGNRRW5QOTRCaC1QdndyVzNRbEwzZm1KZnRqOXpVMlVTT0F1djdBZkhyR3pFa2h3VVlDWTdTOFpYMzRYVlZCMFpTNV8zWU1yVWhaRUc5V3lqWGE2cXBzVWNiNkdDSWtOTHVpUjBrX29saDZMdUU1R3RPWnNiWkN5TmR1SE54dE9fWWh2QmlCczloajkzR2VCeGZRUE5yVU5ZcDhhN1pkWkM4MThSLTlDQ1B2M1h6MDQyN0xJd2NPMGFmdFNCSFlRdXB2TVl4UGkzc1NQTE5ObVBGbmxuYkR2eGhzd1BVVFFEczN1WDdxTHJLNTlfeW92eXNQcFpXRVJKcFBfdnh1UFZBUFFWYk91TVlHaElDc25yTVllRVN4b0Y4SHJLeFhOY1VpanZNRVVHbEV5ZGF0d3N4ODFGZzRnZ1o0QzZuSlNZSzhya3JEMURJaWJfQ01JVkRqT0FXc2JYei1BdGd4eWQxU3QwTWRLOUJsbWw4bTUtZWw2VlBCRmtrcHJIaUY4N3FFZzcyX1NaeS1ITTQyaEsyZmhmYzNLRm1VWnF2b1NDYmFuWl9kOWY3Um9kSXpKYnB4RldzbmRwTUg4ZWNiTy10QnltVmUtUmpiZ3J6dDZEZHRJTEJ4ekNIQ3BmUHpDMFlqWk1DSFFmcnFzMFk2WVNUYkloZFJtZFZPV0Qwc0dsbWI1a010YVFIajFHQlhBY0hpWkxNMFFnQXVsUVNhRy15SEUtbnJWaUpZUkhSelExcDJnSlk5MThySFcxTE1rOGE2QjJwblNsZ1F4UjRMNWw0SDByQjdYU0hKYi02R3hvQlFDVVNocmJkdUx0NHcwRFhmTTh5ZnQ1bmdTWEJuLXBwcTl1Z0ZpOVF1ZW1pR3NxZkJqeWZvUTNWSW1Yb1ZWRzBOenNRRVZqR09wWUNfTXlFSUhSTjROcmVGMDBUaUtTdW9ROHdBaldqRTJ1ZHEwU0xIZXVXU2hMNlRxRlpON2RUb0c4eUt0ejBPVm5iUjNfN1Jna2dKbXVzQ3pIVkJvcVJVS1VMRHZDRkwzandlOU02enBJcUNwam13UG9VeEg0VDB3ZTJnekhtSm9zVXNMM3A4LTZHYWlPX1hKOTdtRWJLTE4tRk9EclpoSWFHVFVHNDZ4d3FrSWF6SEt4S1loamVvT1pXaXJaVmxqMjMtMjVIYUwwOV9xQWdQZEFpNzdJT3ZSd3A0MEFRYm9mT1h0N2w2cEN4dlF0dHhSZ2dnOUs1ZjAwNGQ0VmdoeU93TzY0ckNfbVJZU1BhUnFFOUxha3ZPb3NTMEctdmJ6TEEzS3lHYThZbGRWdkVvYll1Tkl4T3AxRGNPV3dSTGUweTZGbHVPenlsX2RhbWtrNkwydldiUm1hNUpXa1NfT3lHa0I5dVlhRVVSSHplbEVCNU5qSXU5bWZTci1IVk0tc3pZb3hxWFB4d1FFMl81aC1vbi1wa0cyMS1SdXpFXzVyUFZqc3ZWYjVMdWtOZ1VtckRoOVRhS3ZydzhJNWdLTmhBaTE3OUU1MHBWMmYxSlA2ZVRMREpnUXZQRElDeU0zWTBoRVRienJUSzg0azBCSXlKcjZTZTM2VUpQal9NeWhwNG0zQ2tCMTNJSlNUUVpHcUJZYkhhMHRCdEVQckNMWmlTNkhBcE90a3hIUHplUXRvRWdQVzRubXVxd0hZRm5IZTA2X2xlTzU4ZEpERzE3VWE4QXlPMzhHYnpYVTVTVnJQall0Z3V4bnlSSkw0RFE4UnlVZVpfV2dOTEVYelNpMThPNk03VzhneTVGUVI1VzNGS19kUDh3VlZ6OXR5MzRyYXJUX3N2VnRmcU9tRGJ1QmdOcl9YXzBHM1lwbFBQRE9hMHNVZzV2cmpjN1RmUTY4dkpiQUEzWGFpU1NpRGRvWnh1UGV0MjZ4eDF0RnRSaGMtTXc1QjJJTWZ0M2RxdVhrd1dIV2RqOHRwRzkxYnEzZTJkc29uaE5ZSmFTR3V1dW0weU1ZUF95anF5VFZ6Q1I0bWZocG80YVo2ZHo1eVFGLTE4cWNFVlZEeGFNd2xJQU9SREMwTlFvblNhZU0zR19PbE1YRzFzOVdRQThVWEtHVkN5M1pIaGFNNEhJWDdZdkMyalhoTUhKVXNlTEVyTXNlZ1J3dFpfYlFoN29RMWNhWXhHVmxGWDVMZzNWcGI1Z1B3N216LWRSQ1A3Q3J2bDhiT19ZMnN5UWpWakxzblQyREV6dU12eWJudHJndWdhOEJILXFvUG1lLVF0c0s4NGM0Sldyek96RDFuWlQ3WnEzcmswVV95N2FRUFBSWjE2S1VyQ0xOeDhfcVNhRTEzTGstMHZkQVp2c3h5MWhWSGNPQlpGRFJ5WmMxbWExd21nMUFMbUFBMG1BMm0xV2F5QlhYZ3FwelQzZHhZa1luWTF4R2VFalN1MVFYel9Sakpka3N0NW9fLUlHbnBIZG8zR2JFa0Z5bXV2UFI3SkQtUDNkdWMwWVB6SzN0emt2SjJTckh6N1BMeHA0dXQ0T0E2c3JpZ1MtSDI1bzFSNXkwWlVLQVozR1EtLXlhcThXVGVmdkVDaFYwMzdXSm1mRUdMUlZ6NGREZFh4amE0T19YUmhrRHhLM0hhS29vU2tmOERDOGZOT3A4RExya2RRdzV0dmdoSUVIekYzQ2pxOTl5UVA5c2NwWndocnhUZFBjS2hqZktEbUYyTUNkd1E5a180Wk9LN0RJLUt3NnVxUnpUUlVzRFZTeUZpR05GeEo1V1V3V21aaGxvUm5nV0VPNjhuRDllVThHWU9VaERUb25mNzNhV3hJVWZXcGVIdUtTOEV3TWkwUU94akdPRF9oSUl2WV95bnJhR0xDQTRuRVVDS3RBM0ExMVhfT2hONkpRdU4xZmROR3p3T3V0Z2I5S3poZ091Vm5NaS1Ba25GYXh1elBQSVZ1MnhUNDAtTXRLT0IxX2UxN3lYeGE1XzRlTHlhZkFwaFkzYVBGUWtGWVk4MjlUZXM0Z1J2NnFBRW1SMzhoenNNa2l3elVfU1BIWWNLQ2pscnVtRnhweGJWMmZWcFJYMEhYV3A1cGp6THczeDg0Tm9VLW11UXdBWlBDSFpmZ1NibkNaRHlHdXNobU1PS0tzVmtSdThMYW1ERmZQRDFUZzlyQkREYmJuWEdsclU0M1hzVWJGZlFSaGg1bDdjRmF3eFBrenE1amJTYW96OWEyaVgwaFk1S0ZnVzlwcWZWZmk4dGhWaUR6RTVoQXVzRmJNVVFJekY0Zjd0SWdCZHVQMTNjOGtHSVNXRDBVTEtvMGhFMkd2aFJhcW9XN3JMZ2JDY1JkdTlzYmZyTkVVY3YxbWJxWjVXRl9ud0tFcExEc0ZKUlNjZTNsSEZGQThkR1o3XzJPZHpQQ1FrZE4wODJwWTdfV1lRYmptd251N25LTkQzQmtWT01UbFlwMXRkQUkwUS1VQjJQVV9TV1FiUUxpYjBDTHMtNXQyRG1VSDJHb2trUEduR2dCSndhUExIa29BOWxJbWpwakJGLVhaYXlVUG9UYVNVbnBaY1BKTFJsNEd1cDI1Q3Z2ZF91MG5HcUEyY0J2RGlvTjcxSS1kbENvWE1DSFRJY29Fblc4SWxacGZLVjJ3Y2RyVnVuYXFKbmdtbmx1WUEyekRINHNIZHNxX2pfZ1p1TjA1NDhkVXhCdi1YRGpRQ2UydUdVM2k2YlN0Rmt3TklOVnlrREdlZXZ3SWVDMnhuaTJPMmFQWnhGYU1WTlVjaFFrZHc4R3J4TGxXSFFpclI2Ri1QdzN0YmlSU1plcEVXSmdzNjc3TnhOc1ozUXpKR0ppN3N4UVdPcnVnekVsdEFiZGFXYWZDZ2h4ZnNOSzZBOU1WTTlpN3F5NXpoNWtUcW1VaHpQZFRUc1k4S3hEWGJRM2ZnUV9lMk9HMEpQNWUtRlFwb1FBMUs2RDEyQ0xRMHBrdjE3QnpsUWg3YmxCbWVrZTY1QkJQaS1TOFBzdmdlX1lNWk5na0tUQVg0VlQ0SDIxTlA0c19aLTJORnM5UXM5eUNEQjN3N2RlZmhYeldlM1AtSkNNVTRTLXJjVjkxOVBtM1NiMnRzektCMlItdU1PLTRvU3QzTHpQR0hjZ01xV0NkV1RKYTdvcjdXYXM2cG1qdGk0dmE2c3A5ZnNabkp3a0FSVVBvelhDWmdLWDFHUFp0VTdCWWdwYjFLY1R1NDdhajZOS3hTVHZzVFNHQVEtbmRGWkdXMVg0LWdPOGxlM0l6U3VPSkZDNmYyMkFGSnM4QmxhZFVhcnNqd0Z3ZnhBb2d0WXNxZHlkYmxtLVB1SlZnLTY3MjFEaXpkTG00blV0NFd2ZDA5aDhPOXlaNnRPUGxHWXNkb2FaeGJWQzBPekxNUC1Ea1BKSld3UjRDNGs0ZXcyZ0Y3aXA5ZE8xeHdFVjhXYk5jZm92bHV6ejJJZllIcHZWbFo0QU43YmVnS19fUmY3eXZzLVJ5X3hma3JmYzhEVVNmdHhRNGhIVVRBeDlTczc2U3NXX0c5b2M1TjFWdTI5Mk5tUFA3UzdJalVxeFVlMlQwRF9RcXNNaUo0S09sVjluRDFLbGVXODJMU3ptMzBxOXNYeWJ2SVAzNzFOWlc2MlZualpJTnRoalZTeDVLMFppNEVtcEdnZjI4dENqLVluNVpJdmV5LXdQaENpRzV4d0pZOGV4V1U1aXFCUlRsbXViN0k5R3g2LUFrRmRGcjZRb1NSeUFHMHFhNGd1SExZUDJRWW1HV2lodTUxc0tCcDJkXzZxYVExaS1tSUVOMzdXT085cVhaYkpYeWhBWGxWdGM1M0F3VVhGWVIwazFFZjNWNzh4aUR0ckhkSXhiV2U5R2d6VmVCOE9uUmktcTdKYW5iSXRQNHczSFk1Q2xhWGlsRFVqd2ExRkR3Y1lkSmFENkxtd0tVd1RtUVFBRGdDLWFOb1hWUTZSeUhVZm1LQmk1SVVJWTdRS3FLQlZScFQ3OU9RbW1DQkxnMmxRaFA0Z29sMnhqWHlZQ1I1VVJCaEM2VGdZY1N4U29TUFQtUDdLcjU1cjQ1YnlFR0c3c1dNeTMyaW5LaHlLdUlBXzZHT3daU2NBb1d5LS1TVnBFRTZJN0cyVzYzSWtveDBBeHFydFQ0SnNHSjZZdGNhWF9faTdhNjgycXhOMTFFRkRiVDdBWk5sN1VtZVB5aWVaSURwTmJ3dnpqRFZkWkhJanVPN2hVQWVhaTUyUWVCeWVnWi1ZQXFOWXBESzRxZ1N5SnJmVlUwLU5KYjVDbFoybTJDOGtUXzBVM3VFVXNzNGZ1dnZkb2FRbDJZVEtjTzVqWld2ODZ4YTBkZE9YNjd2dUxpVzNocDlCN2o4azd1UlhoR0E1bTFBWS1PdENyYnVrTFRUVnpfa0Q2MTl2WW8wOUJNblp4ZUc5QUxqTk1qWk1lczNQdHFTdTZpYjZVcktGUml1U2wwaFlFRjAydklicHhjVU1WU09CVFlGenp5YzIzYWM3czQwbDJOUXBSdEIzOWRyUWwwbTZCRUFxbWIxR2lTSl9LLXNJazdZdG96VlVwRjJMYklrQUgxcW16b0IwczNxcDM1Y29tT19QRzVwc1dhWC1qRDRIc0dGMWt5cDVKV0NJUk1rT2JrNUJpSWVteXVHQjd4ZXRjbVItdUxLUnFfU2xXR2E0eUdXUWdqV29QQ25sZi10bDd1a3phN2NPTHdpM2J3NFpEbXRxRlYwd3NxQjltOVRqZWZVS2RVeGZFZ28wSUpVM0JpQjl4NVNpSkhRNFJyakdYU19kYlBzSzM0dWRwV1VnamVJOEd5WExyRF9ON2ZBaEc5eFJMRTM2YUhJWVBuYlRvUW16bEdlMWEzS1laS3VaTmZkNkt2ZHdzc3AzZ29zSHE2XzdqQnFCQlRWdWpWRkg4U1c0eWZIQTVDWGZxQmNTajNmSG5oUV8yZFd6XzJzcU9HUFJVcUlTYW1WYzdvNnhKYkQ2djFFLXZINmZ3NTNVRHd4ZG1UczVsaFpVRUpHX3BGNU9XSVFEV3BOWkhDQWdlSXMxU2swekNNb2hvZ1BYZ0RoNGw1R1JuQmw2RUUtQWpobmhaeWpndHJLa1dnTXJ0SVU0bmRpbjExWkdzMElGQm5lSXBmSXltR0s1azN3b2NMa0lxRXRmVU9DNDBZWmx4RVl0X0NLQndMSHJnNWFpbmZsTHc3ZGlaSlR3MnBPdEpNZzhSdnJpZjNvOGRyeFZlNTBSRUxyUzUzbkN6V1V4dmR5YXhIS2NfUTZGZWpBTFl1MzRwODNKNXdtWXJrOUVFY1loMmY4MWhWSkg1eW5Xb0h6X3ZsVzZTT0RBYnFEX19XbzJoUllZclFWZExSb0hOa0RGR1oyN25QQ3FJLWMxeVpxSkZIWkV3MTk4ZVVraGpvSGoyRFh5SVZPSk9JbklqVWxuejVjOXo0TFhOVWh5eDFqYWkxLTdPaDJ0RkhkVEtiQjktd1pJQkNVNWwwLWVNWlVSYXVYVTBMMDNpeVVMT3lTZlpmaXlOV0RIVTJmS3I5aVdRWTg5cnZfSGhDajhqYjFWamZiNW55VGpoQWdVWkxtSU9lSGJrbmRCMHRjNld6Vk1WTlljeEExQkRQeFJRNlpSeXJSYXpacEwzUko4ZVRnX2FkLU9JekhYd0loQm5uM2Q2bEVVdmNGUDhabDh0bnRmQnZ3SVk2WktsTWFmS2RsVmFyWjh3aWNRT1VsaXBpNnlfdmtzanJqNmo3WFZWTnNfYXhySzVpYURxb2dfM3RzaTByeWtlcmZoYVJ6WUgwWUdncndjZmc4SmdjRWdQSGZMTnJuNGNTbGdqaVJfNHFHUWtQRThDZDhaOWxDbWozdVdrQjhEaHNiN1JlcmpIcHptYS1XeXBITXpKcmtUSlRJZU5qY29fUm1fTWk5ZWdud1JHSVA4djgxbEZpREJnMXc5UkF5bHMxbE05UzJqV3lxNXVZRWczWENDWE1xWFNLcmtsU3VRX3YzRmFfYjZCelN1d2hZamVNWG5rRXRTRGo0NmphbFVFTTlHajZjV2pDeV9NcHkzNWYxNlNOQmJiUUpEajE5NVZxR2tuVVFSMFhUcUY2MTlqckpIVWtQbDF6Wm1pQkowSk9faVRmSG1QdlNVdWJpSVhYb1BhSHpGR05yUDV3NnhwNXFNNERhMDhoSXg2NkFMUmR5cXBXcDVzenpLT19saThzMTdjX25PbnZiNHdlVUhRNzBlUEJmMzZWYWF6dERlSlRCdDhFR2ZHcGh3WXM0TXJuel9oYzBsb1JsR29FaExwMXhrRkMta3IwOGU2ei1rMlE2enhVLUZtOVJ1cUt1Tk1BQ0czTkg4X0JIVF9JOUJQQzFfbXY4MktjNDRxTmRabVpLTC14S3A5enl2cVlWeHozM0dFOVpZUTA2NU5rRkdBcVI3aXlJNDVlbndTTGRpTmRNWG5uUXlRWDFETUZvZS1lQ1pqLVhIU0d6QnVwWFBGTklwdVhjWmR6VF9HZ1BWY0xha1FkdFE5OHJCRGVNUkZCM3FqWGZCazlKVHdOSzVsS0tMendNS296S01aNlUxdWVTSlo0cFVyMTM3U0pjdnY4cDJfSXZtLUZRMzZraFhkZGYxSHdlUWhXUGlwYWpwblhPMGJpaGR2VWlyZFlhRXpyQXhKYXk4Q2JOaThlZGF0Ry11SGxPQnFVOElVbG4tNnlCQVp0SXcyNHloQlhuSjdOWXlvT2E3WHpvMEdZdWVLR09nenRmMnJ4U0NvR1k2b0piUFBvNmk4QkJrOTVBMkV0ZzBnTkp1cFYyMllxWFhWUGFhOFhKLVQ5cGtuQVV4WGc0M0syOFotS0FJM3ZRWmttSUpvZWZ3dk5iMWx4LU5GdkVwNWlWdWZIc3A5R2czR1dRVXpJYV9qNmxWM2xJWEc5eHBxNmgyU0dYU2t0VkdkZTR2dURUem5VWnhVOENDN2FPamJFY29UVm5Bc2J4WGRzcl9oXzIybnRQNjV6TjJuSERGcjh0U0twbTZqR2o1SEdKRWhBQ2o5WEQtNDRRd28xSnNiM3JPWWVRMXpWa3lYSEpBbWo1VlBSb2Q1ZkVGWC0tZ3dfbmRfZjlRaWwyY1RWSVJJVklhLS1nMzhRS1F0cEp5aElQRUNNLWpJNHFiSHhsb3dLNGhUY1hJajBVZUZlbmlUVFI3ZEVqSDZ6WnVuR19sTGNXWHdGZVgxX2d3LU9JemRkek94Yk0wQkd5bXN4V2xPbTlTRmJJUWFhN1FHVFZTWjBaYXFoaUd4WEhqc3BNa0c4TDFxYXlkd3YtS1hmZ1VjVDNDWV9QZlB0SUpYdWlDVXotOEstSmNjSk5YUzV4M090MWFuc2U1LU5SWktxbkJxenMtMzd6ajRGczRkOHZfU2ZJTm1UN0hFNHA4WkdxQzJKbkNYS3hET2V2RTZQRW1LZFpnSzhhMThCS2hEejUySVZxdFpOVnVuU2hQdlF2M1ZXcWdUa203VHRtR1ViclNlTjAzVjI3UlY2UWw4R1JEX3VfWmVmUExyLTEyR3pFVVRCd0REdE9QVUFzRWt3RG4zbGJXQWF3TTV3bjRKTjBUcU5UY1BCRjgwUEhtZkFFanQ3NUJONEFULXEyTHBtUFBlSngwY1poaG5CbVE1TmRJS3pLNE40MVNPUDktWk5KTzJNempsZXpNNnQ4cmFEZlprMVpuTHhKNWc4VGJHbF83cWo1Z1pZbno3VldtWlJHZVh5UUpkRG51b3Q3V0hEMDlfemtqcnU0NXJpdFd6OE9LZzRxM1hWYVgydklQZVhYNTNJWHpYQi1RcU1JNENRcGMtWGRsUGtQU3Ftc2habTFkS2h4QzhmbzZTYk51SUNtVnN3UjhMMUlJM2k4WUxTcWFYQ3doZW1SRGhOeFN3ZG1ybEJNdXZLMi1Qc0xsTkJFSFVhdjZZRzkwTzQ0X3oweEM5VU5nS082Q0NoOHo3QW5BcVYyVmxXaXB2Z1B5dGNSekVNOWRmWWluNXBldUxaQktmTE5sVmVDaV9pMmRYVE9HMEVSNDNvbTFwTEltbXBvcGl6dlJ1dTNMelMwVUtTRkstNllGd1F0NDhVekRtdFZHY0RGQ0ZWQk9JU0ZQUzZsVzRsSlE0SE01ZGpzQXdLWnplZGpGSlhWWjF6V3lzT09OSTdSaDVkZlY1MnpIeWs0WXIwdXJPcVFfVkhlcXQyb2ViNDYyYzExVzBtOTRqMl9GT0ZlQWdFTS0wVzBUQW44YmhmSnlDbF9feWxUWkZxZXd0eFo1YUl1Um9hWGtTVTkzdG02aHhWTXdCeGJHTnZERHZGWWZtV3FEeWpxNzZERVFaVHdhSnB2SUJUa3p4RGNfZEg5LV94S3VjWEJNMEJBd25CMmZSaDZ1RWFkLXd6OUptTm5oQ19GenJYcldmNlRSdFlHb2YxVGZ6Ql9zS3VSXzJpcXlPNUFfN1QwcDhGRVFDRTlTVDFnbEhRcE52cGVDVDVhY04weWZJaDRVWmZJRGY1b1RScVcyWkJwSk41UWpzQ0FNcDhleHVraVdoZ3UtNTFpNl9kWnl6dllVbXNWcGozSmJPOXMyeEw5cU1ocmtWeW1lYjNrOU5IMHh6VEVjNHU0SWlLRU5obmtKMTFlUVJlaWNwRW5GMXVoRUE2NTVfOUo2clVLRWVPTlh6eWkxT09EX2lqT01CVjVQQTdRQTRVSEFHVTE5MnJYMHhLS2FKRGhMdFdERnBHN2JxZGRtQkt1S1dFc05RS1hfVkIzRUVCYXJSZUxHc0htTW1zSjhvYWhZRGJvNEtVYW1HWGNZQWxSZTM2THFpRjAtMWVWYWlTejV0NkRyZXYxSTU3eW9QYnJWUkpiY193Y1AwYWFhaEtpRVBhUW1PRjFjcTNrUmNwRTRDM01tRlVyVGx1bWRHQzJDenVUNUVQdl9pamVXUE9nenN2NW1CLS14QzdhaDUyWDR2dTRFQm5TaEp1THdxZnBZOFRab0NYYUhrQllndUdobl9LdXNGa0NoajhMSWxZMEtiRms1aU9zZm42MVBJZ2Nhc2pKay11NDl2T3hJMUgwT19VV0NZbGctd0taNVZRZkctLVlFUDZ6bFh3QzJmTkVuWDdPWVFfQjZSeXFqaEJCWGNmRDVJLXVaVTRDeG0zcGtyNTVqMC1pU2dpQ3NPQ19yTmtERkRJM1V1bjZCeWxVaTdjQW15NTRaS0VrTUtaTUtlZjByT3lITkpOUmxfMmFISXphU051RzBDN2YxT1hYb2phNTd3QjBMaTNsMjRBZTVjV3duQTgyMFA4LU41V2xtNVpIM3A3MGdjeXc5QXM3ekRfd3FZRzJCR3lhMlV6SlNFdHg3N2JaNlJTZUlPbXFMRENjNFNOWlU3dktEVVE4UDFYVUwzY3BBMWRZLThkMlBNSUpVZ1lXQUNLay1zRExCcnFSMGt4VlFvcnp0N19NLXRHaHJ1OERwM2RSal95bmJVRzdCcDY2ZTRBTldqQkV3NDh3ejZlU2V6MEItak1haVlYZEE0aU5nQkE5R2FhY21GZkxiV1hTOVJiVVA5N1ZobXowRG8wZDJvbFBVU3N4clpSV1BNVHlyR3VUZzBfOXI4aVNQOHlRTWctWm13a2tRSl9IM05qdTR1S3U1U09wcWEwem5sYTk3N3FwdzZmVUlkQmpEMFRnb3ozWE1JQXY0TC1Kdk1hQ3pESU9QT2pYZm04Wno5WnE0eE8xTFFud00zS1dxLTVFbDM5akxrT1NSX3FBZnVHaTZIWFp0LWFXVWN1aGJuTHg5Vlp6Z2pLQjhOZXAwVW44b2c5d0lGSnpWeG5CZWFubzl1Mm44V2F6b0hmY1JpdnhuSzRCR21MWXNlMmF6Ry1CbGVtaEYzMmVXYmR3OWVRQWNkSVJtbjMyUGRQUlBTTWtoQ2J5bkVuT3A0UWY5Z3VuMkNVT3ltZXlnTGc5WE1lcFE4cWhucWRlZ0pfNHZZM1g5X0EyNTE5b3NFOTRpMVhOZW9ZWGtzcVphWlFCclpndWt2TTl3emcxaWg0Nld0VEZCUHFKc3poZEhsWTZkaWYtdWFFdlQ0OUExT0RvTGJWaFdySV9FMkN6X2tfM21OUXJOTm52aWFaUGJSTS0xZUU3X3lJdVFySkJCVm9CSjdBbVhUTjdrWGRLU2o0M0Z6SnJod2VqRDl1NTlBRlBTdlV6Vy14MEVUUVRYY0JhYS1pZGVJMC1vWHZrUkdVYmloTDJ4VTVVcHZleTB1Vm1WYkdCMUZYb1RKb19OMFRnYVpJS2V0MUxfRk5iQkNZaUpEYnVPdW53OE5yYk1qTFJXNWJ3ZEN1SGNjUU1OaS1LWUxNM2VXaGd5aDR0a3pYNUU3WFlPbVNnMzlwc2ppZS1mX3NVc1dUNFNFUTNFMWpmdmxBNldxQmtwS2RjMmhac2w2WVJ2QXJIMFRqaDFMSU9MbTdzcUljOXFON0lZYnI1UUdVOVBZSWpxd2FHa0RYTEpfOVpMY3NLTjBZaVlMTGRONTM3SkpzOEJDY2IxMDM4YlYydXVzQmk3WlJlTG9zcVNEci1HNEw3TURmMU12ZnRUR0RHT1FrNld6Z25mQWUwdG5ZbXlJSGZFUmZCcnNLQWtjbEFOMTdwN1dhUTZEekxLc2NSOW9xemp1dTgtSnh3dTdHaDFVcmxvaXFLVXlOWkFFdjZLTElaZ21oTUM3elNVTXdlVlJ3YzF6eER3cUNsVi1panphZUlZOEJaRFlJYkJ2azg5SlJJZU1sRG5TZ1VFb19jcnhXOGtFdGJxY0Z3SEVrVV9HdGZ6amd2bVo4cWs3SGw5dlRDaE5nN2d5T3FiRjBybk5lVW9aakM0bzdXTEZZemxiQ2kyWWFpX0gzLUl3UF95T2NydXlhQnJJNloxTG1SNURWdlZoX1JIaFRBSWtMckNnWFlpbUo2SGkwbUlWcjZHQ2h2SllkYVB1RHEzMmd3bEthNXY0Zk1TMUxlSnNBS3dfczhFb0gtblZkSG5RUVVkLUFMcTVmckZ5MG13aDBKTGtueGs1bWs0SlAxOWlocFNSbms4c25RVkdhN3huQ0JRTXgzTnk2RDBCcW1UT0E1R0lhanVqMUVIN1JLcDhITFBaU0xBZ3d1MlB1WlhmbVR5Z3lRV2M1Q0xPZVh2Z3pybk0tZk01QlVLcG13akhacjVxWjFnUndieTdoczhMQlhWWnMxSlh5NS1DcFZvT2JXdkdHb2FPcGFVc25EWExfSnFzSlFmSzUzTHc2UkY2NlZpdmdlMWR6YU1jcWhiUzR2OVRFeC1hZjFPTU1GSUlSZDdMTmxuU3VBdXBHOWNJaEtCcHV2Zm1tTkR5SzBBZXg4M1ZaQ3pSSDlYdnpwTkNNRmFiZ0JJWTdLUGpSNVpiYk15SU5XWGg1ZlYtckdWbm40Zlh0YV9NZlhKOWpYX0hGN09tQTZDb3JaYWZXVUxHR2ZRNEJtUjdzSUNlUGJPSGoyTGhpeWI0ZVZoMzNCQnY5bGtnTXNzd25TUnBGT2xyc09ia2RtZ3RkcXFzY1BhYTlaeFYzMTMyTUJiNlNCb1dhVzFZbkNoeGVKX3BuYXNBd3Z2bDVkSWE2M25ZQ3h0a2k1WkZyQ0ItN1JhRkIyaDRUeEdGNGk3VmNuaVhLY0FKbEljTnZYanZGamxBd1FUM1NLUnFBNWxKakxzUTBBdVBJeG4tYVZpcGQ0aDdObTdjUXczaDNSbGtZc1F5b1doVUw2VzBINkIwczlnZnlmanl1cVg0dWRnRmdxVmVKc1hWcDhXS2ZOZGE1UnpOY3Q4NE5FekQtb0pRMHFYU2MyQzJjcFZielBEOHlETWxkVkg5eG5TVEZWdGxXUGlmUkg4R0RldmU3Y1FINW1mSWdzVk1wYXVGNVI3cW1MQlpuRG1SQUstY3FPRFhuVEo1X2gwWDdubU5Wb05NX0xDWFBlZzIwRWFoeDdkWjl2WWQwc0FEZmRFYWUzM2VsZ082MHNBcmxGd0NZNGlyenIwdlpWNHBibUNtRmJzUG5KT2k3aUpUejVwa2xmR2dHdXZmREE5TXp5RUh6ZlJzQjhzTUstWkRCbmVmSFgyMFY4cmlzSF80ZWRMSWptbmhvdTlGZkZ0RnY5cV9XdGhsZzdHdFU0WFI2MVlTUDlveVExTERJQmcxcTc1aVo4RFN3Sm94QVByY2I2R2Vkb0cwZF9vc085NHBpc1pJM21SOFdMek0tdW00bEhNd3FTVERRYVJRb0hIQTdjQnQ4bUl4bHcwcTBjbG8wSE42alRMS3lLNEFraGg0dUwzNExMcGREcTdaQ0dnVmxxTGZSMk5rMlRNQ2JueVU0ZzZLRlgxWlpJMEhZODhfT0lNTGRQV2lLVWJkOU1GZnVMdWF2N2VXQlM3UV9LcUctY3NHVjVtczBobDZuTE9tOGYzRTBETFJybi1DVFY2R05aY20xTER2RHlyTUFYMGFGNTJYRnBPQms2REg3SXdCRGdlMUprQTFyeXUwazJlMGFMdjF4UDF2cEdLOUtpbkpHMW1wM2Y2LUViTkZ6cjZmcVVMM0NJdUtzRHhXc21LRVVxSXlFTUdVWFM4UWhKOWJYSW1OUTBUbUYxdGdrU3RUMGhkYkp6cmJSZWRQTDUtaUlpTGtHbUVTUmc5SmJyVmVHMFNKemJQS0NHTU1tOGRzRVpkcVRLdGZ3Z0tyLXY4OEI2UFpmOXpodHNrV01ManV6YW41Q2xaZjlYX0tINWducDRXMEVmbDlFOWEtVkI1amVrMk9Oekt1N3NONnd0QU5uZkE3bUwzRVpScWdrRnk1WHJrSl91T1E3V00yN3liTDN6bU0tbFBicTRMQmZXRmRFa2NWaWtHNFcxSXRnLUFERXBKRzhUbmZmd0RYdHlSaXBGZUZXMkVDMThOeEZ1S2lqR21tQ2wwSDRZQjBPMzNNSERqczF4S2hYcVdSbGF3YmRWVmtXM1A2QnZkaHRSUTRDUkxSWTZUaF9uekJ2RjIwc1ZldEtERGM1RV8tQzkwNFBENTdyYnJBcmFqV01uWS02VVJjNVBwZkhxeTRaT2RybVFMUnJ2djJKNWNTNmYtY0U0YncwS1Y3R1VTdEs4Z0x6ekdkbGZBREhUd0hDMzVWS2wwb1dVWGRKX2dCUWFVR1hFZlVWZm16OEROdjFzY2tOaFIzVENmSGJ3T1hXeVgzVHdwaWp3LUktT19OLS1rMFdLU2RxZHhOS1NHbjhpOU5OM1ltQm9RNHpMVWFOQmdnNkRpa1FRRlFMM2FMd3l6c0EwdU1oRnZZMFRRQmdNTDA1MjRQWlJWY3R5RHRuRVZjN0dkcDZNYWZIWlhTRXFLNU8wUGN2WElsNnpraElSY3NoeG8wRjk4MjFXSkt4MlM4N1BkUk4yWDc1RmptYW13MWMwWlNsRW9mb0ZLV05xNHZyWjF5TzFBQU43ZFdscUktMnpaQ3FoeWs1U0hXVnQ0NUVKTVR1MnJPeUQ2OFdqcmlfbHpienQxc3JSYmo2eU0wd1k3bTJZYjBWeUtCNmF3SDRLNDJIZ3QwMXpSSUtRMGFWU291a3F2U3dUM0JtWVg5X2piaTBncWZ6akFJTFo3UE5ZX0xlbXYwTnNCWlNoQ29WeFN2ZndRNE9fYXdMQW5GUDRlckRwazNVSVBaVTBDNGttekc5c09UQXZ2QnZGTEtDY0sxTTJHeDhRWEVVbFY3Vnc0dFAxbEhaNW5tSlRfVHBFVFpwM2sxNmotbW92NGtMVVR1ZUVxN29PVUd0c3ZaQzJxdnRTbzZWVjZ0Qk5vWnRBM3I1VkJ1cmtKbkpFR0RLcVRXYlptTnRvZExJaWQyQlU0VTJEaEQxcTZ0bk5pak1qLTJ1UWxrLVZqb183a3JxZ1lOeEg3RFJnYVJXZUUxTEdmRmhQNGc2c3ZUa1NDUlUzaDVSRzZWZ1h5dnNvQjFHcVlHeGx5SHlQWUgzUEQwNVVRV2NldXd6N3dMbC1GNDE2VWpwLVZYSlZZN1hiZjRzNVYtSENWNWUxdnpoSWlZXzV6QXZ2MXgydzdUT2FIMnBDUmVGY01BS21KSk82QndZV2FRZWJaaVRMLWdzMC1WSkZKZGl3bWR6ZzJlX3c5cE1fbDVrNGxIb21SQ0ktV3hncVM0R2FhY2wwMWRCb2dyWGc2aFh0Wjc1MG9rQmtFblhUYXRKaF96N2xRaGRyN283SW9ieHFwZlVmN2pUWDRwQ3NjR0FaOVpKMWhpSGlmdkNzc2lnTXFPUURvZjE3Wlk5b2Q0WDdFN2dxRm1ES21kQWMxU0xyaGVqakNSU0tIdk9TQlZ4VFRuMmJyZm1oQlhRLVJHSUpDNGh1X2YteGdaN0cwS1hhNmpnSzN1VzFJTkdIRFdZT1ZTaUhXN3pMZUFpcG5CX1lPU2VPOVBMSEctRXRydVU2bFhNTUJqcC1zR1JzcmROdzhjejNrZ2x0dlhXbXlWUkRoMzNBWmw4S0R4eTF4amMwaTlJbGRMMjYxcWlPRHU4TUo4amEtQWl5SXFBemRJZ2hGSTUxak44TXRTTGVkOHAzMGprYU9DUDFYOUNrQmVMUGtzU0dqNERDeDVoYktkcWJ3TmlieHRjWTdZbnBndndRYXZlZk5PTEh3YjNNYS1Ic191VkdZSTEtdXpxUFR2cnV0T3MxYkJfWlJDRk9NX2p6X3pNMUNWMVBmNWwtQ25PUkdDQWpJY1dfVGZ2VEpqQU9HWkNYcmE5ZV9oRVh6ZTRnMkY1dGE1T2I3VWtGMkgwMUJkV2l4bjhwa1k0WWdXM0xkXzhOTzFNV01VeGFXY2tYR0w2cUQ2WWRkSHNLenlGMU4tNkREUGJkMkUxX3N2aVlMcndiRGRWRFRzanNWZEVIeElvb0lwdVY2dDc1cU91OUNCTGdlMjM5bnYyY1NpTnNuamxnMndsOTdYa0VJVEdaOTl5MWFVRXFwSUQ4N0NKQ2daa1dhN1JnMUo5b0FBYXhhSFpmdWdNNmVsMlRIZmxQNldoRVVkUHhXdEotVjRmZXBReXF0OS1kLWVCU2JYVnA1SURoenpuVmdEZ0dzbUpKQmlaY0VWS25uOFFUVmRvWHdraS1JNHZNTU5EdDJuQVo0UnBSNjY5a3FESE5tOVZVbTQ1b1A4NWo0bURwdklhZUx2Q1hJN3p1ZzNwQTRuanZNRFRUblpDN29VNnRfVTV0cTNfMVRYVV8wcHFMbzFfOGhjUmpYZTI1TUZUdlVWcTN4RDliWE1uN183YmpicmgxSDNPb2ZGcTRaWWpJZjJ2OEVUUnlaa0hVYjNjZE1pQlZXQ1gyUWJ1R2FBSDRPUVVQYkRlR05KNTl2WEZEcHRvM0x3dzk1TExRVmFReE1EWF9qVnVlNzB0eVJicGFXY0tqWno1dFQ0dWlBcktRZ3ZGY0QzS1pqTUZ4djM5dFFLbEpDWDZBdzZkUDcwdzNvSldUMHExVXMydmpsWE1Pci1tT290MmJzSWFVWGF0aWE4QVRTVng1bk4wMWpxcVRsY3QzZlJ6dThmUkVaeVpJMTFNdDJoUmhMZGxQOFVqanlDRENMVWNsM2FNQ21WSG1RbWg2SFJkTHVVelZGUUY5REdDbUhOb3EwQkhQOU5FOGlMM0lMdDAzNDhBVGozeUQ3SzJyOEhxeHA4N2YxQmRKSFgtcTAxMmp6NEtObVE5Wk1oM2tOSXNiM1FhTENNQXV4bGkyMnZGdzZGYkVCTUNHczZqc1ZmRXU2djYzMzVFcFNoM1lOTUJrajZYSGZPNkd1amNBTGg4Wk9TbUh0QXdPanNGS3VTSFZXVmZCWHlpVnlzT00xd2FCcERFVjJHWTlKUk44aDU1QllSY19FQVNNMWp5YkJJc1JwMVhfV0xVOFl0ZTZDeXVDZmFIdk9sRTN4X2kwcjIxREZxRUd4cDhYZGtsQ3N5c2tibGNydmNZbWtIakFBQnpMT29MS2VaMWd1SjRndHpRVlVOWUswRHhPU1FNcmpwbGhhMG1Oc3pfcmdvcEVFVUdqdlpVZ3pMamltZjRERlp3enZQNEpJQzlhM0ZyUnEwZS1MblhRUjhzTTUteGFWM1E2UHBPelNrV2JGNGJzV2w5T2VIaTRUV25OWXVmYUpweDBWQkVVWnFPQmE5Z1hGa3FkWmZDUTlVSExIS2J3U2IzNlh6bnJCRXQyVUR2SlRZcGtDYlhWRXRpVFBuY0VwMUZLeWFyUFNOeXcyQjdrX0dfQzNtVkdacHV3NEJRTjFRbGIxekh4Y3EzZFRxWXBTOEJmTWVGLTJkSTQ4ajU1eG8zMWpkaUN0aUVUMnBNMnhmVnkzSno5blFlOGhobE1aN3dWdTU1Q0YxaFZITHNKUldWRGZTU1QwbXowaElocm5oaU9Pd1BnU0xlVk1mQ2R5dWtlZV8zOVdhZ0RNZFhDUDdONGJHNXAycy00Rjk4S3FDUDZ0eTd6TWU5ZG54UGFaN1lKVmc3bXNUUUZRU244VTg3U2R6bzRJSkJvbVZsZ2NEMXlOblp1bzJKcl9SV0MxRExZankwcW1JTVZmUUV3V1VWa01OZDRpU3J2NVp3X3FubXlXeElKanhGX05ibDhjYjFPQWd3TkJrM2VpZHh6bkVQbDJGMmxtaXBNZXRicS1ZZHBjd0xVQU1ZQUNxamFmTUl0SUFmY3ljVEdUZTZlVTZTclFrQldHd2hjY0RtRFZRMkJqVWVDZHh2VTM5N19sUm1NRUJENW1XbGhGZG00dHJGdTNEU1hWdTlmMEdIcTlFY25SYTliX0otZmFXMzZ1UzI3NXlSZXZZQzdPWXh4LThNQnRnN1lNajRkMDM3REoyZGpwYmYtRHBnWF84cDBqUkFIVEhscU1vbnlRbFktaWlVcjZYNHQ1YlFpZUNRRU1tTjlnOHRzbGl3dkJlUWZaZkd0M0FtTGthOS1hTi1UT3NBYVgyUHN5RENYRGdtdGk3eGdoc3FmSzg0bGlKb2h0dlVJMW14MFYyMjA4NVlSWlJONVhRZlVqTTJvSUtQbGttbXlsRk1wWnVlSHUtWFdoZmlwNlVHY0RIY28tWV8tb0RqYlM2Y1Y1MWZFYmViVXlfUk9KVENUN01aZ2xtam5fTDN2YUh2X3B1UUkySk1WcF9TR181NG5GclgtUkh6NmlSUmZuVmEtZ2RHWG00T1pTMW5aQUZDUjRpc0N0QW10VFRhQ2pkV0tQVGNvYk1kampjVU1teVBhR1NfZXlQUk1VbDdCNFdrYk5jRGpzRUtCdklQUEg4S092MHZIbEtkYkRReDkwSFVLRVlFOUx1YlY2S1NIUE5NeDhJZGJMZFJUQ2JyWXV0NzVCQ2FLeTk5QlVuTGpyaWZHSndmekYtaUJsNV9tRVVSSzc1cURnTHRSMFFBY2hZSGtHaXlXMENLLTZKT2dzMFJ3Q3loQmFlay1SenZsZHFjUUV0dEVPLV9NWmVrbUVSRGgzSTFSdHNBbkZPUS1CZHRZSEF3a2VOR1p3Tm81VzYzWUdrWl9ud3B1UFU4U0Vsb29zV2dWdS1BeEtTX2l0akpnWlJmY0p2MWN4Y1M2Z2dObjkzcWptWnZCVl9ZeUVIY0FHT3NYR3ItdFRjQzA3bi13c3RFTzlqakRWMS11XzVDd2lZelE1NzZjN3ZXeXI4bGtoR1ppUGdUMzdqQVBNejlzZWgxX0RfMHo2RlVoYTZnTUtJQ003WmRacF9BdG1Od1J4cHNrZ3ZZQTNwYmh2N1lGNmZYb0N3VGlaZ0ZDaGk5aEphRG9FTHpRSldpenQxai1SQXFETTJvdWVvNVlrX0VYRTF5TWJBYnZKZ0dqWl84R2dnRmY2XzJSNjFJUU1kV1lwUERKTTZvSWQ0V0p0WHIzRlVYTHRBZWZhdHpVMkNWdG93NnJNRlZVbW0wNnluTHVsSHFTbUxUSWk3SW1YQjhPNzYtWWdqZWpyUFhWNzJnMEg4Wmo4UHRLZEh0cngzMk5WMHpGSVhTRkwxY0JWam5ONm1Dc3pvbVVWaUZKeDRXcXk1RjB4cFB3dnVIdXlSdHE1eGxOdFptZVRTLWhZUEF5eXBMLWpodWF1UUIzSDVKcnJmSE9GdlZwWVhabmE4SE9FZWx3WWhYb2huenhrcFZiQXk1VUZMY0tYdjQybS1RNnhwRUVwbExCX1VxY3BLQzlGQ1VOY1FYeHRSNWdwNm14M19lZ2JsMVlFekJOOTk5S0NaOVFZWFQ4Rk50dWljZDlQSk5VUHA5Rm9rWVd4X0RaU0s5V2VEQ2Z0dWJQbUtGWkMwQ3c0dF9rVk9GaDFLbWZtc0VkNE94Tmhyb3dtWXA3d09USmFfeUtMemlQYURnaGliTlhlT3FLa1ZkeTgyVWlWN3pGV2hJQlhrM3RvSEx2aXQtb2IzV3RBbWJFWlNNVU83THZ2WEhsZFU3V0xRRDZTNkVlTmVIZ1RVWEV0eS0tN01aejBWbE0yRWhZR0NlUHlXSlA4eTlyZmhrOHhjbW1XbHpEeGNHelI0bTR2RWxLWVZPc3RNZmhhQXRTcHBqYTc2M09mOTBBSkY3amFyMlhyN0JUNEVXdks3eWtSQUlnQUFubWNDanNNdC1mNFNsVVFXWHprcVUtVHNRVk9jYWZ5bUJrdldRSzZiMi1JSDRHb1h2REVHbEJDaFVsNWhneUpXZU1SZGhQM21SZ3AwTU1uMkZ6LUtSTTVuZzZGV2JMbnVhQ1dHSDJaQ0F4bjdtQjJPdlI0RTRMdnduTjE1Y20zSURrdlM0Y1JOS1NuQjNoX01oWmxYLUNpdjA0UEYxYkJpSWoxYmNiZjFZR2xkOUQ1TlZDMFlTVy12RkRkdGFWbTNGNFNRMUxnT0k4dDFDX05KNVhfU3RhTV8yb2NVT2tJN2ZVQndfT1FJZWI0M0VwaWNldjVVT1VuOGJwQ2wwV0Y2TEdaOVZtdkk5NzFOR3Q1dGxUZUo0Z0F1YnFhdTZjRWY5TEFjeEc4WTY1V1VQaGJZUTV0LVBwRlh0N0FCLVlCTFF2eFJ2cVU4M1ZGSHBoTVhEa2I4eTNUUF96N1lOMnM3WURNOVRWVDlBT2pYLVZGUUNqazlSX1VZOTRyVXJTaVlLUVotcVluYnFVN0ZBN011Q3dRLUMyUWdYLUpNY29nNTFvYVEzUlhpaDdtbm1vTnRDUURLUXpmMHk1VDl5LTJieDU2U3JXTDRUM1dVX0ZMT1JUb2tIbGRISG1Za21wRXFKeU9KM1pBYXFsWjRZa1RhbEFVNnRQZGtuYkZOdUVyeGU3WWJHTElCVmFYSFNLRXdDS1RXYzhBelk5THFzcUVRLXczZ1BpTkFZeXVNZ3FMZ3pPdDFOdnRpTzF4Wk1mUnJGUkJHXzc2ejcxWXhUeHBCVnJGMDJHYlFFQnBrb3Z0QkdKX3JlNEVGU2VfTktNdjV1Zl9oc2xtWDFQSEMxZFRqalBYRUI1UFVyUjBoVm54N0taVFFxR242ZEdSY2FPMlZzODhPUHFqUkZCZUxnZ2Exa0hVNThGeC14RkhyVEtsRWpFcjZOX180NVBVZk9iUjgyNkFLeGxmb21NOXprTzR6WmpQeXB4dm5GMGh2QlZZTUNCcFgzdlR6bDJqQWNrbWgtdGRJTmx6c0ZjRlRlMDhiSzdSbjRDZHRWc0JrckRaTmRzdGJjYk9VYjZQX013dXFyYU1vcmNEMmhBekxnbUZwSnBRUHdVRVRLYlROZUVYUWZSN280bEE0aHktWVdkN0tIaVM3SHh5MGJWNFBZLVVrRG1zLUdhSnltbmoyNEhaWno3U3YtQWpwNXJzU293aHZLcDR4a2JnZ1ZiTnRVTjVkZUxucDZ4YWR1eE9WNDZsTnN1V1BlYTJpZU1TV1FBMV9EazFEWVU0V1ZOaGJhVUdhTnUweU1QZXZjQ3JRbURZdkF6YWpZRnF0QWl3aUw1cXp6ZTFDdEIwR2FYbmVTYTljSHQxdHExemRSVjRKTEFocDgteGNRb3JlSWVCNWdpWXZWRktabFZjLWttM0dGM2JyTTNpYlp5NWVGbEpkclh6WnRhbXhiLWM3WE1ET1VfUkUxT0dzNzRfZ1QzTXJLaVRvekVaWEUtNkozaFNZTU9JcVR2aHhLbFBwSlZPRXV5ZWFpRDExUkJOWDBMOW93NUVIYnVNcWVEUTlpUDdoZHlGSk5pX0xnWGJVcVNYMzFuLTFPY2pyQ1E0Z3YtSWNSS0Q2MWl1N2hONzlHZzZhN1k3Qkg5NzcxMzRKdXFwR1h4TTVNUkd2d0ZINUZpZlFIUC1PQjF0T0JzUk4xMFdRdDA5VUZEWHJHMXk2Rm5aODFEeW9sc2RCTEdkWl8wRnR5WkF4TzhLbTdBRVlfUW9tSU1ZRkRyQ1JFWktWVWp1M1U5Y3ZzZC1wNzFBTS1LUjllUEhRQ2wxOWMyZnFyclJJZ0RrZGlkYy1EQms5Ml9IU0c1cTJUaVdCN3NTYnd4cUdCUnpGYzNuN3NqSnF4SE9Lay12NVJhdDZhMy1uc01XUl91UGg2ckl2Zko0OVVxdk9jeXVkV1EwMnNSMkgtc2pPOXZVeGJBWXhEWkluVDhNTlJ4czlPdGVBRzBSTXdibldwYkZqalhKTGVDamJBYzFZS21RMHE3WE05Ml9OU0hGbWl0RFh6aUpQcmJhd1hDWHBzSWgzZzhudmZmc2ZEek0zcmNHenVndzZJRVBCSks1VmpTWUQxWldIblRyekpQMXQwUUVUNmQwQk9MdDdVemxvTFR1cWd2V0pBR1BpRVRWZ3UzZGlnQmJmaTNRVUxZZ2dvYzJpUnZPX2E5OUlrWFNhNDM1bmxYR1RHQjFRM1Jjclpsd0VqLU8ybC0wQ3Z1UWhuTXIwdHo4QnV5TVpqR0Y1dVNHeW1QaElLenkzdUpVYzZWM0YtM0VlTTB0Zy1odzlWSWkzdWFyVFFOUXZYbEJnLS1JSUdSNUxDdlZrb2FDY1RuVllvY3h0ZWZnR1pHei1paVg5N1hkWF9xVWRMdGlCT2Zid0hSQzZ2Zm9xeV9pQXJtVlY5dHRIMDlqbTA4V3V5UVhjT3FJR0d4ZjcxVWhTRWgzVUsyY1ZLMEQ4bFZyb0R2cXFuX255Yk9NRU14VGhkZTVmMkloSmttdTAxN0lUUjVkbGhBZlNOZFFFNHNkQ0ZjdU02U0lqVml5UW5qakZEMGJOY21RSEQ0Ym5BTGNrNEgtc3VUbWRQWGs0b19aaGtXc3Nic3U3UUtZVzhYc3RqSkUxZ3pGeHNNVjNxdW1QdzRCSWFhUUdYX0x6Z2JYUm1KMl9uRkx0dG1XWFZRamwwYzVLMmszYWdESTFIbnM2a29MOVg4cFBjWGYzMm5pRTZPYnFvTFI5amR4SUQzbDQ3ZUdmbk5HYW1TeDJSSXVrUWU3VHMtNGo3UWRIVHFqdVdCRU43anlJdGpOZ2lPS0lLRnp0RTBkckUzTHgzT0tHem1telhNdjlJSXlpT01Dd1BmZ0ljYnpwdUJkQmVhT04xbl9pM2cxSmRESFpYb0hJLTBOendWNjRUbTBMTDNvbG9VXzNGUlRld09DOXIwSWpZelBZZnQ3MEpwWXJkUkdMT0hEbUpPUUc4SlE0Qng3LUhmVVpJLW1FWG1udTFOeWw5UHktNmxKT2NuY0s3WnNUREMteUN4aFFPMEI1NlIycE9WODJ2U1g3QzhyQlMwVmlCUGNobm1jdEZIb0RmTDZ3YVFXYWFOb0hVMUh3THdHYU41QVMtRW02NVVNYWNIcHFNTVQ5ak45MTZCeXJGLXNGcXdkMzBKYkxpRjFIanViRXFKbFZkUzExVEZBcXF1X2M4eFZPUmRRN0lPY2FxZVZMZUxkcVlpcEVLNHBVMFF5OEZ3bHMtN29pdy1DVjBUQlVUX0txVXRuQXp5QUh1M1VTa3NyZTBDNWlodlFzMHhtMnlxVXEzWnZGMTV5SERmR3hQdnd3b3BMYzZ6ZXVsS2VGMUhJOEhMWFdFWm1aYnZqVWdrRlFiclhoRzdaM0dzSlkxdjZwcHZaSm1iakg5aFdzNmk0aFBpMmhZRHRpbmJzZmU4VXBUR0pyVy1EYmtLYWlscnFqNlYwRXRDMVQ2VFMtQndtbk90dnZMMmxhR1gwUUxXaFE0aWtGX1VpM0RMZjBmb3JiMWJ1UjVIbG0wM3EydFQ3YlIwdmMydmxldDdqLTlqNnJKd2ZaaVV5ZlhnZmxuOURiYmRaX1BJQl9OMm1lcWUxZTd1ZjJMY19RU2xHTFBPb1UybmVJVVV0UXdpS3V4TVdVSVdQZnk5blExN2NkX01ZYnFLa2Z3ZHI0S1JoOUt3Ym5JeEEyMVpkWWY2M0dfQnFxM3h5cGZvVnZYcFJwYXZEQnpidmdPVTZwZzhRZ09VT1R1aWNBQk9FZlptRlp5WjBkRTBZaWlvUlBaS044ZC1KNUtpLV9OZ0pURjZWRFU1TVpXeTdWRElwTDl3T18zLVE1cTZzQmpvdHJhWFlXQ2tROGRmNjB5RVpTWEt2TlNseUFNcTROdWtDMkl2dm43bDVIUENQQV9WSnRMNkJxcWpQTjhCWUZQSlZQYVJ4Z2hqT0VuYWxWTzEtOVRlb0FCSi1qaHBlcVpBdjB1OTA5YlgxMHlxWFhMRjRLeTRRcllNTFFpX2oxTDJvWV85MWp6ang2R2VxV2JQMmhLMUpqaEk3STdZOVhQa2l1Q21UcmRQcFpoOVFwQ2xKZ0RMQ1BCZ01wdTlxTXdGRURHeFc0TnhqMHgzY29TMTJObjRHTUJyVUNOQm4tcTdsTldxVUswcjJfZEVSYlRTaG5jWm9JbmxYbHQ5aTI5ZGl2dlVfcjg0ZjRmYkVtQjJoc3FySHpXZDQ3MU1BNEtNRTc4QTMyQXRQSjI4a0ZJdWF0WEpiWEdtUDRkTFJNckhtWHE2QVlTbG1pSXlSOVNlZ0dpMHVTNkNiVmtPYWhreDRxNWM4MmpOOFZZX01panptQkFDUnFJNjhIbGZleS1vNU1qZG1BV2FUNFVYd0lGUHloaE5xMG5IVlpZNjdnb09DTFNxUmpSMklUR2xfSUs2R1hCQWpuSUIzRGtsc055dGFIUGF5MlVkTWQyVDdITHlJd2d1NUE5VU5sS3ZRSXB4NzJTZ1lEZVlzcVdWZ2tRMHdrNjZlSkNJVVotTWRicTFwWU9HeFl6RlZUVU1temo2SDlmMmlfZ2E0VVROOWREUUFwa2k2OTNnSzU1UTdOWkViS2ViZDBNNHpvZndsRmVieGhCUHZxOXotV2YtSERGSHJfM1NCa1RqRXN6bXJ0X3dST1BiclhPVUdMUkRZS2dNUHRUYTFfRUFMRlNHMVVYUW9BaTFCcFB5U2dMWE84MVBPXzMyUUoweElEaHlmZUh1eHg4ZUNLUmZrcWU0a2RQdDFDSnZhRG1kVHhUbkxreExORTJETkhtTTl4bjhqcldiYnpqUzQtOFhvWmc5Ul9IWDg5N2lYOHFxaXBJSXo3V2w3emdZd1RNbWlTcWlXSmRrZm1FQUZFdXkwVmhNUVM3LUVYeWg1MDFNVkdRRnlmbl9jYzJGT2V6akgtOWxpYnI1VXdGdkltS2JVZS1PMXdPMmM3bWF4ZnhPeFR1ZEsxUUkzVmV1MGZpTVZQdF9nRFVtM2VXMTlCMkVEbzRXUnRqZFExOUs3Qm10SnZLeUNiOU8yQ09UaTg3cy1pOEJqWTU0c2ZLQVl2T3c1ZGtzUHhKMzNITHNaMTNfbnNMZnYyYnJvb0sxLXJOdTNaN1dMUmZMTDhlYU5wQ01vWXgxSEw2eERqRVNiTjFwMlJJUWhJQVVFeWhxVC1mTF9ZSlNScmlmcmY1OGpfanBZUjIyeU9tai1UcjFvTWV2VFdIWTVWNXpMNjhJa3FoX0JuOWZabFlUVkFpdzRtekc2MU5NT2VmMkc2X1FZRV93bS1kRmhSUEtzNkpnUExneFJtS0xBcHVpaHVOdDdMd244OFlCUm1kMVFoQW1Gb1FxNXc2X056bm1VQlVQRkI3bk9TOGlOVnl2ZHV4YTFnUE9waFJ0YTR1V2loMTdmUE1xZ3k0UHBrd3diWU85bUIwNFRyR3lsaFNwdHJZSDdNRVJlUFBYTk9SYWVrLWhjaEF6dE5PdmgwZzBlZmNTYWU2Qk5sZkNlZlRqR292UWktSHotWnBnS2d5Ul9mVTc2TmRPQ3pDSndvUGFibzRVSzQyZnhocklqcWNPUnhZWlBPM1FsSEhwWFBQRVFzbzVzVHgwbTF1NTBvS1F3NVdFWmM0UXhsVzBCTEM3eDJRYlNTVVRsMExQQVhyY1NRS3IyODljZHBTTl9TRzRra0dzVjZqUV9jbVVLT0ZScHpnbVZzRzJYdTdXWWNNZWhGalV4TEYyN19haVpYUXk5VGNhMGtsVUktRkpkSVJVRkJyMlZmZHVQQ0t4ZGdBZjhDeXc0V05LMjJGNW8tTEdUVGFSa1ZKMlYwbnlDaVFGS2I0azZ3UEFGbVNrSF9RUjU5a0Y2UWlVRmhkdXNsTmRkVWp2YjBFMGJKcjRHcjluZ1ZNbFVOdGhWdUswc3Z0ODRkM09sRkxPdEVIa1UwcnV4R2tGbVJacEJDa0hQYWowQTdjblR2cTlYeVl3bUFmeDNPU2ZNblZCcXNVY0FtM3c0bHY3LUQwR1J6SlBoMkx3TmxldVZVR1NNdi1vRlZpTXpibmJMVF9ybWZJa096REE2Yk1KWkp1UTlQU2JtdEVuQl93bWJTVklKeDB1WXk1cGtmTnNaNzdGN25XMEwzdjVxemc5S1p4NnByX3ZwWVZodG1GOXd1VW92LWdKVXF0S1dqVmpWLXNnSnd5cGh5enExVEkxSEk2MlJ6c2FNLWt5eEpvZGJQUHVPYzBZRVJxcnk4cC1ockZub01YbGNiVHhLajc0RFZZT1RpdkdzaU9yN0NwOVFLNGxKVURWWDd3OThEZEc3NURWUlZmUzYtaEV4RTJHT0ljeFdmVDJYaXlMbmZoUHFlc0c2YS1PZkdldXBhZlBsUVFJSGtmSS1YQ3lwRzhpRWNXNjZURHFReFhTYkl5QlhSbEdhVjJlUXZVck5ENVNGUnBLUnN6TEVuOHpneTZKSVBPSnJPQWgwZ0RsdjlFVDBVLVRjRUd3dWJQY1ZtR2xfeUxoSWlFRHpzV2hzQUlpVnA4dFFDRXhkUWVMRW5KZXV1N1ZmOU5JM1NPejExTk9kSDM3THpWRUxpS2tkZ0ZmbGxnQnUtdUtOQVpPOUN2dlB0dUlJaVI4WTg1eEE3SGs2UVFCN3JSOUF4RWoxRHJCQnRad1F5QWNkb1RKV3ZSS1I0UWs0Q2pKY1dNd1RLWXJqQkZIUHZIMEpreWMwTnpYWVlFaHVoSWtoUmVoZmJKQm5qTnlIcUxwZ09TbzlCSFE0XzV4eWNtRERzUGJSdFEzbVBFQ3ZrUlptYXlfbkZRc0NvS190MU5VM09ub0pGczFnTHBoVVhpQ1J0bXBhTE10NTFMOVQydWUwcDBVQ2c3MkJVZFBiRnI3VlFETURrUVEyTklTUmxXMWN5dkFiYXpjNWlOTWtrRVRWcGxyaHZ4YThxZlZGY09KcDZ2SEdCWnBYdm1fNHVqcG9QNUtDM0R4UTZuZVFWVVBKYjQ1Y3loZ1FMQ1lnd1VxYmNYS1hOU1RxTzJGRDEzUEVkdjc4cHBvX0hKelBCdllkS2Z2RzE4NEJ1ZWN4Tk5pVlFRR2tYRUNXdUJsdzE5ZExZYWFpZDhac0p4YmpueW1fZEUwZXRrNjd5czRaU3Y3dUNjVTRXaEV4cWZqalJHQzhsZnhKTVU3OENWWm12bWlCSUpyQU1JSnFwRTZDNEZOWGxrZkdLaXdlYTI5dGI4Z0VybUN5dmpBZ2JqWFc3Sks2UVhkblQ1aEVyN3k5cGh5Ykl1MDVFN0Eza3lXLXlubHY2anBBdHMtdG9qcXVESHgyenVfNzR5UFVkMDV1QUhPbUtlMW54NVJrd1g0MGFTUnpmUThpOHN6T3lEeE8xcG9qMHlwalVTMy1oanNHNnZIT1hnRTdCNndzcnNNNTJHdUlNVXRzWmxYdmpXSkw1Z1pScS1CSXprT21NZVI4bjFlM09jbzlyb053UTdMdWRpaXNNYXF5U1NpNF80RmFfQ1dRTmFwMUd3RUNaazduWDFJd3FEUC1yZURkdnltYUZueWkyZHpMeXR3bXUxUnNHbjNtb2F0NkUwVXBhaldXdnpTVXZia21kQjlRYzRQWjJrQlBJaHk4MGdmc0FrWjJUQUctTllkblAtMFB4ZlNLTzVQZ1A4OElfcWFzekFFNVpEZkRhMnpyQzIwOUh4NkN4NGJTSTRzT3NiMWJ2Qi00NnltSDFtMk8xbXZDOGZESEF0V1UxWHF0bHJKcFlTSk44ekFhQlpkN1lXUXZlX19pTWpmaHFlMzlXb2I1cUJFWVVaZ3c4N3VBTzZvY3lUWnFVOU5PTmIzOTIzWFgybEVid3B0bkpNMkRjVjVtSDJFMXA3dTdKbjhidE1yTHF1eEpuUnV4LUpZS1lTUjdscjdQa2IxdTlOQUNWbzFNT19GYXpEQl9Yb3drcUdyeFZZclZWMGVBU0lKMkNmOEVVWlJPdUdxblVOdXlzT016LVJPM1NoNzRVZGotRmVTcWJXVlA0Y0x2LWpCaEdKZkJDRU1vRXd1Ykw0RmM4R1ZFY0p0eDYtX1hrS2NVc0tKSERNVWpQbW1jS0hFdWZtRWZtemhVeDFZT0R0eF9qWFNSUG1LUzdmOU1aaENWYVJ3QTVRX3JyM05MYUJLU1Zyd2FiX1FtR2dlVS1HWGl4dTlHMzZncGNGWl80bzZkWUxTbWhkN1YzYXg3OS1KLTZYUDFMSTVOSExQMExtNmNfT2xIZUZyVnNkMGFmSWtnZkE3S2N1d01PT3ZINXJ2QTg3RUlFeXBmcjhYbVRyQ1c5eXlUbnAzMHpjU1psR3pjY1VodmJlNTE1Ni1EMGI3Zm1GLU9BTVcta0FZSTc3M0tPQWJoYUdlcjYzX1VxRGRIVTZua3NLejVEanV4SDBNMm9ySHNXcDBYSXNMalhPQVBCMU1JWTBHQmZDX2p0Y1h0V3FDU1BHZHUwa25QTFlXZGswYkYySVN1RXk0MnU1MlpBRjJ0U3RzbTdLelNleVR4Wi1MM3pJRHdMRGNlc09tdE8wZFpHZDl1QWQ0WUhCQ2xQODJPbG9VenRfQmNPTGxtSUM1TjRsV3JZTVdLaFp3cGc2aFNXSEpKMU9kMERRQ05rYkpRMVBrbWlZWkNKd19ZWTNrdlc4Zm9FWjJKcUl0LVVBc1EyQkZwWUhRdkFwbDlrMnB3T0txalRxaXd5QTQ2TUlmWTNpcW1oZDdRczBkYmx1Q2p6UHg1bzhTM2lWcU0yMVY2Q0xneldleEh4N3c2eUQ1VXUzOGxkMUNIdFB2V3dwSjJqSDJzbUFwZGh1OG5NZGxMbjZOcDU3Y3hDTC1pTGV4WEZxT2ZmQ1V1NXFzSGhWSnY5YkxDdFdFUkYybWdISy1BWWFoazRMV0ltc1dQOTZUYlBHSk5EbXU4WW13dzh4QVJNT0hwSFBRa21NaVc4Slk5RlY3QS1BWGFFaXluOEVkckVCN1hsV1RKTnhnbF9YMVMwaEs5R1NSQ3ctdzhaazFGRmZ1MXcxMVhZN2hEQUpoVWtqMGwtS2NseXo4WlpXanY0Z0tXVjh1TDRLbk91TlVwUTZ2NGxjR2lRNU8xUmd2WDEtVmVQQTdCM2RHbWZwdU1DSkI1c2Ztb3JLMXhFRkMzUFk3Z2hVSUFEZjIzdE9rSTNFNlM4N1NWNXVRSmVGaThoM19IQVBCNHU4bUoydVM5MDVPZ3A5cGtCaTltTDA5TVFHOUdPdkEtN2cwSDB0YWItM2lXc1dSbzlJNF9UdUI0ZUdzdktSaDA2bXFWN1BsWW1NSUJrWmZFVHRzTWNrNEwzVEpMeGN5eXJ2dTg1SUd6VjFFbS1jSW5SUDdIN2hLN2hSaEMyS3BOWVZWT2c5N0l3aF94MGg4OWRJSVBVZHhUTHRidkVTRmVWeFd2NGkxaG5PaTYxYnVRaXpucTBRSVlabGVjRnJweWhhWGp6SHV2NWVmajFtV3pMTzFWWUJGeTNsZWdSNFZmVHZGUUh3RkxqdFNTRFJYZUQzNlBnendwTGZRVnhCU0FRNTYyMEdlTlZ2MjItOHMyVjN3QlRZT0JicGtCd2NLNzNSeU1QTWxPM3NxTzk1eENhSF9mRlp1SnFVT0RKRUxGczRmNkxvTm5mWVRJSlNFa09BX242U0wzVno5Qk5STTJ6SDUwTTN2M2RPUFRkY1IwZHVSUDN6YWxFUUZZNWZxSThLOWFCYnI4eUxTbTdUdkJUdUdyX3F0OEVpQXB5eDl3aUtlLTB0OUlNcHN1LVRvc1VwOWctUVU4a0RQakJXYzNfbmlLTExIUUtxR3ZxMGJIRDdILVdwYXh4Y2VwU3pXQ0FVSm5jdUc0MXZnbEF4Y2VZU3hMM2xUd01TekwzcEtnSUVaOTBGWGpVMXMwbUZzS3psZmFuYlZNWUpmZVltczNiSlpIaG81VEUwaWV2VWpLWGdtWDFkYjNyLWIzSFczLThIcHFLN1hPcWh5eHJFWFdjUW1CcFJWbk9hbjJkSjY3LS1GaUlLZVAtaUc5M19Sd0hzVUFXSmRTUU16U0hMMWdycUpGNE10c083RmFzX3IyUlh1QTdJVENMZFJXWk5QSWNGcnJyZm03WDZLSG1rbHBCbnpQU0MzOVkzaTJCU1pvNE1YbXJtMlBsWHBLamRyVk05V3o2QUVGLTJiM2Z1bWNDX1JLXzJydUdUVG04TDJFaFV4anhHZENsNUZBZEJCaFJYRVhJTjFHLXp2anJjLUIwWXlwTVV4S05ocVJ0V2ZJa0lsZDdVU1dGcWtRay1SbzhLUVFOV1dSaTlTVnBDbGJURnh5X1FfSVd3R1BiR2dfN3hHQzVWTWI1S0NEYnB5Y0pvMmhLT0F1a1lheW82d0VxUmRrU3ZGSndwbzN2al9IUV9FbUFNR3poTTJlMXZHbEtLVWRDaXZ4N1l6UzdDNG10ZXNTbDJzN0ttdHNRb0lNNHhhX1ZKZWg3Vmg4dUJSdFQwOF9xTk0weExGck4wTTVXci0wWEo4dzNWc2t2SWppdS1tcTdoTDBTN1ZtejlhR2hINmpWRmVrcW9WSkxpZ0tWX2c4QXRGUTc1NGh4dmk5cHg3U3BXRWZWWTFPU1ozUWtyOVZ6WEd3TXhWZ3d6ZXdDRERON2hOUDVrc3ZKZGw3eHR3Sl84MlFyMF81LWNsLXdIRnNhM25zbXRzV3JzVTlLTmMyWWVpTllQdG5HYjh5ZjQ1NnktdlFJZF80WXRJSktBQzBKVkpGY1Y5dWdnWHlwLVVCSlQzX2dyRXpPcUE4c1NZNTA1VVlydE42VFFSRFdBcEtNWFU3aHN1YnlZa0dhVEVSNVp4Z0VSMXNwdFZLLW9hTWNtR2hiNllSMTM5Mlo5UU9JblpsUi00cm9GdmtUU0tiUkM1dlgwMDNZaGE3a2NkU0VyY29aUWhueWE5RzV3YXVxT2p5Z2JSZ1hldXdUd1ZZMFhQQlJwdHAtajNPN3ItTDVmeXJHazlWOEJtTnpmd3pzNXhlaENHUU1aR0hPZDVqVkN2SnJTcUhxWVJDVTB0S2hDNXlJZXpKSjF5MU00Y0ZERVJYNzA0NTZqaVhrSzlBQ1pjNmowby1BQnVqUUVYcE4wTVRyRUJCSEtQcXY1MHdJN2FhQjNzTHNlNkVOY09KTzQ3cHhKcGxIX1BIX19hb1hfWnptVzZWVlJZUlVBckNsNy04dVFXYVptNmZvb24tVlBId3NNY3VPTHJWbmNybElZQTZNN2NlMjJHZlA1d2xiS19pa21VaDRCcU9SYjhnWWdTRXA1dGNUeFI5NVFuWFkxaHdrMFl1ZHJrWnJ5ZnVJbVh0dklZRlFhb0VxblFweGNkaXpCLXpfVFM0V0d3RXg2S2EyanlRcE9xSWY3T0RMVWhwNm5WVThlWG92Tk14cWJXTU1UdURwdEdTdThINWc4TFhRSl93VUNsWVZwR3NqUGY2WFp6Yk9zSGVwMy1VendldnBoM2tTUGFzTjNKR09NZjVaRVZ2MTllYmo0dzdkd0d5YzUwdmFyX2MzUVRaYzEySWNGQlp2UnFmeXZjWDNvYWFOUFpDbUR0VHdQNGNWdS1PWGQ5dFJzdWF6bC1aM0p2bHhJc3o2dWRGcHoxVlU2MXVRM2k0UUN1RzFRZFNGQnU2emdLNlQzWGpOTzlJMEtraUFrWW80aHR5SHRHQXo3b1g2YkZ2RktmOE11a0RYU1Q2Z2pReW1JeHJOMFhVcFRHZlIzRjJLMzA4S2NBWjBxTnV6ZGN3Vy12Wi1SV1A1MXQ3MDQ1UjV4V09GMFczV3ZfRG5tNlBwNXZlVXFZMXpHYmpOMW9jUjNLc2lHeFBRSXF1MG1NRFJ0bGZ3bXZnU2t3RlZ3QzRrU0Z3UEg5T2pSNkpMclhrdXlxRndSdjQ4cDgyMDJHMFZpQWxkTHRtcnpUa2xQLVJ4cUcxdktVeDFCdGZmNTVLOHJBaUdfMDVqNTdIaklXUl9IckJMRWh5MTI1eHEzZWtIRnc2OXVwMU5QdGc2UWk1QTdPazI3VlpYT0stMXE3YldUVG16M25FYUxKT3UyZlZ5d24zeE1QeDg1QWN2TGl1aEp1RTZicFM1YVpGYkQtR2xlc08xd1B5ZkhQaFF0b3dsNEpTUUdLY0xaRzhkT21IQzZKb1c4MTRQMF9HWVFCbDltcDBlQ1dyNHhHWDU4bGQ2YTByLWtaejFGWkVOZWxyLUVlaTBpVUVfUmFJSDBwaUU3aDA5WGR1SDFQNE1CREl4LXlGamxXeTBLNGsxRmd0RHV3cDFhUGtZam5XNUhHSEVTanB4YW1LblNtVlViX3FpRTUyZmpadDZzZ3QtVkVaenhtNW5yU21UWnBPVllSSXNRQXVkUXBLVWNvOHE3RTVFRzJmZnJWbjZTWEpTdFl5dWYxQkxEa0htODQxcjdTX3draXVGWjhGRzNTbUh1Y0xkYWQzNzlkVHc2YVRGS3hPcnc1U042ZUJLZ3oybF9JYTlaNDFaWV9hRy13Vlp3ZTlLMGxfYTMwa3BCdlJ3U0U5TlBkV09yZGlhVE1pNG1LYWgtUHBmOXRuSVNNdTJSckV4TGlWT1VzMk5aQnBxQnBCU2k2RkxJLUZoMWNWMWpJbzVuclBNWm04eFo3YW5Cem9fbUtyZ2RZOU1wVXJ6eTQ2Tll4OFVneHVyakJTMDZ2b1R6ay1uenhXNmxWbllDSUthUVFoZ0JhUDY2ZkU1QVZBNUVsdWd5MG9kZlJHVVlrN2NXcjRTaXp6QkJFcDZPeDB1cHF5NEh2NEdmVVpHQUR1a1RNM3FqNWJyQVdwTlZOeVlvTlc4TVgwR2UxbjVON1ZreUM4RTdRZU9TQWE1LWpmZTNGTGZudU9ONkJFd2ZoQkxqV2xGN2ItSzE4aGJkRUV3alZUSzZGTE4yY1N5RjJWbzExa2NHSzNRT0VxSi1hem1hVnUwc1FFUXlCTlNpWGFtejVWZkxCR29vcmlzMkE3dEtsSWdRN01ETHNjQVRHZHZYZFJRSHdjQnNTTWN5d1V0RWhBVkgtd08tSm5KMENIbV9XVFRpd3dlYmVrN0RBZmV5ODNFSE1OQ1hEdG94N1hfb25ycmd5YnFMdk1HZVpGWEhfNDZPNHdkZ0dZSkdBRHJfSHRjSU5DNG9JWUxtdTItLWlrN2taeDRLZjRLRDh0X044bHVDTzlEMDk0QXhIN294QlJFT3FwakdZamtNdnRsMERjeTlZclB5RVN5OGlVRzFqV2NiSERGNDZBOTA0MVhQdVJVT2YtSnVOeW9tSG5zNl8tdWhyblA3SFlVRC1FSFZRSGFEeU5jM2RaUFlMSWZnYVdwU21sMG9scWpJcjNvTzEzYlBIUVNhd2VIeGF1cjYyX1UycmVMeXZXdWdFUTVDS1pRVG1hZlM5Njg1OVY4cUZJZk9Jd0xrcW1lNGRvRHYwQVdzVTRmeEwxc0NsY0RrTVdaTmhLYzRFUTJkdVdmTVdGRDdMck1ZY3ZXRFFUd3hjSXdpeVhBTnRGRzNFdkItaVZQejM4RWpLbzI3ZnQ5aVIxbnhGRmtwS2tJbG1LYnpHLVBvSi02bUVhVGpUUjlNcTVqTkYtaDhsREhmZXc0cnVULUwtemxOMFdlcVQ0NUY5N3ZXcWRRMWlVYWYyTmVIUDk3RXpZMFlmS0dkNDAxLVJlRXN6UHJ5S0ZFcFFVSXh5MXJ5b3l2RkR3bWNTU1dKQkNzWWRTb0xSSjdMUnlJVFZVYnZ6MGZlX29CTENITGMzcGVwSjZwZlNfUmg1aHQ4Mjgtdm5ZZ2pabVJLSVNrN1YtaUlVOElacUN2NTAwTkVzX2gzNXNrMUVWaVVXc05nSGVYMW9KOTJwSllpenoycm41VFhIcXhkb2pPVmJpbnRMV1l5bDk4R29hSHFJeTZWMnU2a3NiUXpldUJjcFVSeFIwYlYzN1hCamxXQ2VkMGQtR1U2b2p1SmgzN2VtS1lOcTllYlJjQmNsMURSSHhlWEZBSEFxTnR1aDBMWmJ6dFRqV29RaHoxc3laX1lRNk9FVWtTWXl3N3kzWnJlWm8xS3ZrNXRxbW1YVUJDeENWeGE0bkNSWlZPRDZSY2l5c2hjeG9hYk5MLWhTbGFEZEE0dkUwUXZKYjhIcFoxdHNVeEd6ZVRCOWptcVRtZEtxOWJTX1NmWnhkc0p1aXlPZDl3cGpsVHc1ckN4cnhzVHRkbWtQS0RjVFZQSzFrUjlIbi0tVlpOT3N1eWlJU1pZd1NOaHdRSDFlZDdRYjN5WDFacloyQzRVNkxVQ1ViZjNZTk5tRmNnQkd1dUxvQk9LSnNGeHo2dFlQbFVZOGwzX1h3LW1jTExfOVFWSVR3Y29PektXMjBHeEw1eDJXS0N2alZuNlU3bXpIRGo0blFXVGsxUk5HLW1wR1hSZVNvbkswUzlJMHpCU1pSNDBoSGgwMW01OEt3NTZQU1A2M29jNnFlZ1hfeEhVODlPU0UzSWthd0RaX1hUbWFvaHZZOGxNbUpscDdCWVNVU2JnZWgtUmZSYkQ4VkNrMGRvVTctbF9WeXUzSEk0cnRkaVN5VVdheEZnTXkzR1ExbC1GYnFweXlGcGNadndjT0VaQzlISWJGYkozSDdIYnp0U09hUUJNV0YwV2hBSDVhRUZ0b2xEQmMwcGxjdkd0cU1ZczIyTTdnZ2ZBNHRnam9uRUZTUmFXalhTOXpVbjU5MEVhVkdPeWlXVmZ2QlJUVUxHaWFKb0dVNFFCdE5KNEU4b2JQY0hlWmM5ZUdEdTk3Zjd1TWNEU09UV1Rqb05hRmtFdUFhSjhiLWNBVUE3Q2lzNHhjN3lpUzhMUVlqN3VhZ0RoTlkybW9XU3hqT3FvT08yckhjSF8wSGlISnlYNEFURjVOSkZNMWttTXJHbGNRTjdESFc1RllaMXRKdHJUcEdIczgxYm9GTnVPZk1NSm9kVHQ5RjRVUlNfOTV3Vk9xUDhMWUFoaTRrR1R0VElCbDhHdGJ2cWFkckxpTkpTMnllTVBkZkRaTHJQeDVsV1lkaWlGQ2dMbWtnQUJLdzlaV2lpVHBBUHh2eGx6d2NUUVlWMzRYRGlTcElINWE0Vm1Va1dTVFFweEIxWmh5eENaT2twOGVFbk9DUXduZ0ozeFg2Zk1sb1ZScE5tcXNpVm54UWcwUFVZQ0lRTzJKWkU5cEQxX2U2N1o0bDVOVENRVVFxSGl3ZVVONXBtOEgxOWhoNHoxTWM5SUZMNnFJT3h4VWhZNzVKSzgxUE1JMXdUMnVPRjZMQzFLMGlxdHNYM2NhbEhhTzVIeVFXbk1IcjV2Mlp2U0hHWFR5MUZvMl9kLU1MOVBDazJna0NkN1RsRkJmR2FxZE4weW9BLUsxMnliTW5jVkZwbXRzWHg1OGVXbXJuTXFsbXBFSjRraUREU0Jma2R5MjZHNkYxVEJ6WGp1UVBNcTVVWTFzY2M3T3lBSElEN3lNQ3AtY1hTX1FmaGs5V1NIbHZLQVV3V0pIalNRQ3BKRHNLTlNHX1J0ZVhuc2dLZmhlUTlldm4yTEFaLWFwR25xZ0huOWtaeWFRLXhzRnNHbTVnQXEzUzcxSzczc0FVZ0UzbG1kWWJaeXB0SVN1aFkzbElCb0JzS0RCZWxobnZzbEhMVHh0YXFkdFl5dGJ2aS1rTmtoZnhCMldQRUppOEpLUnpqeVVkUVZxQ05rS1BQZ0lOLTdWZFNOd1RuVWdJYk5ncmIyVndFTTdzbTFBck1MQW5oTHRxQmVlb0Y1a3VBS0VpRkxrbUNJZW9EbHRKSmM1TGw4V2pwN3ZnenFFNzg5TWVvLTI3c2IxVTZhSHZlVnFDOVJNcFFKb25BdEg4dk50dzdHbUl0bzYyYTNCb09uVXU0Y2ZCVjNzcHZMTmN6Nm9va2FXbW9OcVV3dzBuLU9Ec29VdVptNE16cXNubFdxRGtqN0J3RDdKTk9qODg2TmpsTFVQd0E0ZlRxTk1pd3NjNUN2OS1KRlRpSXA4RVZpQVA2Zl83U0gzajVyVUhZOHZjeklxbS1kalFYazZBMGVmcFlOQTI2UmxPU3kyQjBMZzBWeXFVU3o1b3hvTjF2MUswbVlkdVNQUm5FdEtNeFRqWE1GS0dnR2YydnpqWDVqZ0FDc2VLVGpBY2ozMkM4VGRtVmV5VzhobTRMUTludU91dFJZa3RzdmtGSjFYOUhjTkw5X1BOTkZwSzVaSGRMbnpyblVsZTdhSnZfMkQwb25GR1ZsY19yT3U3dkx6aklsNDhSZlNVYlVvZURtYVc0MEt1dnhKTWIxTDFjaGlMZnNGNDFYZHJwRXFHUE1wdmVkMExTR0FzOVJuMWIyM094b2loNEVmQzZZaTBaUFUtaUE5US0wekNUYjVJYVFNZFZBRUxoYm9TTXBVTklRWDlUYUlXbGFtcThJRWI4NzZCMFR5bTRzMkI2V2o0dVlNQWVjTVZ1Snp0bEptemZ5c1BobE5UdEFPankwNWt3bHN3QjVFSlF6T25zZWJWQTZCNXR4c21PR0NBMk1tMVgwaVlPVXVzY0pxdXJWWVRvb2Z5ajdmdE9OX2Njbk84cjNZMGhkVVBNYS1VdmpLZFZ3RkI4WndFaXBhUzZORkVVQnJXWjVsUXpUTnRJbjFkRUVYdlowVUtSUEJLSkZLZERLQU5oNUJPaGVXREt6WS1GNzdkaVM5NnlpZ1ZENDNveVM5cDZFYm9XY2tDNGMwZkVBUGt6THBpY1pWbTdmQmo4X3ZvdFRyTVJ4QlhJaXVSaXVlX0Vua3VJWHBaUFBocVJ0V3AyREo3ZU5BcmVkdzU2aXdNMHZRTXpBbUxLYVYwWGpZZmdfR1ZWRDRjcjVEUlg0RFRnNnZmdDZ2ZS1jT1dWUmxfRmhta0xEV0RNZ3JYQmQ1M2hmd3FkVHVsNnVHeklDdjAtT3lKVmRZTlE3ODY2MEZNcUw4VkJ3MExpM2RkbWpfYWk3dGFmMkhEaHVtVEZaVnBpd1MzZnZVM1AzU3FVNVhqQmF3MElCYTRSOGx2VzUwd0l3Tl9fdXNjcmROZTFyNXBoeF82NlhRcGRzWGJpWHpjeXQtbkN1NVVMYWRiTG9sMUpneE1aMHRlMjVsSTVHdmRlVTZjSVJiLWpTWGQ5dURFblZ2RXJTZE5wUGMwZEFWLXdyT0ZwSlpmTnowUGVDOU9wRkRSTHBfYWdnZENlSEZZOVpWS2VCMG9VWmc4Q2NneG04dWlNMkNmMEpYczM4bkx4WVNSSUNYdUdRdklPZlBfVmhydXYyalFYQWdGWHE4NF83OFhrOFoySWpjS2R2YjJ1VEc5NkxTdHMzbWRlaXVBRDNVQmZMRmp6TGJ5NDZCUFdlLUE5eTJmaVRLT3dwOGU4NEpPeGZROENqa19Yemg3NjdWVHR1QjNsejgyUDRuNGlCak1ici04MWdCdlM0d1p3azFNU1JiS05LQmc3M0hpZk5HalAxWUJIS2pHSXNuWWM0VEt4YkZjV1YtZVJBNGlVUkthVnhNZXFFSkxvc2dRUURTX1RZal9WMjhvYUROdUJSTi1YVVM1Z0dhcndFVE1zVXVCUGlySl8xQU5fTi1ycEtnS3NwUVBMOV9EVC1EUlI1QmRjZFJaSG5nYkRfZkdvYW12YXhWanJhTUNDNFk5VTRDbV9WN0pMWE1URFJFcVdOX0ZybjNYUW1BMTZsLVFUNWY5UHBxVW5wNmxKOVZfRTZDOHF6a1AzMGx4aG1fWHZ6V0FNOFkteTYxOXBOVGQyUHdUaUYxTm42LXBDR2JmU1oxNWJSRTZOZlhjWXdsVFdweEljMmhVSjAyYWVBSGNCbFNvMTRRQkRkamdJekhnaWxSb1dfNkRkbGphelM1ajZPMXRnemJwUDl4WGF6a0lOdUV6X3BZdldEcDdlR21qS05CdW9aZC0zNnNPak14bVR5Z3poTzJfVnBLZ29zMXZ1WkNNSTNuYUx6SGVqME5Yc3UxTllWLU9GdnZ6eG9qZXB2QkZrZW50d3EzLU04U0JsYTc2cVZFN0J0a2NOVmpjTUtWXzhNMjBKb05keGJTMEt2OEpDYzQ5Z3gyYnhBLXlnRVJ6M2o1Z3BBUElJRjFRU3BfNk5SNjR4UVJZS3o3bjllZmlBenUxMWlEbTJWeVh0YW81cWs0dEpsZkhfajBzXzU3REt5Ti10MGtJS0VVR0ZHdExaVkpVQWdPUjVuTUlBejY1c1B1dzV0WHR5a29nVURmNGRmVGRWcGJndmdId0EzWUNhU3prTl91MWlwS3dKWE1vLUwtaGRoaTdsSkNIQUZPRm1BUzVjVVN1OFZ2Qm1GUHVEMkE2VVN4MDRad3FrMERRbkRKQzNGTmVSdy1PcTNJVnV2VnlBZlZpMTloQTJxcmt6ZVNjelZOMTN6TmUzdHA0R0ZhdGQzd1dsUHBSbDZMc1dkLUI2MUdpZDJ2Y2FkbEZJeS1zYklfeTZvc3NQdDFQRWUyOFF6WHhxb0p0WEhHcllncTNDdFdKYlJsYWZPbWt1dmpoM20wQmVpZkREWmJYT3pEYUxqcFZVNXBhSjUtWnZtd0VJc2puR3lhbTEzd0VRLU84RkJEYnNCUmMzU3k3eXlFcm80Mk9meUcwTDBhMlRTSFZZaklDU0lyT0REMnVmMTVWOWJwRFNZUmVLT29ZN2FTazFyY0VuNVpvSmp3QkVfRUZ2cUdiNzdWeENzQ2w0a254RHhYZlROOTZBSTJnekFLNVdEV1NGSmx3RHotUXpPWHo4dUg0R0pYZzhQNWhtYzR3VVlHRWQzajhmOHEzd2ZydUtfV1F5dHVpZllIZklQY2FvY2k0dC1mWjdiSDZ1aUc0Rjd2TnJzMUl3V1paV2E0Q1RiZjdUZ3lEbG50X2dnMjFCQzl3b2RsVzVEZVhtekhKZGk4UVRZa25jMFphdWswdGZ2T0NnSnNhVklsUFhhLThlTXdoTWpTXy0zV1NIMmpOOXBwcV9FbGYxOHdDdk5peWw0aUxTeTNDMlNjSmYydGR1LUFiaGR6MmQwQVI0MkNCYUlpVXFHY0J5ZHVESWlVcjBaUzlwcjJfTmVhSUR0NVpJYUFVa3QyRTJzRVI1Yk8tVzZISERMQ0d5TkVZQ1FGX0FYaklIM214LVI0Z0V3S3VZSVlzMEgxVEgtNGh0bzJVa0pvbTRFZTlTTW9VaXVZNmFUalBWTFZXMlFSbXhRa1RmZUwweGZjLTVFUEVDOUlUcDVBTE9KYWJGZkR3UzFHVHQwdGt5UW1mSTB3TDlmV1F0VWRBOG9KWDdRZjBUdDlOcjJ2YXlfWmM1VWdSUmRpal9GclMyMlB0U0xQMERrWUdodTVocnZxdjBYWU5jaTF0WUt5TmV6OWpKdzRxanVza05OT3kyM3VXS2o1eDBnU2RXRFJhVlU0RU4zVUhVaHRfX1Bla0N3b3cyX2EzYmJpVE9zOFFPMlZnTWxDNi1iSlhkcTJUV2Y3bGR1STI2QlJ6X21LX3dEZzR6ZDR5WlgzVm9PZnlVM1dJeWpUZGtKVHU4SUpLRGVRamxKdXhDakJwYjc2UWQzei1iOFRaZHk5NGdXUXlZTF96aFBobWpCWHZfbzd3R3hUb3BTN2QxTk1ockRadlQ1TFlhTlUwV0V1R1RzaG5tR2Q4RFdXMTBlWjhxZ2ZWa1FuNW05eHh6VERiWGsyNVlPY1NMZU9aWHBLUTFlUTczTFVyckVCNnMzenJHR19nQW1XQU15bWRteEFUaGJRcGxLVTJvQ1l0cGd1OWVCeWczUXRHZ29XeW9OeGRsQmhneVhuX2IyLXdhVy1FdEhiVHNQQ3QzTkVvQ2NJZDZCaDRpbFdnelNDTWdXeEUtUFRRUXRlWUJ2YmVUQ1VNX3pTZEszT0otWFhDNWd1TGNrYlJ2SjJWS05id1NSYVotMDE3Y1U4dXlnNzB6QlBlZ0dzZkl2SjJMTjFkU05jZDJ5bVpldC02LVlXZzNsMHVXYWVGYXJRZGIzYzZwLVNWa0ZqMjRiZFZZa1hXS2hUcWF5NkFOWnRfTnN2RXk2VWZ3QjRJNWlmSWZUem1vU1NCeGZJeWVUMkJELW5PRzROX194bzZxNERPUk1pUFMwSjlpTTNUMnZXa0dienlyMzRNZGFjZW00WlNycjlfYWdyOFVlWEYtVzlYMGVuZXAwQlF5VEZnNjlhajVkNHJUSjVJX2p2VXBoUEVQcEE3Y1BtUXN0ZFYxTnJIY1ZweEJUNm1fcFllV0FYdGtDa3hfbjZKZ2Y3X05YNlZCXzd6WHhoX3lpbnd4RU9Yc3FMNDduR0J2RzR4V2o5TVFMLV9yWEdxTTVtVGRVdFh3cE8yZmR3OTN2NHZGNUxGemVoaVRQNGdHN25maEw4Z29kdmROa3FNY1lsdEpidGhrS2d1QkxqTGRMUGQ5d2lnWmI3NGhMakM0TXdDamtFWnlLVEpkaEFhejRzb2hLbFYzVDlJdlJ3OGs2U0RYZDd3OWROakw4Y3lVd1lhaG5ycldmeW9ZdHBkaTJCQjcwNVZxeEloVnNpODdFMnpTQy1jWm85R3NDRkV6Q25LRWE1Ml9YTUZacjhBdjBWakk5Yl9ZZWZCVGR0QzJfZ3ZIRXNGM0Y5eV9iakdSZFBNQkZHczhnaWFkR1hDeGJXUFZWQmlCbTlEektpc1FneUVreC1RaV8zU3NldS1mZGJCcExEMG1haXpRZXI0dXNUV0p2NzdzYU1NSW96b2pLOEtrcUZTTGlLejZvcHRsQUxaUlNxQ1YydkRPcjYxSWxDQUFuRUVHSGFpZy12YVViVjYydENGNFM4RUFNQUhzTVpINWRtNG9VWWxlMjIydi1LUXhjWlRkU1I3ZmxxMTVoakxVeFJFQXlTZGtHaUYwYkl2RHE0eF9lVklCUkQxX2ZmZU9LQjV3Mzc2bFZiMTJXVTlsSi10aXMyamhrT2kxRVJab0pRMUh4V2t6akJZa194M1hmTjZ1VnpjS2tkVTNISEdhOXNua3cxWG5ZSmFvSExtRmdCTmRocjhFbDlELVBidWZhQVVJQmEwTlM5YXhWZ0RRT1dzU09hWmRQYk5JNUpTUDZ3amtGaC1IakxsSTdTSnZlRzUteGNVVVAzVVlrM2haUHozaFZBcm1GVmxaZFFqRVZfUWVDQVpPWlcycjJTaEFjM1FkWWVlaHRIbGl2Ujc1S2VBY0d6Q1dpUUE1aEdocjh2ZF9BMDdOZEQtTXVzNllnVThqakluYXNqLTJpNE9wTEplMzVwVnhWZ1N0WjhZdm9DVHZoN25sTnpUWk00UjBpWmhQZXVpZlo1cnVCZUU2SkNpeFpDSXNQOUdtTkctMC1wTk9CZHBZTm1oVkhRN3htUGsya3NqZTktd3VsNGlGQ2FsQ2xCZkNPRHlKM3MzUnUyZTZoNGtfdFdmWGtaNjlfRWpSZXFrbTlqVGlDTzZhaHVVMFZxTjQzNElvTDJkMUx2bDd1NEdNUjlUTWhId2JIbEg4WmdHUWE0VUNhdUlPOEs1UWlRRkRGRzFfdDQwTWdjUDZmdUpUMnJtYW1WUzNyVnFwTnk2RkVHRkxqN1liSWN3a0ZNMEVGdHVKT09ORkk2bi1sa0d2Q09CRy04WGhyNVV5S21wOFdxamRlV0plSGM2bVg5Tkl5UkgtRlJXQzRodE1HblRvNVdUN2RBVEdwR0Z4Q0ZxTUk0TnJWbzBHQ242cGtnWHA4U3ZvdWNZR1BqenZvQXpsSl9tYW1mUmwzcWhfRzI2Sjd4ZzFDLVotQVE4Wkg4ZHB5SklNUVBodjVfN0ZCdmxuWG1aOWMyTWtqV01NYXhzc1YzYzBUVEhCOER2Q01KZ3NNeTZSNERTVURMM3JpeXF5c3ZhQ2lYS0JNMkNyX3NiT2FlT056bTNzUVIydy1xb0x0RUUwcXptWjVHTTFhSlZmRkNOTDlRZGdpVFZRVXBHVXk0WnZHWTdKbmpLaHNHVmF4TDdubTFZZXNWdXdWTlBWNTVBS256WlRIc1NkeXFHX3NOZEJoQzBYTjFlR0hoX2YwOFMxdlZ3RV96VF9WbWVxbHVsalZJcWcwVzF6bGEyV2lkTGhaRFVrazhXYWxlUjFNZGZUV2huaG5hVlNRUWxlM09RMTRsQm56WGl6WF95NzlVQ0szQUF4UnR4MUlwRkZxbnlDdEFzZEhBS0ktM3prTG9TVVFlM3RNMkdvM3VCVkdsZmc0VzI5MFpEZW9zSTNwN201YmYtSmNVR09sTkt4dElxemFRaWFvQzJHT2NSMDY3NExOaFJLMDVmcU9nQV92WEpJdFhYeVVLUW9sS0hkS01NVUljSVEtQVpBYkY0eW45STMwTms1WWZsaGluVmRNeGZvZF8ydFZJTXB0WHJrOVlGX3dqdVpGYUlQNE1KdzdiQmxwR2JQdTd2UXFoMnczLWszdkVEeEpEU3JJS190bmdoMkdJTjJ5bkhITXhmWkduaG5wVnlXYlhwWWk3YmVCbzZXWEdWVDdUSzF5eGJuZE55UjhibTlJa0wxSTFWZ2RiUnVjMmhDd3d3TmxkYmJNQ1dUVmNHVjRFSTNkdjZwZmRQbmU2WkMwbDRMUDNaTkwwSWYtRXJ6SEhiSDZ0SnlCWDJZRlgyZDg5Q04zbzYwZTY5cjg2cVZnZ2x0MnRNYnUwVUV2ZmdfT2d3MUNkN1FxaGxMT2ZuMzZTNDVJcGNCQ3VELUtadFc5RXpvRS1TUUxuZGdPQ3hZWkxiSkNvZ0ZzSDhoN0l2RWZHem1CRUd6b2FJM3RxcjVBVC1wNnM1TkZDWmV0SkhtUk5ydjRxZHJHY0ZXazlIS0N2YWxfbWlZYWxvU1ZDOG1sM3ZCdDZ6ZnF5a2FnME5OVmVRVEpSR1NFcFZ3dDR2d2xzQ18wdVNNZllZTks3QlBPMmVZRTBvbzIydkY0VlprYTB1TVBEZ2ExclZVd2pPbFlzRk5JQ3ZteXJ4SWJwSUxRQl9ZeVJad1pwNzhjNmVLVEItOVQ5TDRscmVOUnFodkZBZ1RtSTV0dmVyYU5la0Z5bXQzVG9HaENyWVF5TzNtb1NNeWxqbmdZQktSdDZzSW5HNnc4NUh1dUY4VEd0bzJHTnE0SzR0TEhzbk5KSDRmWVJnWmsxX1A0TVktRms3ZDVkbHhhTm1ON1FxRGppS3hyLXY0TlVNMjZGWlExMHcxTHN6cjRyemU4MUtETXd5N3ZUR3luVnk3LUxIX0pyNHd0dVlmVzhvbWxYWkVTUGNMaUpBUFNVUzNPR2s1bUpjeU93RThYNWVOQUJsamJLckdZbTRtNjNSaUhONXZJTTJwMlBkeU4yRnRRbFJaeWYyUkFGaHNJekdiRXZ1a1EzZ3prZGxqTWpGS01MZTZSeVhNWndJY1dWdWphbHVyOWNyTEhiQ0t5NXloel9sQktUdGxIV3RwajZpQlRWdXNOSlVQQ05ucjdOSnc1TkNsRGZobnJhd3lDVi1lM2dNdUVUN0xMWWU1WlFMc3p3Vl9rQ1BINmI5WFZMaTcyRDNtWTBZYUUzX2tPZmlvOEJDSnNSRFFpV2ItMkhDdVpzZ0p3eGtEREVPNTN1bjJEWVctSDNZSmlMTElyOHpod1JzS04xMG1taWhEcUtuMnRaWjJnSDdOalp6eWgzdVBLSEFSc0N0cUtwNzVoZ0p1TGxfek1lak5YYlh3LW9ZVEVHZzZlMHZVbDJaZFdhWlVLelBfZXd0U19rWmpUcEhwa1hZLU9GU0ZHLW54czUtRm5HZXB4TlAzY3hDUzd4ekRFQmJ2VWxUZXpmWkRfMDdBVk01b0pJSkxuMnZELXloWW1meS1BMy1FVGVYT2xhcnZsTnRENk1wdVZ2aEhvUklCZWFBaGR4OUVJOUdHS1pvWGYybXVlOTZSUnJFengzUDFrUjM0NVg4ay15cDNyWWhRSXdHYTlIbGpUcndLbUhsTkJtLUlYc1NRbnQ2VUE2Zkx0VGNwcElILUtMM3dNOXlFUWpwc1pFb0JNNUdQT2R0ZU56elBSYnpFZnQtQ1FGLWtPWVoxSm05c29WdEFlSHRwMjdUOE9jR1plS2ZoOTFCVEctb1BVMk1qTXNfVFFiOG9YLVAyZjJudmROQVhsUUtCRUhMNGpDbGU4c0RXSGZtQ1Y4VDM4X1VJSmhkNnc1bHp2TmZ4a1Uza0w1ZGM2SHlsbDJfYkpSY0U0WjhxSDZXbEJVWEhMY1ozWlZQcE80MmRod3pmLWozUU9ZQlZKRGdadi0ySThFWGxoTzY0clNWeWpKdi02WTZDWWx3QkxKR3ZKQ3hab252YjJHUDZ5dFF6LUZad0tqclN1dU51RlZMX1BTbjVtdXpmVVEySWYtYmtRVjVRRkJ6cU5IMVZGMEgtanZ3RjdwYldZTzAtZkJRdTAtTmNDRER6UVlzNWVtNk5HVFlmaWowSTFuSEJhZ05uVU1EVHlRcmNubDBVb3QtRkdqS0s3WnkybFlEREFHYzhaZUtuS3ljVEpuOXpDSXdiNVM3UUpyWUluLTZhbjd2dVJyVnZfR25mUjVDNjJmOGQ0RDhoV3VWNkJWNi1ZMktISkhZSF9KcWY3Q1ozVllSRlRHRGRBUEdqTHFuRzdqTzhjSWl3NzU0dl9PX3RGLWlYdHRidnlsUVhlMzB2XzkzSkJiQkV1cnRENzU3MnRDTEE4U25FSGVDZUV3Vkk3LUVqZEZFU3RlaWUteFdEZkRDR1hCMThteGhVT1k1NnJhVDhTTUplVVBIbGdiY2RvV3cxTzhEdUpxa2tVT0F5RnpnZ2x3cWpWY1p4OHJWcEliOHNEeFlZUkdveHZyV0h6UGpEZkN1OUNxV013RzAtOFo2TXNLNXBzTE95SThBOEFnVmszQ3ltUFpOZVNmNGp1cTcxd3FZR2pyMWZ5aTQzSVo2RXVvbVUxRDZhalRjY1ZyaUstU2FkTDRTZjd5cWVVMmFxMEZ1eUVPcmFabXRIZEt1ZTFtbWhLV2hBZ2hMNi1rdFdhVExIRzJCR1hyV21TRlJQNVZCTm1WRGE3RS1MT2RyRGpnY3B0MTVzTnFjTTNrRE5mMFVPVkpuc0ZkWDZOZVJiUW03SU9oM0Y4RTJXakJma0dkaGZpT2RmWHdwYklEU2VCNUV0MTFxYTNyLWhYV0QwWGR0cVRZLWNnaXNtTG5sQ2pCM0lOQmNMU3JvU1RZYVZacmxDWmF3MFVEQlNZMy1nTEJBNlJtQUNJaHF4Mi1ZOUdWLTVNNzNVVTd5TWs2dXdoeDlvVGlwMFJyYjVDRnVqR19YT1l0TXZsY0ZBdnFtSmkzSjczekx6bG1zUVlOSjJDSmF1ZGNpcEJDcG14c2JxR0lVRG04Vi1PQ0pMeUZxOFZjNUVyREhXeVEwcWs1VUZ6ZkN6cXZ2SFljR0hSRTZHMFVCUko1N2J1YmxpUElqVnpnc2dROHJITWZzcnE3Znp3WTZ0RC00cDJCenlzbHpxdjBvYzdaSGt3bGhYY2hnSzFNSFE2UXRHRE5LbFIzUFVLQTFpcjZxVVdzTFJMMi1hTHN1R2VoeXIzalBEeV9xanp4T0xBbWxhd2R5cWpvbkxYWU9nbFllRTVxV0E0NXZaNzVOWTBCcDNJQk5ubWtKQVFBTVBHZ3hXbWhCV2FBbDB4bEh2dGRWWE9sZXhiczUwWHVDSUQzSmQwSWdfeWRmcXUzazJUT1pNV0pxSmVJWlhWNVprQkRha1czT0VvS1hSQl80dmJHaWlQSDl0ek1fSUgzVUNnemtRUkRLQXRUd2lEWWszRk9yQmZvUnlpaFJWczladVdmSno1SFRfT3g1NnVhRlpVUTZuNXlaZWxkdk44ZXBTeDBmQjdoZ2dueDZveXVEbWZHc2tJYWltWE5nNGEzNDJyRV9Da2NoWGMzTk9Vci1JaERVaklOUTdQT2RnNDgyam1WdlM1a25UWnRsREYyYWtSeTl0RjVkVlFGdWNWdEFvV0tPZWppYWlobEJnUnhNTlFacTBwM0dXZlJYck5WTTVLaFVzTHNLLUlSWkxUa1VGWDZQT2tfX292SXpDVWdsU3FEZnZ5bXZKTWJRem1IWmZFYmtWQUJMRUNFNndJWHZnN0NhVDhpR1pITGFaLXlqTXFkVVppZGF1cEx3d0pQNThfY2c3WF9FWVNvX2xjSUk4VEFEeVdkcXlFZjhvVlpkSzI0THBuSWs1TzkyMWF6a05pT3YzSVczOGtaRms4NDFHbmk2STVsbmdOaWg5d0FmWlY2N0Z5TkxmZUlBVnhxRG9jeUtlX0xJR1d1NkRlY09YeFNhLVNzVmVDT2xCZElxaVNGVVVYSi1RVUdiVm1jNXAtd2t5R09mdno5djAyWGhxdzdSaTQtajVNWmc4dUE2WjlVS09PQ0Yzc0p6LUdNLWJtTVU5MUFtUV9Rei1ZNFczbEpESWY=
