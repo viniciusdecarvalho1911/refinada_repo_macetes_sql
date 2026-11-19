@@ -1,0 +1,29 @@
+
+flowchart TB
+    C["DIM_CNPJ"]
+    P["DIM_PASTA"]
+    J["RL_PASTA_CONTRATO<br/>Vínculo jurídico real"]
+    M["FT_PASTA_MES"]
+    T["FT_CONTRATO_MES"]
+    V["FT_VIJUD_QUINZENA<br/>Pasta × contrato × rodada"]
+    E["FT_EVENTO_JURIDICO"]
+    A["FT_APURACAO"]
+
+    C --> P
+    C --> T
+    P --> M
+    P --> E
+    P --> J
+    J --> T
+    P --> V
+    T -->|"Arraste pelo CNPJ"| V
+    P -.-> A
+    T -.-> A
+
+    classDef dim fill:#e0ebfa,stroke:#6289b6,color:#203954
+    classDef fact fill:#e4f2e7,stroke:#6c9d78,color:#20432a
+    classDef rel fill:#fff0d7,stroke:#bb934c,color:#5d441d
+    class C,P dim
+    class M,T,V,E,A fact
+    class J rel
+  
